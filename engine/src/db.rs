@@ -372,6 +372,36 @@ impl Db {
             .optional()?)
     }
 
+    /// Store a secret's ciphertext. `last4` is the only part of the value that lands in
+    /// clear, and it is `None` for a value too short to give a tail away safely.
+    pub fn upsert_secret(
+        &self,
+        org_id: i64,
+        name: &str,
+        ciphertext: &[u8],
+        last4: Option<&str>,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO secrets (org_id, name, ciphertext, last4, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![org_id, name, ciphertext, last4, updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// A secret's ciphertext and its stored tail, or `None` if it was never set.
+    pub fn secret(&self, org_id: i64, name: &str) -> Result<Option<(Vec<u8>, Option<String>)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT ciphertext, last4 FROM secrets WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     /// Enforce retention: drop calls older than `keep_days`, then drop everything past the
     /// newest `max_calls`. Returns how many rows went.
     ///

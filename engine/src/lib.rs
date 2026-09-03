@@ -5,6 +5,7 @@ pub mod assistants;
 pub mod db;
 pub mod ended_reason;
 pub mod extract;
+pub mod secrets;
 pub mod sync;
 pub mod vapi;
 
