@@ -465,7 +465,7 @@ org a stored key and is where they get wired, and the env winning means that cha
 alter today's behaviour. Crates added are pure-Rust RustCrypto; `chacha20` and `rand_core`
 each end up at two versions because `chacha20poly1305 0.10` pins the older ones.
 
-### S-12 — HTTP API (axum): orgs, assistants, calls, stats, optional password `[Rust]` ☐
+### S-12 — HTTP API (axum): orgs, assistants, calls, stats, optional password `[Rust]` ☑ (PR #12, 9ff68d2)
 **PR:** one. **Depends on:** S-9, S-10, S-11.
 **Files:** `engine/src/server.rs`, `engine/src/queries.rs`, `engine/src/auth.rs`, `engine/tests/server.rs`.
 **Today:** CLI only.
@@ -483,6 +483,42 @@ Bind `127.0.0.1:3737` unless `GRAPHIFY_BIND` set.
 **Acceptance:** WHEN 10 calls are seeded, 3 in `transfer-error`, THEN `/api/stats?window=1d` SHALL report `by_ended_group["transfer-error"] == 3`; WHEN `GRAPHIFY_PASSWORD` is set THEN `/api/stats` without a session SHALL return 401.
 **Verify:** `cargo test -q --test server` → pass; `graphify serve` + `curl localhost:3737/api/stats?org=1`.
 **Must not:** return secret values; bind 0.0.0.0 by default.
+**Learned:** filters are parsed from the raw query string, not through serde:
+`serde_urlencoded` cannot express a repeated key and `assistant_id` has to repeat, and
+parsing by hand is what makes an **unknown key a 400** rather than a shrug — a typo'd
+filter that silently answered with the whole org is a wrong chart nobody can spot. `org`
+is an org **id**, matching the spec's own `?org=1`; `?org=` with no value means "no choice
+made", which is what a browser sends from an unset select. NULL survives to the browser:
+`sum()` over no priced call is NULL, so an empty bucket reports `cost: null` and
+`calls: 0` — a count of none is a number, a cost of none is not — and `duration_avg`
+divides by the calls that carried a duration. Buckets are filled across the whole span
+including the empty ones, because a gap in a line chart has to be drawn as a gap, and the
+axis runs from the requested `since` so two charts with the same `window` line up. Bucket
+size follows the **span**, however it was asked for, so an explicit two-hour `since` is as
+hourly as `window=2h`; `bucket_size` is returned so the axis needs no re-deriving. Bucket
+percentiles are percentiles over per-call percentiles — the raw turns live in
+`turn_latencies` and re-parsing them every refresh costs more than the precision is worth.
+A NULL `ended_group` buckets as `unknown` (the call has not ended, which is what
+`ended_reason::group(None)` already calls that); a NULL `success_eval` is dropped, because
+"no evaluation ran" is not a verdict, and the same rule drops a structured key that came
+back null. The connectivity test runs with **retries off** and reports a rejected key as
+`{ok: false}` with a 200 — "your key does not work" is the answer that was asked for, not
+a server error. `Db` sits behind a `std::sync::Mutex` because `Connection` is not `Sync`;
+the one handler that waits on the network drops the lock first, and a poisoned lock is
+recovered rather than propagated. Sessions live in memory only — a restart signs everyone
+out, which beats a session table to leak — and passwords compare over SHA-256 digests so
+the comparison cannot leak a length. This is also where S-11's deferred wiring landed:
+`sync` and `assistants` read the org's key from the store, the environment still winning,
+which means the DB is now opened before the key is looked for and a missing org is the
+first thing that goes wrong. The plaintext still leaves the `Secret` wrapper at that
+boundary because `sync::Opts.key` is a `String`; neither `Opts` derives `Debug`, so
+nothing prints it. `engine/tests/cli.rs` needed a `GRAPHIFY_DB` temp path per test — two
+CLI tests migrating the same new file is a race as well as a stray `data/` in the repo.
+Only five crates are new to the lockfile (axum, axum-core, matchit, mime,
+serde_path_to_error); everything else axum wants was already there via reqwest. The server
+suite holds a **`tokio::sync::Mutex`**, not a `std` one, around every env-touching test:
+the environment is read on the far side of an `await`, and clippy's `await_holding_lock`
+is right that a `std` guard must not survive one.
 
 ### S-13 — `graphify serve` serves `ui/dist` and opens the browser `[Rust]` ☐
 **PR:** one. **Depends on:** S-12.
