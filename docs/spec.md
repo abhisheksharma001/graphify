@@ -274,7 +274,7 @@ check that self-skips on this repo; only `engine` and `brain` are real gates.
 Helpers: `upsert_call`, `replace_tool_calls`, `create_org`, `list_orgs`. Indexes on
 `calls(org_id, created_at)`, `calls(assistant_id)`, `calls(ended_group)`.
 **Acceptance:** WHEN `upsert_call` runs twice with the same id THEN one row SHALL remain with the second values, AND WHEN `Db::open` runs on an existing file THEN it SHALL not fail.
-**Verify:** `cargo test -q db` → pass on a tempfile DB.
+**Verify:** `cargo test -q --test db` → pass on a tempfile DB.
 **Must not:** add an ORM; touch Vapi.
 **Learned:** `cargo test -q db` filters by test *name*, not by test target — it matched
 nothing and exited 0 having run zero tests, a false green. Verify is now
@@ -303,7 +303,7 @@ transfer-error; contains `transcriber` or `-returning-` → stt-error; contains 
 starts `customer-` or `voicemail` → customer; starts `assistant-` → assistant; None →
 unknown; else other. Source: https://docs.vapi.ai/calls/call-ended-reason.
 **Acceptance:** WHEN `group(Some("call.in-progress.error-transfer-failed"))` THEN `transfer-error`; WHEN `group(None)` THEN `unknown`.
-**Verify:** `cargo test -q ended_reason` with ≥ 15 cases covering all 11 groups → pass.
+**Verify:** `cargo test -q --test ended_reason` with ≥ 15 cases covering all 11 groups → pass.
 **Must not:** network.
 **Learned:** the ordered rules have one collision the spec did not see: `voicemail`
 contains `voice`, so the tts rule swallowed it before the customer rule could claim it —
@@ -317,7 +317,7 @@ not `other`. Verify is `cargo test -q --test ended_reason` — the bare-name for
 tests, same false green as S-5. Test is a 31-case table plus a guard test asserting all
 eleven group names appear, so a future rule edit that drops a group fails loudly.
 
-### S-7 — Vapi client: read-only paginated `GET /call` `[Rust]` ☐
+### S-7 — Vapi client: read-only paginated `GET /call` `[Rust]` ☑ (PR #7, de39422)
 **PR:** one. **Depends on:** S-3.
 **Files:** `engine/src/vapi.rs`, `engine/tests/vapi.rs`.
 **Today:** nothing.
@@ -328,8 +328,20 @@ assistant_id})` → `Vec<serde_json::Value>` newest-first; `limit=100`; cursor
 `reqwest::Client::get` exists in this file — enforce with a unit test that greps the
 source for `.post(` / `.patch(` / `.delete(`.
 **Acceptance:** WHEN mocked pages of 100 and 30 are served THEN `fetch_calls(last: 250)` SHALL return 130 and make exactly 2 requests.
-**Verify:** `cargo test -q vapi` → pass.
+**Verify:** `cargo test -q --test vapi` → pass.
 **Must not:** any non-GET; log the key.
+**Learned:** `cargo test -q vapi` is a false green a third time — the name filter matches no
+test fn, so it exits 0 having run nothing. Every remaining `cargo test -q <word>` Verify
+line in this register has the same bug; use `--test <file>`. The GET-only guard is
+`include_str!("../src/vapi.rs")` + a substring scan, and it also asserts `.get(` is still
+present so deleting the requests can't pass it. `reqwest` needs `default-features = false`
+or it drags in native-tls alongside rustls — `cargo tree -i rustls` and a grep for openssl
+are the proof. Two seams the spec didn't name: `fetch_calls_at(base, key, opts, retry)`
+carries the base URL and retry policy so wiremock can be pointed at and the backoff zeroed
+(a real 5×500ms-doubling exhaustion test would sleep 15.5s in CI); `fetch_calls` keeps the
+spec's signature on top. `since` is filtered client-side as the spec words it, not sent as
+`createdAtGt`. The page loop can't spin forever because a full page always grows the
+result, so `out.len() < last` bounds it even if a server ignores the cursor.
 
 ### S-8 — Extract: raw call → `calls` row + `tool_calls` + slim JSON `[Rust]` ☐
 **PR:** one. **Depends on:** S-5, S-6.
@@ -350,7 +362,7 @@ computed from `turnLatencies[].turnLatency`; `turn_latencies` = the array as JSO
 (`artifact.recordingUrl`); `slim` per the Slimming rule; `assistant_version` from
 `artifact.assistantActivations[0].assistantVersion`. Missing → NULL, never 0.
 **Acceptance:** WHEN the fixture is extracted THEN `tool_calls=1, tool_failures=0, transferred=1, turns=2, lat_turn_avg_ms=4553.5, lat_turn_p95_ms=6030, cost_vapi=0.0248, success_eval="true", structured.call_intent="general_info"`, AND `slim` SHALL be under 10 KB and contain no `messagesOpenAIFormatted` key.
-**Verify:** `cargo test -q extract` → pass.
+**Verify:** `cargo test -q --test extract` → pass.
 **Must not:** store raw; download recordings; coerce missing to 0.
 
 ### S-9 — `graphify sync --org NAME --last N | --since DATE`, incremental + purge `[Rust]` ☐
@@ -363,7 +375,7 @@ on 250 stored fetches up to 250 more, never replaces. After upsert: delete calls
 than `orgs.keep_days` (≤ 14, reject higher) and beyond `orgs.max_calls` if set. Print
 `org X: synced N new, M total, purged P`.
 **Acceptance:** WHEN `sync --last 250` runs twice against the same mock THEN the second run SHALL print `0 new` and the table SHALL hold 250 rows; WHEN `keep_days` is 20 THEN sync SHALL refuse with a message naming the 14-day cap.
-**Verify:** `cargo test -q sync` → pass; live once with a real key after Abhishek's go: `graphify sync --org test --last 25`.
+**Verify:** `cargo test -q --test sync` → pass; live once with a real key after Abhishek's go: `graphify sync --org test --last 25`.
 **Must not:** non-GET; delete rows inside the keep window.
 
 ### S-10 — Assistants + tools: slim fetch into `assistants` and `tools` `[Rust]` ☐
@@ -380,7 +392,7 @@ store the raw 49 KB. Skip write when `prompt_sha256` and `version` unchanged. `s
 runs this first. `GET /squad` members flattened (probe org had none; keep the code path
 small).
 **Acceptance:** WHEN the assistant fixture is parsed THEN `system_prompt` SHALL start with `You are a service-desk`, `model="gpt-4.1"`, `transcriber_model="flux-general-multi"`, `tool_ids` SHALL have 3 entries, and `structured_schema.properties.call_intent.enum` SHALL contain `"transfer_request"`; WHEN the tools fixture is parsed THEN the `transferCall` tool SHALL have `is_transfer=1`.
-**Verify:** `cargo test -q assistants` → pass; live: `graphify assistants --org rush` prints 100 names.
+**Verify:** `cargo test -q --test assistants` → pass; live: `graphify assistants --org rush` prints 100 names.
 **Must not:** non-GET; store the raw assistant.
 
 ### S-11 — Secrets store: encrypted at rest, env override, never returned `[Rust]` ☐
@@ -392,7 +404,7 @@ small).
 Option<String>` (env `VAPI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` override),
 `status(org) -> [{name, set, last4}]`. `Debug` impl for the secret type prints `***`.
 **Acceptance:** WHEN a key is set THEN the DB file SHALL not contain its plaintext bytes, AND `status` SHALL show `set: true` with the last 4 chars only.
-**Verify:** `cargo test -q secrets` → pass (test greps the DB file for the plaintext and asserts absent).
+**Verify:** `cargo test -q --test secrets` → pass (test greps the DB file for the plaintext and asserts absent).
 **Must not:** log values.
 
 ### S-12 — HTTP API (axum): orgs, assistants, calls, stats, optional password `[Rust]` ☐
@@ -411,7 +423,7 @@ by_assistant, success_eval_counts, structured_keys, totals}`; bucket 1h ≤ 2d e
 `GRAPHIFY_PASSWORD` set → `POST /api/login`, cookie session, all `/api/*` 401 without it.
 Bind `127.0.0.1:3737` unless `GRAPHIFY_BIND` set.
 **Acceptance:** WHEN 10 calls are seeded, 3 in `transfer-error`, THEN `/api/stats?window=1d` SHALL report `by_ended_group["transfer-error"] == 3`; WHEN `GRAPHIFY_PASSWORD` is set THEN `/api/stats` without a session SHALL return 401.
-**Verify:** `cargo test -q server` → pass; `graphify serve` + `curl localhost:3737/api/stats?org=1`.
+**Verify:** `cargo test -q --test server` → pass; `graphify serve` + `curl localhost:3737/api/stats?org=1`.
 **Must not:** return secret values; bind 0.0.0.0 by default.
 
 ### S-13 — `graphify serve` serves `ui/dist` and opens the browser `[Rust]` ☐
@@ -421,7 +433,7 @@ Bind `127.0.0.1:3737` unless `GRAPHIFY_BIND` set.
 **Change:** `rust-embed` embeds `ui/dist` at build time when present (empty page with
 "UI not built" otherwise). `serve --no-open` flag; default opens the browser with `open`.
 **Acceptance:** WHEN `ui/dist/index.html` exists at build time THEN `GET /` SHALL return it; otherwise a 200 placeholder.
-**Verify:** `cargo test -q serve`; manual curl.
+**Verify:** `cargo test -q --test serve`; manual curl.
 **Must not:** call Vapi.
 
 ### S-14 — UI scaffold + org switcher + filter bar + first chart ☐
@@ -463,7 +475,7 @@ whose values are strings/booleans, a small count chart; numeric keys get avg per
 **Today:** all charts always on.
 **Change:** "Charts" menu: enable/disable each, drag order; saved to `dashboard` per org.
 **Acceptance:** WHEN a chart is disabled and the page reloads THEN it SHALL stay hidden.
-**Verify:** `cargo test -q dashboard`; `pnpm build`; manual reload.
+**Verify:** `cargo test -q --test dashboard`; `pnpm build`; manual reload.
 **Must not:** lose the config on sync.
 
 ### S-18 — Call table + call drawer ☐
@@ -510,7 +522,7 @@ the pattern name; `matches(&Rule, &CallRow, &[ToolCall]) -> bool`. `apply` re-ru
 `mode=free` patterns over all calls into `pattern_matches(source='rule')`. `rule-check
 --rule FILE --calls FILE` prints matched ids (brain uses it for agreement).
 **Acceptance:** WHEN rule `{"any_phrases":["real human"],"speaker":"user"}` runs on a call where only the bot says it THEN `matches` SHALL be false; prove by removing the speaker filter → exactly that test fails.
-**Verify:** `cargo test -q rules` → pass.
+**Verify:** `cargo test -q --test rules` → pass.
 **Must not:** eval anything; import the brain.
 
 ### S-22 — BAML `PlanPattern` + `ClarifyPattern` ☐
@@ -560,7 +572,7 @@ cost), `GET /api/patterns?org=`, `PUT /api/patterns/{id}` (rule, mode, cap),
 `POST /api/patterns/{id}/apply`. Two things (spawn + routes) in one step because the
 routes cannot be verified without the spawn.
 **Acceptance:** WHEN `/label` is called and `/go` never is THEN the job SHALL stay `waiting` and `spend` SHALL be unchanged.
-**Verify:** `cargo test -q jobs` with a fake brain script.
+**Verify:** `cargo test -q --test jobs` with a fake brain script.
 **Must not:** pass keys as argv (env only).
 
 ### S-26 — UI pattern wizard: config step, chat step, plan table, ≥95% gate, cost go ☐
@@ -596,7 +608,7 @@ that the rule matched since last run and are unlabeled → `LabelBatch` confirm;
 `full`, all new calls → `LabelBatch`. Writes `pattern_matches(source='llm')`, adds to
 `spend`, stops at the pattern's cap and at a global `GRAPHIFY_DAILY_CAP_USD` (default 5).
 **Acceptance:** WHEN the cap is $0.01 THEN at most one batch SHALL run and the job log SHALL say `cap reached`.
-**Verify:** `uv run pytest -q tests/test_daily.py`; `cargo test -q sync_daily`.
+**Verify:** `uv run pytest -q tests/test_daily.py`; `cargo test -q --test sync_daily`.
 **Must not:** run without a cap.
 
 ### S-29 — Ask box (BAML `AskAnalysis`) ☐
