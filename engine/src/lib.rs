@@ -3,4 +3,5 @@
 
 pub mod db;
 pub mod ended_reason;
+pub mod extract;
 pub mod vapi;
