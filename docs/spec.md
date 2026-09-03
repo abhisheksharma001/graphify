@@ -245,7 +245,7 @@ exact stdout predicate, so no `predicates` dep is needed. Clippy must be run as
 **Verify:** `cd engine && cargo test -q` → pass; `cargo clippy -- -D warnings` clean.
 **Must not:** network; touch `brain/`.
 
-### S-4 — GitHub Actions CI: cargo test, pytest, ui build ☐
+### S-4 — GitHub Actions CI: cargo test, pytest, ui build ☑ (PR #4, 6271a12)
 **PR:** one. **Depends on:** S-2, S-3.
 **Files:** `.github/workflows/ci.yml`.
 **Today:** no CI; merges are unchecked.
@@ -255,6 +255,15 @@ S-16). Cache cargo and uv.
 **Acceptance:** WHEN a PR is opened THEN two green checks `engine` and `brain` SHALL appear on it.
 **Verify:** open this step's PR, watch `gh pr checks`.
 **Must not:** run anything that needs a secret.
+**Learned:** the spec's `if: hashFiles('ui/package.json') != ''` cannot gate a *job* —
+`hashFiles()` reads `GITHUB_WORKSPACE`, which is empty before `actions/checkout` runs, so the
+job-level `if` is always `''` and the job never turns on, even after S-16. Guard moved to a step
+after checkout that writes `$GITHUB_OUTPUT`; the four real ui steps carry
+`if: steps.check.outputs.exists == 'true'` and switch themselves on when `ui/` appears.
+Action tags in the wild are far newer than habit suggests — pinned `actions/checkout@v5`,
+`astral-sh/setup-uv@v7`, `actions/setup-node@v5` after resolving every ref with
+`gh api repos/<a>/commits/<ref>` instead of guessing `@v4`. CI also greens a `CodeRabbit`
+check that self-skips on this repo; only `engine` and `brain` are real gates.
 
 ### S-5 — SQLite schema + migrations + `orgs` `[Rust]` ☐
 **PR:** one. **Depends on:** S-3.
