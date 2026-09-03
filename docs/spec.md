@@ -520,7 +520,7 @@ suite holds a **`tokio::sync::Mutex`**, not a `std` one, around every env-touchi
 the environment is read on the far side of an `await`, and clippy's `await_holding_lock`
 is right that a `std` guard must not survive one.
 
-### S-13 — `graphify serve` serves `ui/dist` and opens the browser `[Rust]` ☐
+### S-13 — `graphify serve` serves `ui/dist` and opens the browser `[Rust]` ☑ (PR #13, 1633c61)
 **PR:** one. **Depends on:** S-12.
 **Files:** `engine/src/server.rs`, `engine/build.rs`, `engine/Cargo.toml`.
 **Today:** API only.
@@ -529,6 +529,32 @@ is right that a `std` guard must not survive one.
 **Acceptance:** WHEN `ui/dist/index.html` exists at build time THEN `GET /` SHALL return it; otherwise a 200 placeholder.
 **Verify:** `cargo test -q --test serve`; manual curl.
 **Must not:** call Vapi.
+**Learned:** `rust-embed` was named here and not used: it costs fourteen new crates —
+`mime_guess`, `walkdir`, `unicase`, a second copy of the whole sha2/digest tree — to do
+what a recursive `read_dir` and `include_bytes!` do in thirty lines, and it cannot name a
+folder that does not exist yet, which is the case this step is mostly about. `engine/build.rs`
+walks `ui/dist` and writes an `include_bytes!` table into `OUT_DIR`; an absent folder is an
+empty table, which `src/ui.rs` reads as "no UI was built". **The diff adds no dependencies at
+all.** The paths in that table are absolute, because `include_bytes!` resolves against the
+generated file and that file lives in `OUT_DIR`, which has no idea where `ui/dist` is.
+`rerun-if-changed` points at a folder that usually is not there, so cargo re-runs the build
+script every build until it appears — about a second, and exactly the moment the answer is
+about to change. Once it exists, edits to embedded files are caught by rustc through
+`include_bytes!` instead.
+The placeholder is a **200, not a 404**: the API really is up, and a 404 on `/` reads like a
+broken route rather than a UI that was never built. Assets sit **outside the password gate** —
+the login form has to render before there is a session to render it with, and a bundle holds
+nothing worth protecting. `/api` and `/api/...` are the one thing the fallback refuses to
+answer with a page, because a typo'd endpoint returning HTML and a 200 is a bug that looks
+like a working request; everything else falls through to the shell, including a missing
+asset, since the fallback cannot tell a stale asset URL from a client route. Path traversal
+is impossible by construction: nothing reads the filesystem at request time, so a path either
+matches a key the compiler put in the table or matches nothing. Content types come from a
+twelve-line match rather than a crate. `--no-open` rather than `--open`, because opening the
+dashboard is what a laptop wants and the flag is for ssh and containers; the open fires after
+the bind, best effort, so a box with no browser still serves. Tests cannot change what was
+compiled, so `engine/tests/serve.rs` asserts against `ui::built()` and is meaningful in both
+worlds — a checkout with no UI, and one with a dashboard in it.
 
 ### S-14 — UI scaffold + org switcher + filter bar + first chart ☐
 **PR:** one. **Depends on:** S-12.
