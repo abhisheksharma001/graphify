@@ -2,3 +2,4 @@
 //! `main.rs` is the thin CLI shell on top.
 
 pub mod db;
+pub mod ended_reason;
