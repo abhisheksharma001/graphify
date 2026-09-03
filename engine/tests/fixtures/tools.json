@@ -1,0 +1,60 @@
+[
+ {
+  "id": "00000000-0000-4000-8000-00000000t001",
+  "orgId": "00000000-0000-0000-0000-000000000000",
+  "createdAt": "2026-08-28T22:25:37.653Z",
+  "updatedAt": "2026-09-02T02:35:10.995Z",
+  "type": "query",
+  "async": false,
+  "function": {
+   "name": "query_tool_0001_springfield",
+   "description": "Look up pricing, service catalog content, labor rates, and branch information. Call this whenever the caller asks about pricing or what a service includes.",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  }
+ },
+ {
+  "id": "00000000-0000-4000-8000-00000000t002",
+  "orgId": "00000000-0000-0000-0000-000000000000",
+  "createdAt": "2026-08-28T22:25:37.409Z",
+  "updatedAt": "2026-09-02T02:21:32.765Z",
+  "type": "transferCall",
+  "async": false,
+  "function": {
+   "name": "acmeTransferAssistant_SpringfieldProd",
+   "description": "use this tool to transfer to a human"
+  }
+ },
+ {
+  "id": "00000000-0000-4000-8000-00000000t003",
+  "orgId": "00000000-0000-0000-0000-000000000000",
+  "createdAt": "2026-08-28T22:25:38.000Z",
+  "updatedAt": "2026-09-02T02:21:33.000Z",
+  "type": "function",
+  "async": false,
+  "function": {
+   "name": "bookAppointment",
+   "description": "Book a service appointment.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "date": {
+      "type": "string"
+     },
+     "service": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "date"
+    ]
+   }
+  },
+  "server": {
+   "url": "https://example.invalid/tools/book"
+  }
+ }
+]

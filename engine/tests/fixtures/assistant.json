@@ -1,0 +1,160 @@
+{
+ "id": "00000000-0000-4000-8000-00000000a001",
+ "orgId": "00000000-0000-0000-0000-000000000000",
+ "name": "[Prod] Springfield (0001) Service",
+ "createdAt": "2026-06-30T05:45:56.357Z",
+ "updatedAt": "2026-09-02T02:35:10.995Z",
+ "latestVersion": "v7",
+ "firstMessage": "Thanks for calling Acme Truck Service. This is Alex. How can I help you?",
+ "firstMessageMode": "assistant-speaks-first",
+ "voicemailMessage": "Sorry we missed you. Please call back during business hours.",
+ "endCallMessage": "Thanks for calling. Goodbye.",
+ "endCallFunctionEnabled": true,
+ "recordingEnabled": true,
+ "maxDurationSeconds": 2331,
+ "backgroundDenoisingEnabled": true,
+ "model": {
+  "provider": "openai",
+  "model": "gpt-4.1",
+  "maxTokens": 250,
+  "temperature": 0.3,
+  "numFastTurns": 0,
+  "promptCacheRetention": "in_memory",
+  "toolIds": [
+   "00000000-0000-4000-8000-00000000t001",
+   "00000000-0000-4000-8000-00000000t002",
+   "00000000-0000-4000-8000-00000000t003"
+  ],
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are a service-desk voice assistant for a truck dealership. Greet the caller, find out what they need, look up repair orders with the query tool, book appointments, and transfer to a person when asked. [synthetic fixture prompt]"
+   }
+  ]
+ },
+ "voice": {
+  "provider": "11labs",
+  "voiceId": "voice_0001",
+  "model": "eleven_v3",
+  "stability": 0.5,
+  "similarityBoost": 0.75
+ },
+ "transcriber": {
+  "provider": "deepgram",
+  "model": "flux-general-multi",
+  "language": "en"
+ },
+ "serverMessages": [
+  "end-of-call-report",
+  "conversation-update",
+  "transfer-destination-request"
+ ],
+ "analysisPlan": {
+  "summaryPlan": {
+   "enabled": true
+  },
+  "structuredDataPlan": {
+   "enabled": true,
+   "schema": {
+    "type": "object",
+    "properties": {
+     "call_intent": {
+      "description": "what the caller is calling about",
+      "type": "string",
+      "enum": [
+       "status_update",
+       "schedule",
+       "transfer_request",
+       "general_info",
+       "other"
+      ]
+     },
+     "call_outcome": {
+      "description": "how the call ended",
+      "type": "string",
+      "enum": [
+       "resolved",
+       "partial",
+       "abandoned",
+       "transferred"
+      ]
+     },
+     "asked_if_ai": {
+      "description": "did the caller ask if they were talking to an AI",
+      "type": "boolean"
+     },
+     "transfer_reason": {
+      "description": "why the caller was transferred",
+      "type": "string",
+      "enum": [
+       "requested_person",
+       "department_request",
+       "wanted_human",
+       "agent_unable",
+       "not_applicable"
+      ]
+     },
+     "transfer_destination": {
+      "description": "where the caller was transferred",
+      "type": "string",
+      "enum": [
+       "service_advisor",
+       "parts",
+       "sales",
+       "not_transferred"
+      ]
+     },
+     "urgency_level": {
+      "description": "how urgent the situation is",
+      "type": "string",
+      "enum": [
+       "routine",
+       "soon",
+       "urgent",
+       "emergency"
+      ]
+     }
+    }
+   },
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are an expert data extractor. Extract structured data per the JSON Schema.\n\n{{schema}}\n\nOnly respond with the JSON."
+    },
+    {
+     "role": "user",
+     "content": "Here is the transcript:\n\n{{transcript}}\n\nHere is the ended reason of the call:\n\n{{endedReason}}\n\n"
+    }
+   ],
+   "timeoutSeconds": 15
+  },
+  "successEvaluationPlan": {
+   "enabled": true,
+   "rubric": "PassFail",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Mark FAIL if the assistant could not complete a service request and the caller had to be transferred. Otherwise mark SUCCESS.\n\nRubric:\n\n{{rubric}}\n\nOnly respond with the evaluation result."
+    },
+    {
+     "role": "user",
+     "content": "Here is the transcript of the call:\n\n{{transcript}}\n\nHere is the ended reason of the call:\n\n{{endedReason}}\n\n"
+    }
+   ]
+  }
+ },
+ "startSpeakingPlan": {
+  "waitSeconds": 0.4,
+  "smartEndpointingEnabled": true
+ },
+ "stopSpeakingPlan": {
+  "numWords": 2,
+  "voiceSeconds": 0.2,
+  "backoffSeconds": 1
+ },
+ "server": {
+  "url": "https://example.invalid/webhooks/vapi",
+  "timeoutSeconds": 20
+ },
+ "isServerUrlSecretSet": true
+}

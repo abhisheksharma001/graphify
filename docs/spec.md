@@ -66,6 +66,9 @@ next sync without a model call.
 - **D-11 endedReason is grouped:** customer · assistant · llm-error · tts-error ·
   stt-error · transfer-error · transport · timeout · start-error · other · unknown.
   Raw code kept.
+- **D-12 Store slim, not raw.** Parse everything the charts need into columns, keep a
+  de-duplicated `slim` JSON for the call drawer, never the 137 KB raw. Prompts live once
+  per assistant version. See "Slimming rule".
 
 ## Must never (every step inherits these)
 - Send anything but GET to Vapi.
@@ -87,16 +90,27 @@ orgs(id INTEGER PK, name TEXT, provider TEXT DEFAULT 'vapi', keep_days INTEGER D
      max_calls INTEGER NULL, created_at TEXT)
 secrets(org_id INTEGER NULL, name TEXT, ciphertext BLOB, last4 TEXT, updated_at TEXT,
         PRIMARY KEY(org_id, name))            -- name: vapi | anthropic | openai
-assistants(id TEXT PK, org_id INTEGER, name TEXT, model_provider TEXT, model TEXT,
-           system_prompt TEXT, tools JSON, raw JSON, fetched_at TEXT)
-calls(id TEXT PK, org_id INTEGER, assistant_id TEXT, created_at TEXT, started_at TEXT,
-      ended_at TEXT, duration_s REAL, ended_reason TEXT, ended_group TEXT,
+assistants(id TEXT PK, org_id INTEGER, name TEXT, version TEXT, model_provider TEXT,
+           model TEXT, voice_provider TEXT, transcriber_provider TEXT, transcriber_model TEXT,
+           system_prompt TEXT, prompt_sha256 TEXT, first_message TEXT, tool_ids JSON,
+           structured_schema JSON, fetched_at TEXT)      -- slim: ~40 KB, no raw
+tools(id TEXT PK, org_id INTEGER, name TEXT, type TEXT, is_transfer INTEGER, fetched_at TEXT)
+calls(id TEXT PK, org_id INTEGER, assistant_id TEXT, assistant_version TEXT,
+      phone_number_id TEXT, call_type TEXT, status TEXT,
+      created_at TEXT, started_at TEXT, ended_at TEXT, duration_s REAL,
+      ended_reason TEXT, ended_group TEXT,
       cost REAL, cost_stt REAL, cost_llm REAL, cost_tts REAL, cost_vapi REAL,
-      transferred INTEGER, tool_calls INTEGER, tool_failures INTEGER,
-      latency_p50_ms REAL, latency_p95_ms REAL, success_eval TEXT, summary TEXT,
-      structured JSON, transcript TEXT, recording_url TEXT, raw JSON, synced_at TEXT)
+      cost_transport REAL, cost_analysis REAL, llm_prompt_tokens INTEGER,
+      llm_completion_tokens INTEGER, llm_cached_tokens INTEGER, tts_characters INTEGER,
+      transferred INTEGER, transfer_destination TEXT,
+      tool_calls INTEGER, tool_failures INTEGER,
+      turns INTEGER, lat_turn_avg_ms REAL, lat_turn_p50_ms REAL, lat_turn_p95_ms REAL,
+      lat_model_avg_ms REAL, lat_voice_avg_ms REAL, lat_transcriber_avg_ms REAL,
+      lat_endpointing_avg_ms REAL, turn_latencies JSON,
+      success_eval TEXT, summary TEXT, structured JSON,
+      transcript TEXT, recording_url TEXT, slim JSON, synced_at TEXT)
 tool_calls(call_id TEXT, name TEXT, seconds_from_start REAL, failed INTEGER,
-           result_excerpt TEXT)
+           arguments TEXT, result_excerpt TEXT)
 patterns(id INTEGER PK, org_id INTEGER, name TEXT, criterion TEXT, assistant_ids JSON,
          plan JSON, rule JSON, chart JSON, model TEXT, mode TEXT DEFAULT 'free',
          daily_cap_usd REAL DEFAULT 1.0, sample_size INTEGER, agreement REAL,
@@ -109,6 +123,44 @@ jobs(id INTEGER PK, kind TEXT, status TEXT, input JSON, output JSON, cost_usd RE
 spend(day TEXT, org_id INTEGER, usd REAL, PRIMARY KEY(day, org_id))
 dashboard(org_id INTEGER PK, config JSON)      -- which charts are enabled, order
 ```
+
+### Verified Vapi field paths (live probe 2026-09-03, fixture `engine/tests/fixtures/call_ended_transfer.json`)
+- `GET /call?limit=100` returns the **full** call incl. `artifact`; only presigned URLs are
+  missing vs `GET /call/{id}`. No per-call GET needed. In-progress calls have empty artifacts.
+- Latency: `artifact.performanceMetrics.turnLatencies[] = {modelLatency, voiceLatency,
+  transcriberLatency, endpointingLatency, turnLatency}` (ms) plus `modelLatencyAverage`,
+  `voiceLatencyAverage`, `transcriberLatencyAverage`, `endpointingLatencyAverage`,
+  `turnLatencyAverage`, `fromTransportLatencyAverage`, `toTransportLatencyAverage`.
+- Cost: `cost` (total), `costBreakdown.{stt, llm, tts, vapi, transport, total,
+  llmPromptTokens, llmCompletionTokens, llmCachedPromptTokens, ttsCharacters,
+  analysisCostBreakdown.{summary, structuredData, successEvaluation}}`; `costs[]` per
+  provider with `type` and model name.
+- Analysis: `analysis.summary`, `analysis.successEvaluation` (string "true"/"false"),
+  `analysis.structuredData` (object; keys from the assistant's
+  `analysisPlan.structuredDataPlan.schema`).
+- Messages: `artifact.messages[]` roles `system | bot | user | tool_calls |
+  tool_call_result`; timing `time`, `endTime`, `secondsFromStart`, `duration` (ms);
+  `tool_calls[].toolCalls[].function.{name, arguments}`; `tool_call_result.{name, result,
+  toolCallId}`. `messages` (top level) and `artifact.messagesOpenAIFormatted` are
+  duplicates — drop both.
+- Transfer: `endedReason == "assistant-forwarded-call"`, `destination.{type, number}`,
+  `forwardedPhoneNumber`, `artifact.transfers[]`, and a tool call whose tool `type ==
+  "transferCall"` (resolve via `tools`).
+- Assistant (`GET /assistant?limit=100`, ~49 KB each): `name`, `latestVersion`,
+  `model.{provider, model, toolIds[], messages[role=system].content}`, `voice.provider`,
+  `transcriber.{provider, model}`, `firstMessage`, `analysisPlan.structuredDataPlan.schema`.
+  Tools are referenced by id → `GET /tool?limit=100` gives `{id, type, function.name}`.
+- `artifact.assistantActivations[] = {assistantId, assistantName, assistantVersion}` ties
+  a call to the prompt version. `GET /squad` returned `[]` on the probe org.
+
+### Slimming rule (D-12)
+Raw call 137 KB → stored `slim` ≈ 6 KB: keep `artifact.messages` with the system
+message content replaced by `{"role":"system","prompt_sha256":…}`; drop top-level
+`messages`, `messagesOpenAIFormatted`, `variables`/`variableValues`, `monitor`,
+`transport`, presigned URLs, `assistant`/`squad` inline copies. Keep `costs[]`,
+`performanceMetrics`, `analysis`, `destination`, `assistantActivations`, `recording`
+URLs (URLs only). Assistant stored once per `(id, version)` with the prompt; calls
+reference it by `assistant_version`.
 
 ## Rule DSL (what SynthesizeRule must return)
 ```json
@@ -237,25 +289,27 @@ source for `.post(` / `.patch(` / `.delete(`.
 **Verify:** `cargo test -q vapi` → pass.
 **Must not:** any non-GET; log the key.
 
-### S-8 — Extract: raw call → `calls` row + `tool_calls` `[Rust]` ☐
+### S-8 — Extract: raw call → `calls` row + `tool_calls` + slim JSON `[Rust]` ☐
 **PR:** one. **Depends on:** S-5, S-6.
-**Files:** `engine/src/extract.rs`, `engine/tests/extract.rs`, `engine/tests/fixtures/call_sample.json`.
+**Files:** `engine/src/extract.rs`, `engine/tests/extract.rs`, uses
+`engine/tests/fixtures/call_ended_transfer.json` (synthetic replica of a real payload, same keys and numbers).
 **Today:** nothing.
-**Change:** Fixture = one real Vapi call payload with phone numbers/names scrubbed
-(Abhishek supplies; see memo O-02). Map: `duration_s = endedAt - startedAt` (NULL if
-missing); `ended_group` via S-6; `cost` + `costBreakdown.{stt,llm,tts,vapi}`;
-`transferred` = endedReason `assistant-forwarded-call` OR any tool call named
-`transferCall` OR any message role `transfer`; `tool_calls` = count of `artifact.messages`
-with role `tool_calls`; `tool_failures` = `tool_call_result` messages whose result is
-empty or contains `error` (case-insensitive); `latency_p50_ms/p95_ms` from bot message
-`time` minus preceding user message `endTime` when both exist, else NULL;
-`success_eval = analysis.successEvaluation`, `summary = analysis.summary`,
-`structured = analysis.structuredData`; `transcript = artifact.transcript`;
-`recording_url = artifact.recordingUrl`. Record in the PR which fields the fixture
-actually had — that settles memo O-03.
-**Acceptance:** WHEN the fixture has 3 tool calls and 1 error result THEN `tool_calls=3, tool_failures=1`; WHEN `endedAt` is absent THEN `duration_s` IS NULL.
+**Change:** Map per "Verified Vapi field paths": `duration_s = endedAt - startedAt`
+(NULL if either missing); `ended_group` via S-6; cost columns from `costBreakdown`
+(`cost_analysis` = sum of `analysisCostBreakdown.{summary, structuredData,
+successEvaluation}`); `transferred` = endedReason `assistant-forwarded-call` OR
+`destination.number` present OR any tool call whose name is in `tools` with
+`is_transfer=1`; `transfer_destination = destination.number`; `tool_calls` = count of
+`toolCalls[]` across `tool_calls` messages; `tool_failures` = `tool_call_result` whose
+`result` is empty or contains `error`/`failed` (case-insensitive); `turns` = count of
+`turnLatencies`; `lat_*_avg_ms` from the `*LatencyAverage` fields; `lat_turn_p50/p95`
+computed from `turnLatencies[].turnLatency`; `turn_latencies` = the array as JSON;
+`success_eval`, `summary`, `structured` from `analysis`; `transcript`, `recording_url`
+(`artifact.recordingUrl`); `slim` per the Slimming rule; `assistant_version` from
+`artifact.assistantActivations[0].assistantVersion`. Missing → NULL, never 0.
+**Acceptance:** WHEN the fixture is extracted THEN `tool_calls=1, tool_failures=0, transferred=1, turns=2, lat_turn_avg_ms=4553.5, lat_turn_p95_ms=6030, cost_vapi=0.0248, success_eval="true", structured.call_intent="general_info"`, AND `slim` SHALL be under 10 KB and contain no `messagesOpenAIFormatted` key.
 **Verify:** `cargo test -q extract` → pass.
-**Must not:** download recordings; coerce missing to 0.
+**Must not:** store raw; download recordings; coerce missing to 0.
 
 ### S-9 — `graphify sync --org NAME --last N | --since DATE`, incremental + purge `[Rust]` ☐
 **PR:** one. **Depends on:** S-7, S-8.
@@ -270,19 +324,22 @@ than `orgs.keep_days` (≤ 14, reject higher) and beyond `orgs.max_calls` if set
 **Verify:** `cargo test -q sync` → pass; live once with a real key after Abhishek's go: `graphify sync --org test --last 25`.
 **Must not:** non-GET; delete rows inside the keep window.
 
-### S-10 — Assistants: `GET /assistant` list + detail into `assistants` `[Rust]` ☐
+### S-10 — Assistants + tools: slim fetch into `assistants` and `tools` `[Rust]` ☐
 **PR:** one. **Depends on:** S-9.
-**Files:** `engine/src/vapi.rs`, `engine/src/assistants.rs`, `engine/tests/assistants.rs`.
-**Today:** calls only; no prompt.
-**Change:** `graphify assistants --org NAME` fetches `GET /assistant` (paginated like
-calls) then stores name, `model.provider`, `model.model`, system prompt (first
-`model.messages[]` with `role == "system"`, else NULL), `model.tools` / `toolIds`, raw.
-`GET /squad` members are flattened to their assistant ids. `sync` calls this first.
-Field paths are **assumed** until the first live run — the PR must confirm them and
-correct the memo.
-**Acceptance:** WHEN a mocked assistant with a system message is fetched THEN `assistants.system_prompt` SHALL equal that content.
-**Verify:** `cargo test -q assistants` → pass; live: `graphify assistants --org test` lists names.
-**Must not:** non-GET.
+**Files:** `engine/src/vapi.rs`, `engine/src/assistants.rs`, `engine/tests/assistants.rs`,
+uses `engine/tests/fixtures/assistant.json` and `engine/tests/fixtures/tools.json`.
+**Today:** calls only; no prompt, tool ids unresolved.
+**Change:** `graphify assistants --org NAME`: `GET /tool?limit=100` (paginate) →
+`tools(id, name=function.name, type, is_transfer = type == "transferCall")`; then
+`GET /assistant?limit=100` (paginate) → slim columns per data model; `system_prompt` =
+first `model.messages[]` with `role == "system"` → `.content`, `prompt_sha256` of it;
+`structured_schema = analysisPlan.structuredDataPlan.schema` (NULL if disabled). Do not
+store the raw 49 KB. Skip write when `prompt_sha256` and `version` unchanged. `sync`
+runs this first. `GET /squad` members flattened (probe org had none; keep the code path
+small).
+**Acceptance:** WHEN the assistant fixture is parsed THEN `system_prompt` SHALL start with `You are a service-desk`, `model="gpt-4.1"`, `transcriber_model="flux-general-multi"`, `tool_ids` SHALL have 3 entries, and `structured_schema.properties.call_intent.enum` SHALL contain `"transfer_request"`; WHEN the tools fixture is parsed THEN the `transferCall` tool SHALL have `is_transfer=1`.
+**Verify:** `cargo test -q assistants` → pass; live: `graphify assistants --org rush` prints 100 names.
+**Must not:** non-GET; store the raw assistant.
 
 ### S-11 — Secrets store: encrypted at rest, env override, never returned `[Rust]` ☐
 **PR:** one. **Depends on:** S-5.
@@ -342,7 +399,7 @@ stacked bars per bucket, one colour per ended group, raw reason on hover. "—" 
 **Files:** `ui/src/charts/*.tsx`.
 **Today:** one chart.
 **Change:** Tool failures by tool name (bar) and per bucket (line); transfers per bucket;
-latency p50/p95 per bucket; cost per bucket with stt/llm/tts/vapi stack; duration avg;
+turn latency p50/p95 per bucket with model / voice / transcriber / endpointing averages as a stacked breakdown; cost per bucket with stt/llm/tts/vapi/analysis stack; tokens per call; duration avg;
 calls per assistant. All from `/api/stats`.
 **Acceptance:** WHEN stats contain `tool_failures_by_name` with 2 tools THEN the tools chart SHALL show 2 bars with those names.
 **Verify:** `pnpm build` clean; screenshot.

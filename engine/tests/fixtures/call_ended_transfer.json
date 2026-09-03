@@ -1,0 +1,413 @@
+{
+ "id": "00000000-0000-7000-8000-000000000c01",
+ "assistantId": "00000000-0000-4000-8000-00000000a001",
+ "phoneNumberId": "00000000-0000-4000-8000-00000000p001",
+ "type": "inboundPhoneCall",
+ "startedAt": "2026-09-03T17:24:27.607Z",
+ "endedAt": "2026-09-03T17:24:57.406Z",
+ "transcript": "AI: Thanks for calling Acme Truck Service. This is Alex. How can I help you?\nUser: Can I speak with someone at the front desk, please?\nAI: I can get you to someone up front. If it is something quick like an appointment or our hours I can help right now. What is going on?\nUser: I need to review an estimate. I would like to speak to somebody.\nAI: I will get you transferred. Please hold for a moment.\n",
+ "recordingUrl": "https://example.invalid/recordings/c01-mono.wav",
+ "summary": "The caller asked to speak with the front desk to review an estimate. The assistant offered to help directly, the caller preferred a person, and the assistant transferred the call.",
+ "createdAt": "2026-09-03T17:24:26.633Z",
+ "updatedAt": "2026-09-03T17:25:03.941Z",
+ "orgId": "00000000-0000-0000-0000-000000000000",
+ "cost": 0.0661,
+ "customer": {
+  "number": "+15550000000"
+ },
+ "status": "ended",
+ "endedReason": "assistant-forwarded-call",
+ "messages": [
+  {
+   "role": "system",
+   "time": 1788456267409,
+   "message": "You are a service-desk voice assistant for a truck dealership. [synthetic fixture prompt]",
+   "secondsFromStart": 0
+  },
+  {
+   "role": "bot",
+   "time": 1788456268287,
+   "source": "",
+   "endTime": 1788456272007,
+   "message": "Thanks for calling Acme Truck Service. This is Alex. How can I help you?",
+   "duration": 3720,
+   "assistantId": "00000000-0000-4000-8000-00000000a001",
+   "assistantName": "[Prod] Springfield (0001) Service",
+   "secondsFromStart": 0.68
+  },
+  {
+   "role": "user",
+   "time": 1788456274881,
+   "endTime": 1788456277478,
+   "message": "Can I speak with someone at the front desk, please?",
+   "duration": 2597,
+   "secondsFromStart": 7.274
+  },
+  {
+   "role": "bot",
+   "time": 1788456281126,
+   "source": "",
+   "endTime": 1788456289287,
+   "message": "I can get you to someone up front. If it is something quick like an appointment or our hours I can help right now. What is going on?",
+   "duration": 8161,
+   "assistantId": "00000000-0000-4000-8000-00000000a001",
+   "assistantName": "[Prod] Springfield (0001) Service",
+   "secondsFromStart": 13.519
+  },
+  {
+   "role": "user",
+   "time": 1788456291361,
+   "endTime": 1788456294198,
+   "message": "I need to review an estimate. I would like to speak to somebody.",
+   "duration": 2837,
+   "secondsFromStart": 23.754
+  },
+  {
+   "role": "tool_calls",
+   "time": 1788456294940,
+   "message": "",
+   "toolCalls": [
+    {
+     "id": "call_0000000000000000000001",
+     "type": "function",
+     "function": {
+      "name": "acmeTransferAssistant_SpringfieldProd",
+      "arguments": "{\"destination\": \"+15550000001\"}"
+     }
+    }
+   ],
+   "secondsFromStart": 27.333
+  },
+  {
+   "role": "bot",
+   "time": 1788456295253,
+   "source": "",
+   "endTime": 1788456297207,
+   "message": "I will get you transferred. Please hold for a moment.",
+   "duration": 2726,
+   "assistantId": "00000000-0000-4000-8000-00000000a001",
+   "assistantName": "[Prod] Springfield (0001) Service",
+   "secondsFromStart": 27.646
+  },
+  {
+   "name": "acmeTransferAssistant_SpringfieldProd",
+   "role": "tool_call_result",
+   "time": 1788456297268,
+   "result": "Transfer initiated.",
+   "toolCallId": "call_0000000000000000000001",
+   "secondsFromStart": 29.661
+  }
+ ],
+ "maxDurationSeconds": 2331,
+ "stereoRecordingUrl": "https://example.invalid/recordings/c01-stereo.wav",
+ "costBreakdown": {
+  "transport": 0,
+  "stt": 0,
+  "llm": 0,
+  "tts": 0,
+  "vapi": 0.0248,
+  "chat": 0,
+  "total": 0.0661,
+  "llmPromptTokens": 30002,
+  "llmCompletionTokens": 74,
+  "llmCachedPromptTokens": 17664,
+  "ttsCharacters": 199,
+  "analysisCostBreakdown": {
+   "structuredData": 0.0075,
+   "structuredDataCachedPromptTokens": 0,
+   "structuredDataCompletionTokens": 207,
+   "structuredDataPromptTokens": 1477,
+   "structuredOutput": 0,
+   "structuredOutputCachedPromptTokens": 0,
+   "structuredOutputCompletionTokens": 0,
+   "structuredOutputPromptTokens": 0,
+   "successEvaluation": 0.0324,
+   "successEvaluationCachedPromptTokens": 0,
+   "successEvaluationCompletionTokens": 36,
+   "successEvaluationPromptTokens": 10627,
+   "summary": 0.0014,
+   "summaryCachedPromptTokens": 0,
+   "summaryCompletionTokens": 51,
+   "summaryPromptTokens": 196
+  },
+  "knowledgeBaseCost": 0,
+  "voicemailDetectionCost": 0
+ },
+ "phoneCallProvider": "twilio",
+ "phoneCallProviderId": "CA00000000000000000000000000000000",
+ "forwardedPhoneNumber": "+15550000001",
+ "phoneCallTransport": "pstn",
+ "phoneCallProviderBypassEnabled": false,
+ "analysis": {
+  "summary": "The caller asked to speak with the front desk to review an estimate. The assistant offered to help directly, the caller preferred a person, and the assistant transferred the call.",
+  "structuredData": {
+   "call_intent": "general_info",
+   "call_outcome": "transferred",
+   "asked_if_ai": false,
+   "transfer_reason": "department_request",
+   "transfer_destination": "service_advisor",
+   "urgency_level": "routine"
+  },
+  "successEvaluation": "true"
+ },
+ "artifact": {
+  "recordingUrl": "https://example.invalid/recordings/c01-mono.wav",
+  "stereoRecordingUrl": "https://example.invalid/recordings/c01-stereo.wav",
+  "recording": {
+   "stereoUrl": "https://example.invalid/recordings/c01-stereo.wav",
+   "mono": {
+    "combinedUrl": "https://example.invalid/recordings/c01-mono.wav",
+    "assistantUrl": "https://example.invalid/recordings/c01-assistant.wav",
+    "customerUrl": "https://example.invalid/recordings/c01-customer.wav"
+   }
+  },
+  "messages": [
+   {
+    "role": "system",
+    "time": 1788456267409,
+    "message": "You are a service-desk voice assistant for a truck dealership. [synthetic fixture prompt]",
+    "secondsFromStart": 0
+   },
+   {
+    "role": "bot",
+    "time": 1788456268287,
+    "source": "",
+    "endTime": 1788456272007,
+    "message": "Thanks for calling Acme Truck Service. This is Alex. How can I help you?",
+    "duration": 3720,
+    "assistantId": "00000000-0000-4000-8000-00000000a001",
+    "assistantName": "[Prod] Springfield (0001) Service",
+    "secondsFromStart": 0.68
+   },
+   {
+    "role": "user",
+    "time": 1788456274881,
+    "endTime": 1788456277478,
+    "message": "Can I speak with someone at the front desk, please?",
+    "duration": 2597,
+    "secondsFromStart": 7.274
+   },
+   {
+    "role": "bot",
+    "time": 1788456281126,
+    "source": "",
+    "endTime": 1788456289287,
+    "message": "I can get you to someone up front. If it is something quick like an appointment or our hours I can help right now. What is going on?",
+    "duration": 8161,
+    "assistantId": "00000000-0000-4000-8000-00000000a001",
+    "assistantName": "[Prod] Springfield (0001) Service",
+    "secondsFromStart": 13.519
+   },
+   {
+    "role": "user",
+    "time": 1788456291361,
+    "endTime": 1788456294198,
+    "message": "I need to review an estimate. I would like to speak to somebody.",
+    "duration": 2837,
+    "secondsFromStart": 23.754
+   },
+   {
+    "role": "tool_calls",
+    "time": 1788456294940,
+    "message": "",
+    "toolCalls": [
+     {
+      "id": "call_0000000000000000000001",
+      "type": "function",
+      "function": {
+       "name": "acmeTransferAssistant_SpringfieldProd",
+       "arguments": "{\"destination\": \"+15550000001\"}"
+      }
+     }
+    ],
+    "secondsFromStart": 27.333
+   },
+   {
+    "role": "bot",
+    "time": 1788456295253,
+    "source": "",
+    "endTime": 1788456297207,
+    "message": "I will get you transferred. Please hold for a moment.",
+    "duration": 2726,
+    "assistantId": "00000000-0000-4000-8000-00000000a001",
+    "assistantName": "[Prod] Springfield (0001) Service",
+    "secondsFromStart": 27.646
+   },
+   {
+    "name": "acmeTransferAssistant_SpringfieldProd",
+    "role": "tool_call_result",
+    "time": 1788456297268,
+    "result": "Transfer initiated.",
+    "toolCallId": "call_0000000000000000000001",
+    "secondsFromStart": 29.661
+   }
+  ],
+  "messagesOpenAIFormatted": [
+   {
+    "role": "system",
+    "content": "You are a service-desk voice assistant for a truck dealership. [synthetic fixture prompt]"
+   },
+   {
+    "role": "assistant",
+    "content": "Thanks for calling Acme Truck Service. This is Alex. How can I help you?"
+   },
+   {
+    "role": "user",
+    "content": "Can I speak with someone at the front desk, please?"
+   },
+   {
+    "role": "assistant",
+    "content": "I can get you to someone up front. If it is something quick like an appointment or our hours I can help right now. What is going on?"
+   },
+   {
+    "role": "user",
+    "content": "I need to review an estimate. I would like to speak to somebody."
+   },
+   {
+    "role": "assistant",
+    "content": "I will get you transferred. Please hold for a moment."
+   }
+  ],
+  "transcript": "AI: Thanks for calling Acme Truck Service. This is Alex. How can I help you?\nUser: Can I speak with someone at the front desk, please?\nAI: I can get you to someone up front. If it is something quick like an appointment or our hours I can help right now. What is going on?\nUser: I need to review an estimate. I would like to speak to somebody.\nAI: I will get you transferred. Please hold for a moment.\n",
+  "logUrl": "https://example.invalid/logs/c01.log",
+  "nodes": [],
+  "assistantActivations": [
+   {
+    "assistantName": "[Prod] Springfield (0001) Service",
+    "assistantId": "00000000-0000-4000-8000-00000000a001",
+    "assistantVersion": "v7"
+   }
+  ],
+  "variableValues": {
+   "now": "Sep 3, 2026, 5:24 PM UTC",
+   "customer": {
+    "number": "+15550000000"
+   }
+  },
+  "variables": {
+   "now": "Sep 3, 2026, 5:24 PM UTC",
+   "customer": {
+    "number": "+15550000000"
+   }
+  },
+  "performanceMetrics": {
+   "turnLatencies": [
+    {
+     "modelLatency": 1704,
+     "voiceLatency": 1292,
+     "transcriberLatency": 2786,
+     "endpointingLatency": 205,
+     "turnLatency": 6030
+    },
+    {
+     "modelLatency": 0,
+     "voiceLatency": 0,
+     "transcriberLatency": 2313,
+     "endpointingLatency": 0,
+     "turnLatency": 3077
+    }
+   ],
+   "modelLatencyAverage": 852,
+   "voiceLatencyAverage": 646,
+   "transcriberLatencyAverage": 2549.5,
+   "endpointingLatencyAverage": 102.5,
+   "turnLatencyAverage": 4553.5,
+   "fromTransportLatencyAverage": 20,
+   "toTransportLatencyAverage": 49
+  },
+  "scorecards": {},
+  "transfers": []
+ },
+ "destination": {
+  "type": "number",
+  "number": "+15550000001",
+  "description": "Default transfer destination for general inquiries.",
+  "transferPlan": {
+   "mode": "blind-transfer",
+   "sipVerb": "refer"
+  },
+  "numberE164CheckEnabled": true
+ },
+ "costs": [
+  {
+   "type": "transcriber",
+   "transcriber": {
+    "provider": "deepgram",
+    "model": "flux-general-multi"
+   },
+   "minutes": 0.5,
+   "cost": 0
+  },
+  {
+   "type": "model",
+   "model": {
+    "provider": "openai",
+    "model": "gpt-4.1"
+   },
+   "promptTokens": 30002,
+   "completionTokens": 74,
+   "cost": 0
+  },
+  {
+   "type": "voice",
+   "voice": {
+    "provider": "11labs",
+    "voiceId": "voice_0001",
+    "model": "eleven_v3"
+   },
+   "characters": 199,
+   "cost": 0
+  },
+  {
+   "type": "vapi",
+   "subType": "normal",
+   "minutes": 0.4967,
+   "cost": 0.024835
+  },
+  {
+   "type": "analysis",
+   "analysisType": "summary",
+   "model": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929"
+   },
+   "promptTokens": 196,
+   "completionTokens": 51,
+   "cost": 0.001353
+  },
+  {
+   "type": "analysis",
+   "analysisType": "structuredData",
+   "model": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929"
+   },
+   "promptTokens": 1477,
+   "completionTokens": 207,
+   "cost": 0.007536
+  },
+  {
+   "type": "analysis",
+   "analysisType": "successEvaluation",
+   "model": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929"
+   },
+   "promptTokens": 10627,
+   "completionTokens": 36,
+   "cost": 0.032421
+  }
+ ],
+ "monitor": {
+  "listenUrl": "wss://example.invalid/monitor/c01/listen",
+  "controlUrl": "https://example.invalid/monitor/c01/control"
+ },
+ "transport": {
+  "callSid": "CA00000000000000000000000000000000",
+  "provider": "twilio",
+  "callToken": "[REDACTED]",
+  "accountSid": "[REDACTED]",
+  "conversationType": "voice"
+ },
+ "assistantVersion": "v7"
+}
