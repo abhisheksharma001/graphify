@@ -290,7 +290,7 @@ stale. Two schema additions beyond the Data model, both needed: `orgs.name` is
 resolve to a single shared `rusqlite`, so no duplicate-type mismatch; bundled SQLite makes
 the engine CI job ~1m instead of ~25s.
 
-### S-6 — endedReason → group `[Rust]` ☐
+### S-6 — endedReason → group `[Rust]` ☑ (PR #6, c7eb477)
 **PR:** one. **Depends on:** S-3.
 **Files:** `engine/src/ended_reason.rs`, `engine/tests/ended_reason.rs`.
 **Today:** nothing.
@@ -305,6 +305,17 @@ unknown; else other. Source: https://docs.vapi.ai/calls/call-ended-reason.
 **Acceptance:** WHEN `group(Some("call.in-progress.error-transfer-failed"))` THEN `transfer-error`; WHEN `group(None)` THEN `unknown`.
 **Verify:** `cargo test -q ended_reason` with ≥ 15 cases covering all 11 groups → pass.
 **Must not:** network.
+**Learned:** the ordered rules have one collision the spec did not see: `voicemail`
+contains `voice`, so the tts rule swallowed it before the customer rule could claim it —
+every voicemail call would have charted as a TTS provider failure, invisibly. The tts rule
+now skips codes starting with `voicemail`. Three readings the spec left open, all
+implemented and reversible: `-4dd-`/`-5dd-` means an embedded HTTP status (`-4`/`-5` +
+two digits + `-`), because taken as four literal characters no real Vapi code contains it
+and the rule would be dead; codes are trimmed and lowercased before matching, since a case
+variant landing in `other` corrupts a chart with no error; blank (`Some("")`) is `unknown`,
+not `other`. Verify is `cargo test -q --test ended_reason` — the bare-name form runs zero
+tests, same false green as S-5. Test is a 31-case table plus a guard test asserting all
+eleven group names appear, so a future rule edit that drops a group fails loudly.
 
 ### S-7 — Vapi client: read-only paginated `GET /call` `[Rust]` ☐
 **PR:** one. **Depends on:** S-3.
