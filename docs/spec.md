@@ -556,7 +556,7 @@ the bind, best effort, so a box with no browser still serves. Tests cannot chang
 compiled, so `engine/tests/serve.rs` asserts against `ui::built()` and is meaningful in both
 worlds — a checkout with no UI, and one with a dashboard in it.
 
-### S-14 — UI scaffold + org switcher + filter bar + first chart ☐
+### S-14 — UI scaffold + org switcher + filter bar + first chart ☑ (PR #14, 61b7300)
 **PR:** one. **Depends on:** S-12.
 **Files:** `ui/` (new), `.github/workflows/ci.yml` (enable ui job).
 **Today:** no UI.
@@ -567,6 +567,41 @@ stacked bars per bucket, one colour per ended group, raw reason on hover. "—" 
 **Acceptance:** WHEN the window preset changes THEN the chart SHALL refetch `/api/stats` and re-render.
 **Verify:** `cd ui && pnpm i && pnpm build` clean; screenshot in PR.
 **Must not:** call Vapi from the browser; hold keys in the browser.
+**Learned:** The counts do not come from `/api/stats`. It counts ended groups over the whole
+selection — `by_ended_group` is one flat map and `per_bucket` carries no breakdown — so it
+structurally cannot draw a stack. Fetching stats once per group with `&ended_group=` is up to
+twelve requests, gives only selection-wide reasons, and is **wrong** under `last`: the newest
+250 calls *of a group* is not that group's share of the newest 250 calls. `/api/calls` returns
+the same selection row by row with each row's group and reason on it — one request, exact
+under `last`, and the only way to put a bucket's own raw reasons in that bucket's tooltip.
+`/api/stats` still supplies the axis (bucket size, every bucket including empty ones, cost per
+bucket), so the acceptance holds and the two can never disagree. That is also why the filter
+bar **always sends a `last`**: `/api/calls` is a page, and a page with no size is a page of
+200 — a cap the reader never asked for and would never see. With one named, the chart can say
+when the cap is what ended the selection.
+Eleven ended groups, eight hues. `transport`, `start-error` and `other` fold into a grey
+residual bucket rather than take a generated ninth colour no colourblind reader could tell
+from the eight; grey is chart chrome, not a ninth hue. The fold is fixed, never data-driven,
+so a filter that changes which groups are on screen never repaints the ones that stay, and
+nothing is hidden by it — the residual is named in the legend, counted in the table, and
+hovering it lists the reasons it covers. The hue order came out of running the `dataviz`
+palette validator over candidate orderings and keeping one that clears every adjacent-pair
+gate in both modes (light CVD ΔE 9.1 / normal 19.6; dark 8.4 / 19.3). Three light-mode hues
+sit under 3:1 against the surface; the table view under the chart is the required relief, so
+it is not optional decoration. Green went on `customer` on purpose — it is the one hue read as
+a verdict, and the normal ending is the only place that verdict is true.
+Marks: a 2px surface gap taken off each segment's **own top** so it separates from the one
+above; a 4px cap on the topmost segment only, square at the baseline; bars capped at 24px with
+the band's leftover left as air; solid hairline gridlines. Interior stacked segments get no
+direct labels — they cannot fit them — so the legend, axis, tooltip and table carry the
+values. On refetch the previous render holds at reduced opacity, and "stale" is derived by
+tagging the chart with the query that produced it rather than kept in a second state.
+CI: `pnpm/action-setup` reads `packageManager` from a `package.json`, and this repo has none
+at the root, so the job passes `package_json_file: ui/package.json`. The old existence gate is
+gone. And `ui/dist` existing at last ran `engine/tests/serve.rs`'s `ui::built() == true` branch
+for the first time, against a real Vite build rather than an empty table.
+Not done: the chart's hover has no keyboard equivalent — recharts bars are not focusable. The
+table view is the reachable twin, and carries every value the tooltip does.
 
 ### S-15 — Chart pack A: tools, transfers, latency, cost, duration, per-assistant ☐
 **PR:** one. **Depends on:** S-14.
