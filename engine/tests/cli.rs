@@ -84,3 +84,16 @@ fn serve_is_a_subcommand() {
         .assert()
         .success();
 }
+
+/// The flag exists and is spelled the way the docs say. A default that opens a browser
+/// needs a way off it for anyone running this over ssh or in a container.
+#[test]
+fn serve_takes_no_open() {
+    let output = Command::cargo_bin("graphify")
+        .unwrap()
+        .args(["serve", "--help"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    assert!(stdout.contains("--no-open"), "stdout was: {stdout}");
+}

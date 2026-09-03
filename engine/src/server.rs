@@ -1,7 +1,7 @@
 //! The HTTP API. Nine routes over the local database, plus a login when a password is
-//! configured. Everything here is read-only against Vapi and write-only against SQLite:
-//! the only outbound request the whole file can make is the connectivity test, and that
-//! one is a `GET`.
+//! configured, plus the dashboard itself on everything left over. Everything here is
+//! read-only against Vapi and write-only against SQLite: the only outbound request the
+//! whole file can make is the connectivity test, and that one is a `GET`.
 //!
 //! Bound to loopback unless told otherwise. A dashboard that reaches a Vapi key is not
 //! something to put on `0.0.0.0` because a default said so.
@@ -10,6 +10,7 @@ use crate::auth::{self, Auth};
 use crate::db::Db;
 use crate::queries::{self, Filters};
 use crate::secrets::{self, Secrets};
+use crate::ui;
 use crate::vapi::{self, Retry};
 use anyhow::Result;
 use axum::extract::{Path, RawQuery, Request, State};
@@ -75,11 +76,29 @@ pub fn bind_addr() -> String {
 }
 
 /// Serve until the process is stopped, printing the address actually bound.
-pub async fn serve(app: App, addr: &str) -> Result<()> {
+pub async fn serve(app: App, addr: &str, open: bool) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("graphify listening on http://{}", listener.local_addr()?);
+    let url = format!("http://{}", listener.local_addr()?);
+    println!("graphify listening on {url}");
+    // After the bind, so the tab that opens finds something listening.
+    if open {
+        open_browser(&url);
+    }
     axum::serve(listener, router(app)).await?;
     Ok(())
+}
+
+/// Best effort, and deliberately so: a container or a headless box has no browser to open,
+/// and that is not a reason to refuse to serve. The address went to stdout either way.
+fn open_browser(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
 pub fn router(app: App) -> Router {
@@ -99,6 +118,8 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/api/login", post(login))
         .merge(guarded)
+        // Outside the gate: the login form has to render before there is a session.
+        .fallback(ui::handler)
         .with_state(app)
 }
 

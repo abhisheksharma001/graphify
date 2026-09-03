@@ -10,6 +10,7 @@ pub mod queries;
 pub mod secrets;
 pub mod server;
 pub mod sync;
+pub mod ui;
 pub mod vapi;
 
 /// The clock, in one place, so the modules that stamp rows do not each own one and the

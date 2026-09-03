@@ -36,8 +36,12 @@ pub enum Command {
         #[arg(long)]
         org: String,
     },
-    /// Serve the HTTP API on `GRAPHIFY_BIND`, or `127.0.0.1:3737`.
-    Serve,
+    /// Serve the dashboard and its API on `GRAPHIFY_BIND`, or `127.0.0.1:3737`.
+    Serve {
+        /// Stay in the terminal instead of opening the dashboard in a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 impl Cli {
@@ -77,11 +81,15 @@ impl Cli {
                 println!("{report}");
                 Ok(())
             }
-            Command::Serve => {
+            Command::Serve { no_open } => {
                 let db = db::Db::open(db::default_path())?;
                 let store = secrets::Secrets::open(secrets::default_key_path())?;
                 let app = server::App::new(db, store, auth::Auth::from_env());
-                tokio::runtime::Runtime::new()?.block_on(server::serve(app, &server::bind_addr()))
+                tokio::runtime::Runtime::new()?.block_on(server::serve(
+                    app,
+                    &server::bind_addr(),
+                    !no_open,
+                ))
             }
         }
     }
