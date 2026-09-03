@@ -2,8 +2,9 @@
 //! shapes the sync path produces. No ORM: plain SQL, one statement per helper.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const INIT: &str = include_str!("../migrations/0001_init.sql");
@@ -230,5 +231,91 @@ impl Db {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn org_by_name(&self, name: &str) -> Result<Option<Org>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, name, provider, keep_days, max_calls, created_at
+                   FROM orgs WHERE name = ?1",
+                params![name],
+                |r| {
+                    Ok(Org {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        provider: r.get(2)?,
+                        keep_days: r.get(3)?,
+                        max_calls: r.get(4)?,
+                        created_at: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn count_calls(&self, org_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM calls WHERE org_id = ?1",
+            params![org_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Newest `created_at` stored for the org, or NULL if it has no calls yet. Used as the
+    /// incremental cutoff, so it must be the raw Vapi string, not a reformatted one.
+    pub fn newest_call_created_at(&self, org_id: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row(
+            "SELECT max(created_at) FROM calls WHERE org_id = ?1",
+            params![org_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Names of the org's tools whose `type` is `transferCall`. Empty until S-10 fills
+    /// `tools`, which only means transfers get spotted by ended reason and destination.
+    pub fn transfer_tool_names(&self, org_id: i64) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM tools
+              WHERE org_id = ?1 AND is_transfer = 1 AND name IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![org_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
+    }
+
+    /// Enforce retention: drop calls older than `keep_days`, then drop everything past the
+    /// newest `max_calls`. Returns how many rows went.
+    ///
+    /// A call with no `created_at` has an unknown age, so the age sweep leaves it alone
+    /// rather than guess it is old. The `max_calls` sweep sorts it last, since unknown
+    /// recency is not recency.
+    pub fn purge_calls(
+        &mut self,
+        org_id: i64,
+        keep_days: i64,
+        max_calls: Option<i64>,
+    ) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut gone = tx.execute(
+            "DELETE FROM calls
+              WHERE org_id = ?1 AND created_at IS NOT NULL
+                AND julianday(created_at) < julianday('now', ?2)",
+            params![org_id, format!("-{keep_days} days")],
+        )?;
+        if let Some(max) = max_calls {
+            gone += tx.execute(
+                "DELETE FROM calls
+                  WHERE org_id = ?1 AND id NOT IN (
+                        SELECT id FROM calls WHERE org_id = ?1
+                         ORDER BY created_at DESC LIMIT ?2)",
+                params![org_id, max],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM tool_calls WHERE call_id NOT IN (SELECT id FROM calls)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(gone)
     }
 }
