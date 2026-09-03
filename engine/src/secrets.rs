@@ -52,7 +52,7 @@ impl fmt::Display for Secret {
 }
 
 /// What the settings screen may know about a secret: that it exists, and its tail.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Status {
     pub name: String,
     pub set: bool,

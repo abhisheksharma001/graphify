@@ -1,8 +1,8 @@
 //! Argument parsing and dispatch. Every subcommand the engine grows lands here.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use graphify::{assistants, db, sync, vapi};
+use graphify::{assistants, auth, db, secrets, server, sync, vapi};
 
 /// The graphify engine: pulls Vapi calls, stores them, serves the dashboard.
 #[derive(Parser)]
@@ -36,6 +36,8 @@ pub enum Command {
         #[arg(long)]
         org: String,
     },
+    /// Serve the HTTP API on `GRAPHIFY_BIND`, or `127.0.0.1:3737`.
+    Serve,
 }
 
 impl Cli {
@@ -46,8 +48,8 @@ impl Cli {
                 Ok(())
             }
             Command::Sync { org, last, since } => {
-                let key = vapi_key()?;
                 let mut db = db::Db::open(db::default_path())?;
+                let key = vapi_key(&db, &org)?;
                 let opts = sync::Opts {
                     org,
                     last,
@@ -60,8 +62,8 @@ impl Cli {
                 Ok(())
             }
             Command::Assistants { org } => {
-                let key = vapi_key()?;
                 let db = db::Db::open(db::default_path())?;
+                let key = vapi_key(&db, &org)?;
                 let opts = assistants::Opts {
                     org,
                     base: vapi::DEFAULT_BASE.to_string(),
@@ -75,17 +77,27 @@ impl Cli {
                 println!("{report}");
                 Ok(())
             }
+            Command::Serve => {
+                let db = db::Db::open(db::default_path())?;
+                let store = secrets::Secrets::open(secrets::default_key_path())?;
+                let app = server::App::new(db, store, auth::Auth::from_env());
+                tokio::runtime::Runtime::new()?.block_on(server::serve(app, &server::bind_addr()))
+            }
         }
     }
 }
 
-/// Read before the database is opened, so a keyless run writes no file and sends nothing.
-/// The encrypted store (S-11) is where a key set through the UI will come from; wiring
-/// these subcommands to it waits for S-12, which is what gives an org a key in the first
-/// place. The environment wins over the store either way, so this stays correct.
-fn vapi_key() -> Result<String> {
-    std::env::var("VAPI_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-        .context("no Vapi key: set VAPI_API_KEY")
+/// The org's Vapi key: the environment first, then the encrypted store. This is what S-11
+/// deferred to S-12 — until the API existed there was no way to put a key in the store, so
+/// there was nothing to read. The environment still wins, so a setup that worked before
+/// works unchanged.
+fn vapi_key(db: &db::Db, org: &str) -> Result<String> {
+    let Some(row) = db.org_by_name(org)? else {
+        bail!("no org named {org}");
+    };
+    let store = secrets::Secrets::open(secrets::default_key_path())?;
+    match store.get(db, row.id, "vapi")? {
+        Some(key) => Ok(key.expose().to_string()),
+        None => bail!("no Vapi key for org {org}: set VAPI_API_KEY or store one via the API"),
+    }
 }

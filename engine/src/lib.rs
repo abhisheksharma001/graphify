@@ -2,10 +2,13 @@
 //! `main.rs` is the thin CLI shell on top.
 
 pub mod assistants;
+pub mod auth;
 pub mod db;
 pub mod ended_reason;
 pub mod extract;
+pub mod queries;
 pub mod secrets;
+pub mod server;
 pub mod sync;
 pub mod vapi;
 

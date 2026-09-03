@@ -2,7 +2,7 @@
 //! shapes the sync path produces. No ORM: plain SQL, one statement per helper.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use rusqlite_migration::{Migrations, M};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,9 @@ pub fn default_path() -> PathBuf {
     }
 }
 
-/// One org row, as `list_orgs` returns it.
-#[derive(Debug)]
+/// One org row, as `list_orgs` returns it. Serialised straight to the API: an org holds
+/// no secret, only the name and the retention settings.
+#[derive(Debug, serde::Serialize)]
 pub struct Org {
     pub id: i64,
     pub name: String,
@@ -119,6 +120,20 @@ pub struct Assistant {
     pub fetched_at: Option<String>,
 }
 
+/// The `orgs` columns every lookup selects, in the order `org_row` reads them.
+const ORG_COLUMNS: &str = "id, name, provider, keep_days, max_calls, created_at";
+
+fn org_row(r: &Row) -> rusqlite::Result<Org> {
+    Ok(Org {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        provider: r.get(2)?,
+        keep_days: r.get(3)?,
+        max_calls: r.get(4)?,
+        created_at: r.get(5)?,
+    })
+}
+
 pub struct Db {
     conn: Connection,
 }
@@ -142,6 +157,12 @@ impl Db {
         Ok(Self { conn })
     }
 
+    /// The open connection, for `queries`, which is read-only. Writes keep going through
+    /// the helpers below so every statement that changes a row is spelled out in one file.
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn create_org(&self, name: &str) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO orgs (name, created_at) VALUES (?1, datetime('now'))",
@@ -151,19 +172,10 @@ impl Db {
     }
 
     pub fn list_orgs(&self) -> Result<Vec<Org>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, provider, keep_days, max_calls, created_at FROM orgs ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(Org {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                provider: r.get(2)?,
-                keep_days: r.get(3)?,
-                max_calls: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {ORG_COLUMNS} FROM orgs ORDER BY id"))?;
+        let rows = stmt.query_map([], org_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -269,19 +281,20 @@ impl Db {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, name, provider, keep_days, max_calls, created_at
-                   FROM orgs WHERE name = ?1",
+                &format!("SELECT {ORG_COLUMNS} FROM orgs WHERE name = ?1"),
                 params![name],
-                |r| {
-                    Ok(Org {
-                        id: r.get(0)?,
-                        name: r.get(1)?,
-                        provider: r.get(2)?,
-                        keep_days: r.get(3)?,
-                        max_calls: r.get(4)?,
-                        created_at: r.get(5)?,
-                    })
-                },
+                org_row,
+            )
+            .optional()?)
+    }
+
+    pub fn org_by_id(&self, id: i64) -> Result<Option<Org>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {ORG_COLUMNS} FROM orgs WHERE id = ?1"),
+                params![id],
+                org_row,
             )
             .optional()?)
     }
