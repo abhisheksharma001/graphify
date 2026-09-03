@@ -405,7 +405,7 @@ the fetch size. Unknown age is not old age — the age sweep skips calls with no
 costs neither a request nor a DELETE. chrono needs feature `now` (SystemTime) for
 `Utc::now()`; `clock` would drag `iana-time-zone` back in for a local zone nothing wants.
 
-### S-10 — Assistants + tools: slim fetch into `assistants` and `tools` `[Rust]` ☐
+### S-10 — Assistants + tools: slim fetch into `assistants` and `tools` `[Rust]` ☑ (PR #10, 1762a65)
 **PR:** one. **Depends on:** S-9.
 **Files:** `engine/src/vapi.rs`, `engine/src/assistants.rs`, `engine/tests/assistants.rs`,
 uses `engine/tests/fixtures/assistant.json` and `engine/tests/fixtures/tools.json`.
@@ -421,6 +421,21 @@ small).
 **Acceptance:** WHEN the assistant fixture is parsed THEN `system_prompt` SHALL start with `You are a service-desk`, `model="gpt-4.1"`, `transcriber_model="flux-general-multi"`, `tool_ids` SHALL have 3 entries, and `structured_schema.properties.call_intent.enum` SHALL contain `"transfer_request"`; WHEN the tools fixture is parsed THEN the `transferCall` tool SHALL have `is_transfer=1`.
 **Verify:** `cargo test -q --test assistants` → pass; live: `graphify assistants --org rush` prints 100 names.
 **Must not:** non-GET; store the raw assistant.
+**Learned:** `sync` runs this first *inside `sync::run`*, not in the CLI — `tools.is_transfer`
+is what lets the extractor recognise a transfer `endedReason` does not name, and a stale
+tools table does not error, it silently under-counts transfers on every call written after
+it. Wiring it in the CLI would have given that ordering to one subcommand instead of every
+caller. Cost: every mock server in `tests/sync.rs` now has to answer `/tool`, `/assistant`
+and `/squad`, and the request-count assertions there filter on `/call`. A disabled
+`structuredDataPlan` still carries its old schema — store NULL, or the dashboard is
+promised columns nothing fills. An assistant with no system prompt gets a NULL
+`prompt_sha256`, never the hash of `""`, which would give every prompt-less assistant one
+fingerprint. Staleness needs `version` **and** `prompt_sha256`: Vapi does not always bump
+`latestVersion` for a prompt edit. Squad members carry either an `assistantId` (already in
+`GET /assistant`) or a whole inline assistant; only inline ones with an `id` are storable.
+`fetch_all_at` is the paginator for list endpoints with no `last` to stop them, so it stops
+itself — short page, no usable `createdAt`, or a cursor that did not move; without that
+last guard a page of untimestamped rows loops forever.
 
 ### S-11 — Secrets store: encrypted at rest, env override, never returned `[Rust]` ☐
 **PR:** one. **Depends on:** S-5.
