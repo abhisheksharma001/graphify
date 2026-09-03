@@ -34,6 +34,21 @@ wheels = [
 ]
 
 [[package]]
+name = "baml-py"
+version = "0.226.2"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/12/a3/961a5b13b87c5f25a5e74095da75cb9d6a72deb84fdff0d2467934b66848/baml_py-0.226.2-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:43a23c170fccd62b75ac47e23f73fe7d79eaa357b2f9990790439ae5fac8c832", size = 21781932, upload-time = "2026-09-01T04:43:11.587Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/6c/f2aed78d198e10c72cb3cb9e586bc77048b53c0d0d4352966d5a48bfc98c/baml_py-0.226.2-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:28b5625618d46ab216e884cd323687226a7c939535d0d93bf2605cac91befe38", size = 20657236, upload-time = "2026-09-01T04:43:15.95Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/3d/f359d42e20e767e7883114c76bdf2047b572fa32abcdf323c343762b9edd/baml_py-0.226.2-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fe6bfd6ed3ad4ae2756e76dcc80a04c074f82fbae8edec7955ae2a87f68dc40f", size = 22170634, upload-time = "2026-09-01T04:43:18.898Z" },
+    { url = "https://files.pythonhosted.org/packages/12/13/db9bd01232161613bdae533eda25c9208199fdba9ef7ad665070c9e2bcb2/baml_py-0.226.2-cp38-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:77eb0cd4146762f477ff40697cd1badfdb477590953aa9b98a835e827fbec5ab", size = 21395101, upload-time = "2026-09-01T04:43:22.162Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/99/ae01264bd452469fb376dead9e69d88e5d7ed7e3b0dba86122ac8189d5ba/baml_py-0.226.2-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:072779775c121f07867fcb7418789621e8a58177394e6f1e31d198cbefa74a46", size = 21569210, upload-time = "2026-09-01T04:43:25.567Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/d2/0d86b99e8a73a2c59d72a6e48666b8625bcd3a083db9021da65baffeae93/baml_py-0.226.2-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:08c3ce33aa5e59019f75cbafdef4f551c889359186528e9d82272d8396b000fc", size = 22434374, upload-time = "2026-09-01T04:43:29.073Z" },
+    { url = "https://files.pythonhosted.org/packages/03/7e/701119ebd0089340f118dab6de991da884ba0167ce7b7b47df93ce4a0e70/baml_py-0.226.2-cp38-abi3-win_amd64.whl", hash = "sha256:c728ceb641eee5b81fc8eada9f6efab43b66bb9dce28edf729eb626fde8345d5", size = 22034589, upload-time = "2026-09-01T04:43:32.804Z" },
+    { url = "https://files.pythonhosted.org/packages/95/33/21e9a02cbcd2c78392ed28dcde9b11253f1d002bd333d2cb024eb696b224/baml_py-0.226.2-cp38-abi3-win_arm64.whl", hash = "sha256:ab095dc07be878ed24ab0d802fc18dd61d8e25ac2e1b617f383ea3d58173d2b2", size = 20417663, upload-time = "2026-09-01T04:43:36.041Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -77,10 +92,11 @@ wheels = [
 ]
 
 [[package]]
-name = "graphify"
+name = "graphify-brain"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "baml-py" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "typer" },
@@ -94,6 +110,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "baml-py", specifier = ">=0.75" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "typer", specifier = ">=0.12" },

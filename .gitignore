@@ -5,4 +5,6 @@ data/
 .env
 ui/node_modules/
 ui/dist/
+brain/.venv/
+brain/baml_client/
 .DS_Store
