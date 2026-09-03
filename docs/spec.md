@@ -343,7 +343,7 @@ spec's signature on top. `since` is filtered client-side as the spec words it, n
 `createdAtGt`. The page loop can't spin forever because a full page always grows the
 result, so `out.len() < last` bounds it even if a server ignores the cursor.
 
-### S-8 — Extract: raw call → `calls` row + `tool_calls` + slim JSON `[Rust]` ☐
+### S-8 — Extract: raw call → `calls` row + `tool_calls` + slim JSON `[Rust]` ☑ (PR #8, 5fc1c6a)
 **PR:** one. **Depends on:** S-5, S-6.
 **Files:** `engine/src/extract.rs`, `engine/tests/extract.rs`, uses
 `engine/tests/fixtures/call_ended_transfer.json` (synthetic replica of a real payload, same keys and numbers).
@@ -364,6 +364,19 @@ computed from `turnLatencies[].turnLatency`; `turn_latencies` = the array as JSO
 **Acceptance:** WHEN the fixture is extracted THEN `tool_calls=1, tool_failures=0, transferred=1, turns=2, lat_turn_avg_ms=4553.5, lat_turn_p95_ms=6030, cost_vapi=0.0248, success_eval="true", structured.call_intent="general_info"`, AND `slim` SHALL be under 10 KB and contain no `messagesOpenAIFormatted` key.
 **Verify:** `cargo test -q --test extract` → pass.
 **Must not:** store raw; download recordings; coerce missing to 0.
+**Learned:** `extract(raw, org_id, transfer_tools) -> (Call, Vec<ToolCall>)` is pure — no
+network, no clock. `synced_at` stays NULL for S-9 to fill, which is what lets the tests
+assert exact values with no time control. "Missing → NULL" needed a sharper edge than the
+spec words it: a call with **no** `artifact.messages` gets NULL tool counts, a call with an
+**empty** one gets 0, and both cases are tested. Same shape for `transferred` — no evidence
+means `false` once `endedReason` exists and NULL while the call is still running. `slim` is
+built by *removing* keys, not allow-listing, so a field Vapi adds later reaches the drawer
+instead of vanishing; it lands at 7.7 KB from an 11 KB fixture. Percentiles are nearest-rank,
+which is why the fixture's p95 of two turns is exactly `6030`. `chrono` needs
+`default-features = false` or it drags in `iana-time-zone` for a clock this never uses.
+Watch out: `assistant-forwarded-call` groups as `assistant`, not `transfer-error` — a
+forward that worked is not an error, and I wrote that expectation wrong before the test
+corrected me.
 
 ### S-9 — `graphify sync --org NAME --last N | --since DATE`, incremental + purge `[Rust]` ☐
 **PR:** one. **Depends on:** S-7, S-8.
