@@ -437,7 +437,7 @@ fingerprint. Staleness needs `version` **and** `prompt_sha256`: Vapi does not al
 itself — short page, no usable `createdAt`, or a cursor that did not move; without that
 last guard a page of untimestamped rows loops forever.
 
-### S-11 — Secrets store: encrypted at rest, env override, never returned `[Rust]` ☐
+### S-11 — Secrets store: encrypted at rest, env override, never returned `[Rust]` ☑ (PR #11, 0837ef0)
 **PR:** one. **Depends on:** S-5.
 **Files:** `engine/src/secrets.rs`, `engine/tests/secrets.rs`.
 **Today:** env vars only.
@@ -448,6 +448,22 @@ Option<String>` (env `VAPI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` ove
 **Acceptance:** WHEN a key is set THEN the DB file SHALL not contain its plaintext bytes, AND `status` SHALL show `set: true` with the last 4 chars only.
 **Verify:** `cargo test -q --test secrets` → pass (test greps the DB file for the plaintext and asserts absent).
 **Must not:** log values.
+**Learned:** `get` returns `Option<Secret>`, not `Option<String>` — the spec asks for both
+a `String` and a `Debug` that prints `***`, and only the wrapper can be both. `Secret`
+prints `***` under `{}`, `{:?}`, `dbg!` and panics alike, so `expose` is the single word
+to grep when asking whether a key can reach a log; `Secrets` prints `key: ***` for the
+same reason. AEAD associated data is `org_id:name`, so a ciphertext lifted into another
+row fails to decrypt instead of returning the wrong org's key. A variable set to
+whitespace is **not** an override — an empty `VAPI_API_KEY=` in a compose file must not
+mask a good stored key. `status` reports what `get` would return, so an env-only key reads
+as set rather than leaving the settings screen claiming "not set" while sync works. The
+key file is opened `create_new` **with** mode 0600, never created then chmodded: a key
+must not exist readable even for an instant. A value under 8 characters gets no `last4` —
+four characters of a short secret is most of it. Scope kept to the spec's Files line, so
+`sync` and `assistants` still read the env directly; S-12 is the step that first gives an
+org a stored key and is where they get wired, and the env winning means that change cannot
+alter today's behaviour. Crates added are pure-Rust RustCrypto; `chacha20` and `rand_core`
+each end up at two versions because `chacha20poly1305 0.10` pins the older ones.
 
 ### S-12 — HTTP API (axum): orgs, assistants, calls, stats, optional password `[Rust]` ☐
 **PR:** one. **Depends on:** S-9, S-10, S-11.
