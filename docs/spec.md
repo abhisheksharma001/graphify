@@ -265,7 +265,7 @@ Action tags in the wild are far newer than habit suggests — pinned `actions/ch
 `gh api repos/<a>/commits/<ref>` instead of guessing `@v4`. CI also greens a `CodeRabbit`
 check that self-skips on this repo; only `engine` and `brain` are real gates.
 
-### S-5 — SQLite schema + migrations + `orgs` `[Rust]` ☐
+### S-5 — SQLite schema + migrations + `orgs` `[Rust]` ☑ (PR #5, fdd8736)
 **PR:** one. **Depends on:** S-3.
 **Files:** `engine/src/db.rs`, `engine/migrations/0001_init.sql`, `engine/tests/db.rs`.
 **Today:** no storage.
@@ -276,6 +276,19 @@ Helpers: `upsert_call`, `replace_tool_calls`, `create_org`, `list_orgs`. Indexes
 **Acceptance:** WHEN `upsert_call` runs twice with the same id THEN one row SHALL remain with the second values, AND WHEN `Db::open` runs on an existing file THEN it SHALL not fail.
 **Verify:** `cargo test -q db` → pass on a tempfile DB.
 **Must not:** add an ORM; touch Vapi.
+**Learned:** `cargo test -q db` filters by test *name*, not by test target — it matched
+nothing and exited 0 having run zero tests, a false green. Verify is now
+`cargo test -q --test db`. `engine/tests/` is an integration-test dir, so it can only see a
+*library* target; `main.rs` modules are invisible to it. Added `engine/src/lib.rs`
+(`pub mod db;`) — every later engine module goes there, `cli.rs` stays in the binary.
+`upsert_call` is `INSERT OR REPLACE`, safe only because nothing references `calls` by
+foreign key (REPLACE deletes the old row first, which would fire ON DELETE CASCADE);
+it overwrites wholesale, so a value that goes missing is written back as NULL, not left
+stale. Two schema additions beyond the Data model, both needed: `orgs.name` is
+`NOT NULL UNIQUE` (S-9 resolves an org by name) and `idx_tool_calls_call` exists because
+`replace_tool_calls` deletes by `call_id` on every sync. `rusqlite 0.40` + `rusqlite_migration 2`
+resolve to a single shared `rusqlite`, so no duplicate-type mismatch; bundled SQLite makes
+the engine CI job ~1m instead of ~25s.
 
 ### S-6 — endedReason → group `[Rust]` ☐
 **PR:** one. **Depends on:** S-3.
