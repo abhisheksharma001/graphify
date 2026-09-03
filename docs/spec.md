@@ -212,7 +212,11 @@ Tag `[Rust]` = Fable/Opus only. Untagged = any model.
 `@app.callback()` keeps `version` a subcommand. Superseded by S-2: this package becomes
 `brain/` and the Rust engine takes the `graphify` binary name.
 
-### S-2 — Move the Python package to `brain/` as `graphify-brain` ☐
+### S-2 — Move the Python package to `brain/` as `graphify-brain` ☑ (PR #2, 5a29ae2)
+**Learned:** hatchling refuses to build without the `readme` file existing on disk —
+added `brain/README.md`. `uv sync` doesn't reprint already-resolved deps on a repeat
+run; check `uv.lock` or `uv run python -c "import x"`, not sync's stdout, to confirm
+a new dependency landed.
 **PR:** one. **Depends on:** S-1.
 **Files:** `brain/pyproject.toml`, `brain/src/graphify_brain/__init__.py`,
 `brain/src/graphify_brain/cli.py`, `brain/tests/test_cli.py`; delete root
