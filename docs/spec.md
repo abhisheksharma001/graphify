@@ -378,7 +378,7 @@ Watch out: `assistant-forwarded-call` groups as `assistant`, not `transfer-error
 forward that worked is not an error, and I wrote that expectation wrong before the test
 corrected me.
 
-### S-9 — `graphify sync --org NAME --last N | --since DATE`, incremental + purge `[Rust]` ☐
+### S-9 — `graphify sync --org NAME --last N | --since DATE`, incremental + purge `[Rust]` ☑ (PR #9, 9c7960e)
 **PR:** one. **Depends on:** S-7, S-8.
 **Files:** `engine/src/cli.rs`, `engine/src/sync.rs`, `engine/tests/sync.rs`.
 **Today:** CLI prints version only.
@@ -390,6 +390,20 @@ than `orgs.keep_days` (≤ 14, reject higher) and beyond `orgs.max_calls` if set
 **Acceptance:** WHEN `sync --last 250` runs twice against the same mock THEN the second run SHALL print `0 new` and the table SHALL hold 250 rows; WHEN `keep_days` is 20 THEN sync SHALL refuse with a message naming the 14-day cap.
 **Verify:** `cargo test -q --test sync` → pass; live once with a real key after Abhishek's go: `graphify sync --org test --last 25`.
 **Must not:** non-GET; delete rows inside the keep window.
+**Learned:** `--last N` is a *target size* for the org, so stored rows count against it
+(budget = `last - stored`, which is the spec's own "250 stored, `--last 500` fetches 250
+more" arithmetic); `--since DATE` is a *range* and does not subtract, or an org already at
+its target could never be asked for an older window. Consequence to remember: once
+`--last` is met sync makes **no request at all**, so a daily job needs a `--last` above its
+steady-state row count, or `--since`. `new` is the row-count delta around the write, never
+the fetch size. Unknown age is not old age — the age sweep skips calls with no
+`created_at`, and the `max_calls` sweep sorts them last. Purging a call must take its
+`tool_calls` rows or every tool chart counts rows no call points at. Compare ages with
+`julianday(created_at) < julianday('now', '-N days')`: Vapi's `…T…Z` and SQLite's
+`datetime('now')` are different shapes and a text compare purges the wrong side.
+`keep_days` and the missing key are both checked *before* the fetch, so a bad setting
+costs neither a request nor a DELETE. chrono needs feature `now` (SystemTime) for
+`Utc::now()`; `clock` would drag `iana-time-zone` back in for a local zone nothing wants.
 
 ### S-10 — Assistants + tools: slim fetch into `assistants` and `tools` `[Rust]` ☐
 **PR:** one. **Depends on:** S-9.
