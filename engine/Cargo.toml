@@ -1,0 +1,13 @@
+[package]
+name = "graphify"
+version = "0.1.0"
+edition = "2021"
+description = "Open-source Vapi call analytics: sync, store, chart, and re-count patterns"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2"

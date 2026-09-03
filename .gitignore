@@ -8,3 +8,4 @@ ui/dist/
 brain/.venv/
 brain/baml_client/
 .DS_Store
+engine/target/
