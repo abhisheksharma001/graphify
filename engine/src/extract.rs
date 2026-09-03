@@ -259,7 +259,7 @@ pub fn sha256_hex(s: &str) -> String {
 }
 
 /// Walk a JSON path. A numeric segment indexes an array, so `["a", "0", "b"]` works.
-fn at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a Value> {
+pub fn at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut cur = v;
     for key in path {
         cur = match cur {
@@ -270,7 +270,7 @@ fn at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a Value> {
     Some(cur)
 }
 
-fn str_at(v: &Value, path: &[&str]) -> Option<String> {
+pub fn str_at(v: &Value, path: &[&str]) -> Option<String> {
     at(v, path)?.as_str().map(str::to_string)
 }
 

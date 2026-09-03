@@ -50,7 +50,32 @@ async fn serve(body: Value) -> MockServer {
         .respond_with(ResponseTemplate::new(200).set_body_json(body))
         .mount(&server)
         .await;
+    serve_empty_catalog(&server).await;
     server
+}
+
+/// `sync` refreshes tools and assistants before it fetches a single call, so every server
+/// here has to answer those too. Empty is the honest body: these tests are about calls,
+/// and `engine/tests/assistants.rs` is where the catalog is checked.
+async fn serve_empty_catalog(server: &MockServer) {
+    for resource in ["/tool", "/assistant", "/squad"] {
+        Mock::given(method("GET"))
+            .and(path(resource))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(server)
+            .await;
+    }
+}
+
+/// How many times the mock was asked for calls, ignoring the catalog refresh.
+async fn call_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/call")
+        .count()
 }
 
 /// 250 calls over three pages, the third one short.
@@ -72,6 +97,7 @@ async fn serve_250() -> MockServer {
             .mount(&server)
             .await;
     }
+    serve_empty_catalog(&server).await;
     server
 }
 
@@ -140,9 +166,9 @@ async fn a_second_run_over_the_same_calls_adds_nothing() {
     assert_eq!(second.to_string(), "org acme: synced 0 new, 250 total, purged 0");
     assert_eq!(f.count("calls"), 250);
     assert_eq!(
-        server.received_requests().await.unwrap().len(),
+        call_requests(&server).await,
         3,
-        "the target was already met, so the second run must not call Vapi at all"
+        "the target was already met, so the second run must not fetch calls at all"
     );
 }
 
