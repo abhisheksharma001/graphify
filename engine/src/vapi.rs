@@ -55,18 +55,20 @@ pub async fn fetch_calls_at(
     opts: &FetchOpts,
     retry: Retry,
 ) -> Result<Vec<Value>> {
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("building the HTTP client")?;
-    let url = format!("{}/call", base.trim_end_matches('/'));
+    let http = client()?;
+    let url = endpoint(base, "call");
+
+    let mut extra: Vec<(&str, String)> = Vec::new();
+    if let Some(id) = &opts.assistant_id {
+        extra.push(("assistantId", id.clone()));
+    }
 
     let mut out: Vec<Value> = Vec::new();
     let mut cursor = opts.until.clone();
 
     while out.len() < opts.last {
         let want = PAGE.min(opts.last - out.len());
-        let page = get_page(&http, &url, key, opts, &cursor, want, retry).await?;
+        let page = get_page(&http, &url, "call", key, &extra, &cursor, want, retry).await?;
 
         // The cursor is the oldest `createdAt` on this page, and the `since` check below
         // can drop rows, so read it before anything is discarded.
@@ -94,16 +96,62 @@ pub async fn fetch_calls_at(
     Ok(out)
 }
 
-fn created_at(call: &Value) -> Option<&str> {
-    call.get("createdAt")?.as_str()
+/// Every row of a list endpoint that pages the way `/call` does — newest first, `limit`
+/// up to 100, `createdAtLt` as the cursor. Used for `/tool`, `/assistant` and `/squad`,
+/// which are small enough that there is never a reason to want part of them.
+pub async fn fetch_all_at(
+    base: &str,
+    key: &str,
+    resource: &str,
+    retry: Retry,
+) -> Result<Vec<Value>> {
+    let http = client()?;
+    let url = endpoint(base, resource);
+
+    let mut out: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let page = get_page(&http, &url, resource, key, &[], &cursor, PAGE, retry).await?;
+        let short = page.len() < PAGE;
+        let oldest = page.iter().filter_map(created_at).min().map(str::to_string);
+        out.extend(page);
+
+        // `createdAtLt` is strictly-less-than, so a cursor that did not move means the
+        // rows carry no usable `createdAt` and the next request would repeat this one.
+        // There is no `last` here to stop the walk, so the walk has to stop itself.
+        if short || oldest.is_none() || oldest == cursor {
+            break;
+        }
+        cursor = oldest;
+    }
+
+    Ok(out)
+}
+
+fn client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("building the HTTP client")
+}
+
+fn endpoint(base: &str, resource: &str) -> String {
+    format!("{}/{}", base.trim_end_matches('/'), resource)
+}
+
+fn created_at(row: &Value) -> Option<&str> {
+    row.get("createdAt")?.as_str()
 }
 
 /// One page, retried on 429/5xx with doubling backoff.
+#[allow(clippy::too_many_arguments)]
 async fn get_page(
     http: &reqwest::Client,
     url: &str,
+    resource: &str,
     key: &str,
-    opts: &FetchOpts,
+    extra: &[(&str, String)],
     cursor: &Option<String>,
     want: usize,
     retry: Retry,
@@ -112,9 +160,7 @@ async fn get_page(
     if let Some(at) = cursor {
         query.push(("createdAtLt", at.clone()));
     }
-    if let Some(id) = &opts.assistant_id {
-        query.push(("assistantId", id.clone()));
-    }
+    query.extend(extra.iter().cloned());
 
     for attempt in 0..=retry.max {
         let res = http
@@ -123,20 +169,23 @@ async fn get_page(
             .query(&query)
             .send()
             .await
-            .context("GET /call failed")?;
+            .with_context(|| format!("GET /{resource} failed"))?;
         let status = res.status();
 
         if status.is_success() {
-            return res.json::<Vec<Value>>().await.context("GET /call body");
+            return res
+                .json::<Vec<Value>>()
+                .await
+                .with_context(|| format!("GET /{resource} body"));
         }
         // Anything else is the caller's problem: a bad key, a bad filter. Do not retry.
         if status.as_u16() != 429 && !status.is_server_error() {
-            bail!("GET /call returned {status}");
+            bail!("GET /{resource} returned {status}");
         }
         if attempt < retry.max {
             tokio::time::sleep(Duration::from_millis(retry.base_ms << attempt)).await;
         }
     }
 
-    bail!("GET /call kept failing after {} retries", retry.max)
+    bail!("GET /{resource} kept failing after {} retries", retry.max)
 }

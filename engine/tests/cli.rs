@@ -30,3 +30,16 @@ fn sync_without_a_key_says_which_variable_is_missing() {
     let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
     assert!(stderr.contains("VAPI_API_KEY"), "stderr was: {stderr}");
 }
+
+/// Same ordering as `sync`: no key means no database file and no request.
+#[test]
+fn assistants_without_a_key_says_which_variable_is_missing() {
+    let output = Command::cargo_bin("graphify")
+        .unwrap()
+        .args(["assistants", "--org", "acme"])
+        .env_remove("VAPI_API_KEY")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    assert!(stderr.contains("VAPI_API_KEY"), "stderr was: {stderr}");
+}

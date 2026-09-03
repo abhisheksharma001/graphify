@@ -87,6 +87,38 @@ pub struct ToolCall {
     pub result_excerpt: Option<String>,
 }
 
+/// One `tools` row. `kind` is Vapi's top-level `type`, which is a Rust keyword.
+#[derive(Debug, Default)]
+pub struct Tool {
+    pub id: String,
+    pub org_id: i64,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub is_transfer: bool,
+    pub fetched_at: Option<String>,
+}
+
+/// One `assistants` row. The raw 49 KB assistant never lands; these columns and the
+/// structured-data schema are everything the dashboard reads.
+#[derive(Debug, Default)]
+pub struct Assistant {
+    pub id: String,
+    pub org_id: i64,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub model_provider: Option<String>,
+    pub model: Option<String>,
+    pub voice_provider: Option<String>,
+    pub transcriber_provider: Option<String>,
+    pub transcriber_model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub prompt_sha256: Option<String>,
+    pub first_message: Option<String>,
+    pub tool_ids: Option<String>,
+    pub structured_schema: Option<String>,
+    pub fetched_at: Option<String>,
+}
+
 pub struct Db {
     conn: Connection,
 }
@@ -281,6 +313,63 @@ impl Db {
         )?;
         let rows = stmt.query_map(params![org_id], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
+    }
+
+    pub fn upsert_tool(&self, t: &Tool) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO tools (id, org_id, name, type, is_transfer, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![t.id, t.org_id, t.name, t.kind, t.is_transfer, t.fetched_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_assistant(&self, a: &Assistant) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO assistants (
+                id, org_id, name, version, model_provider, model, voice_provider,
+                transcriber_provider, transcriber_model, system_prompt, prompt_sha256,
+                first_message, tool_ids, structured_schema, fetched_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                ?8, ?9, ?10, ?11,
+                ?12, ?13, ?14, ?15
+             )",
+            params![
+                a.id,
+                a.org_id,
+                a.name,
+                a.version,
+                a.model_provider,
+                a.model,
+                a.voice_provider,
+                a.transcriber_provider,
+                a.transcriber_model,
+                a.system_prompt,
+                a.prompt_sha256,
+                a.first_message,
+                a.tool_ids,
+                a.structured_schema,
+                a.fetched_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The pair that decides whether a stored assistant is still current: its version and
+    /// the hash of its system prompt. `None` means the assistant is not stored at all.
+    pub fn assistant_fingerprint(
+        &self,
+        id: &str,
+    ) -> Result<Option<(Option<String>, Option<String>)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT version, prompt_sha256 FROM assistants WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
     }
 
     /// Enforce retention: drop calls older than `keep_days`, then drop everything past the

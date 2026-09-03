@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use graphify::{db, sync, vapi};
+use graphify::{assistants, db, sync, vapi};
 
 /// The graphify engine: pulls Vapi calls, stores them, serves the dashboard.
 #[derive(Parser)]
@@ -30,6 +30,12 @@ pub enum Command {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Refresh the org's tools and assistants. `sync` does this first on its own.
+    Assistants {
+        /// Org to refresh, by name.
+        #[arg(long)]
+        org: String,
+    },
 }
 
 impl Cli {
@@ -40,12 +46,7 @@ impl Cli {
                 Ok(())
             }
             Command::Sync { org, last, since } => {
-                // S-11 adds the encrypted store; env wins over it either way, so reading
-                // env alone is the whole of this today.
-                let key = std::env::var("VAPI_API_KEY")
-                    .ok()
-                    .filter(|k| !k.trim().is_empty())
-                    .context("no Vapi key: set VAPI_API_KEY")?;
+                let key = vapi_key()?;
                 let mut db = db::Db::open(db::default_path())?;
                 let opts = sync::Opts {
                     org,
@@ -58,6 +59,32 @@ impl Cli {
                 println!("{report}");
                 Ok(())
             }
+            Command::Assistants { org } => {
+                let key = vapi_key()?;
+                let db = db::Db::open(db::default_path())?;
+                let opts = assistants::Opts {
+                    org,
+                    base: vapi::DEFAULT_BASE.to_string(),
+                    key,
+                };
+                let report =
+                    tokio::runtime::Runtime::new()?.block_on(assistants::run(&db, &opts))?;
+                for name in &report.names {
+                    println!("{name}");
+                }
+                println!("{report}");
+                Ok(())
+            }
         }
     }
+}
+
+/// Read before the database is opened, so a keyless run writes no file and sends nothing.
+/// S-11 adds the encrypted store; env wins over it either way, so reading env alone is the
+/// whole of this today.
+fn vapi_key() -> Result<String> {
+    std::env::var("VAPI_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .context("no Vapi key: set VAPI_API_KEY")
 }
