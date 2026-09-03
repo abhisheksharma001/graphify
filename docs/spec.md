@@ -230,7 +230,12 @@ a new dependency landed.
 **Verify:** `cd brain && uv run pytest -q` → 1 passed. `ls ~/graphify` shows no `src/`.
 **Must not:** touch `engine/`, `ui/`.
 
-### S-3 — Rust engine scaffold: `graphify version` `[Rust]` ☐
+### S-3 — Rust engine scaffold: `graphify version` `[Rust]` ☑ (PR #3, 42fc647)
+**Learned:** `engine/` already held `tests/fixtures/`, so `cargo new` was wrong — the
+files were written by hand instead (cargo ignores a `tests/` subdir with no `.rs` in it,
+so the fixtures and the integration tests coexist). `assert_cmd` takes a `&str` as an
+exact stdout predicate, so no `predicates` dep is needed. Clippy must be run as
+`cargo clippy --all-targets -- -D warnings` or it skips the test targets.
 **PR:** one. **Depends on:** nothing.
 **Files:** `engine/Cargo.toml`, `engine/src/main.rs`, `engine/src/cli.rs`, `engine/tests/cli.rs`.
 **Today:** no Rust.

@@ -24,7 +24,7 @@ that file plus `python3 ~/.claude/MEM0/MEMOS/memo.py show graphify` is the whole
 
 ## Commands
 ```
-cd engine && cargo test -q && cargo clippy -- -D warnings
+cd engine && cargo test -q && cargo clippy --all-targets -- -D warnings
 cd brain  && uv sync && uv run baml-cli generate && uv run pytest -q
 cd ui     && pnpm i && pnpm build
 ```
