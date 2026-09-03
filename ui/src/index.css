@@ -1,0 +1,412 @@
+/* Tokens, then the handful of components the dashboard is made of.
+ *
+ * Colours come from the data-viz palette: eight categorical hues in a validated
+ * order, plus chart chrome and ink. Dark mode is a second selected set of steps for
+ * the dark surface, not an automatic flip, and it is declared twice on purpose —
+ * once for the OS setting and once for an explicit `data-theme`, so a future toggle
+ * wins in both directions. */
+
+:root {
+  color-scheme: light;
+
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --hairline: rgba(11, 11, 11, 0.1);
+  --wash: rgba(11, 11, 11, 0.04);
+
+  /* Ended groups, bottom of the stack to top. The order is the colourblind-safety
+   * mechanism, not decoration: it was picked by running the palette validator over
+   * candidate orderings and keeping one that clears every adjacent-pair gate in both
+   * modes. Do not reorder without re-running it. */
+  --g-customer: #008300;
+  --g-assistant: #2a78d6;
+  --g-unknown: #e87ba4;
+  --g-timeout: #eda100;
+  --g-transfer-error: #1baf7a;
+  --g-stt-error: #eb6834;
+  --g-tts-error: #4a3aa7;
+  --g-llm-error: #e34948;
+  /* The residual bucket. Grey is chart chrome, not a ninth hue: the palette stops at
+   * eight and a generated ninth would be indistinguishable from one of them. */
+  --g-other: #898781;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --hairline: rgba(255, 255, 255, 0.1);
+    --wash: rgba(255, 255, 255, 0.06);
+
+    --g-customer: #008300;
+    --g-assistant: #3987e5;
+    --g-unknown: #d55181;
+    --g-timeout: #c98500;
+    --g-transfer-error: #199e70;
+    --g-stt-error: #d95926;
+    --g-tts-error: #9085e9;
+    --g-llm-error: #e66767;
+    --g-other: #898781;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --ink-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --hairline: rgba(255, 255, 255, 0.1);
+  --wash: rgba(255, 255, 255, 0.06);
+
+  --g-customer: #008300;
+  --g-assistant: #3987e5;
+  --g-unknown: #d55181;
+  --g-timeout: #c98500;
+  --g-transfer-error: #199e70;
+  --g-stt-error: #d95926;
+  --g-tts-error: #9085e9;
+  --g-llm-error: #e66767;
+  --g-other: #898781;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 64px;
+}
+
+/* Header */
+
+.top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.wordmark {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.top .spacer {
+  flex: 1;
+}
+
+/* Filters: one row above everything they scope. */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  /* Top-aligned, so the tall assistants list does not drag its row-mates to the floor
+   * when the bar wraps on a narrow window. */
+  align-items: flex-start;
+  gap: 12px 16px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field > label,
+.field > span.label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--g-assistant);
+  outline-offset: 1px;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Preset rows: selection is a check, hover is a ghost wash, so the two never compete. */
+
+.presets {
+  display: flex;
+  gap: 2px;
+}
+
+.presets button {
+  border-radius: 0;
+  border-left-width: 0;
+  color: var(--ink-2);
+}
+
+.presets button:first-child {
+  border-left-width: 1px;
+  border-radius: 6px 0 0 6px;
+}
+
+.presets button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.presets button:hover {
+  background: var(--wash);
+}
+
+.presets button[aria-pressed='true'] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--wash);
+}
+
+/* Wide enough for a five-figure count plus the number spinner, and set apart from the
+ * two presets it sits beside: it is the custom answer, not a third preset. */
+.last-custom {
+  width: 8ch;
+  margin-left: 6px;
+}
+
+.since-until {
+  width: 15rem;
+}
+
+.assistants {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.assistants select {
+  width: 100%;
+  height: 56px;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+/* Cards */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 18px 18px 12px;
+}
+
+.card h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.card .sub {
+  font-size: 12px;
+  color: var(--ink-2);
+  margin: 2px 0 14px;
+}
+
+/* While a refetch is in flight the previous render stays put, dimmed: no skeleton,
+ * no layout jump, nothing to read that is not real. */
+.stale {
+  opacity: 0.5;
+  transition: opacity 120ms ease-out;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-bottom: 10px;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* Tooltip: the value leads, the series name follows. */
+
+.tip {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  max-width: 320px;
+}
+
+.tip h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 0 0 6px;
+}
+
+.tip .rows {
+  display: grid;
+  grid-template-columns: 10px auto 1fr;
+  align-items: center;
+  gap: 3px 8px;
+}
+
+.tip .rows i {
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.tip .rows .v {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tip .rows .k {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+/* `display: contents` so each row's three cells sit directly in the grid while the
+ * row itself can still be marked as the hovered one. */
+.tip .rows .row {
+  display: contents;
+}
+
+.tip .rows .row.on .k {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tip .reasons {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.tip .reasons b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Table view: the twin every chart owes its reader. */
+
+.table-toggle {
+  margin-top: 10px;
+  border: 0;
+  background: none;
+  padding: 4px 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 6px;
+}
+
+th,
+td {
+  text-align: right;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+
+th:first-child,
+td:first-child {
+  text-align: left;
+}
+
+thead th {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+.scroll-x {
+  overflow-x: auto;
+}
+
+/* Whole-page states */
+
+.notice {
+  padding: 40px 0;
+  color: var(--ink-2);
+}
+
+.error {
+  color: var(--g-llm-error);
+}
+
+.login {
+  max-width: 320px;
+  margin: 15vh auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
