@@ -16,3 +16,17 @@ fn no_subcommand_is_an_error_with_usage() {
     let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
     assert!(stderr.contains("Usage:"), "stderr was: {stderr}");
 }
+
+/// The key check runs before the database is opened, so a keyless `sync` neither writes a
+/// file nor reaches the network.
+#[test]
+fn sync_without_a_key_says_which_variable_is_missing() {
+    let output = Command::cargo_bin("graphify")
+        .unwrap()
+        .args(["sync", "--org", "acme"])
+        .env_remove("VAPI_API_KEY")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    assert!(stderr.contains("VAPI_API_KEY"), "stderr was: {stderr}");
+}

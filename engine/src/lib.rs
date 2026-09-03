@@ -4,4 +4,5 @@
 pub mod db;
 pub mod ended_reason;
 pub mod extract;
+pub mod sync;
 pub mod vapi;
