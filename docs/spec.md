@@ -99,7 +99,9 @@ docs/spec.md  docs/backlog/bugs.md
 
 Legend: ☐ todo · ☐→ in progress · ☑ done (with what was learned).
 
-### S-1 — Python project scaffold with a `graphify` CLI that prints its version ☐
+### S-1 — Python project scaffold with a `graphify` CLI that prints its version ☑ (PR #1, 5162347)
+
+**Learned:** typer collapses a single `@app.command()` into the root command, so `graphify version` fails with "unexpected extra argument". An empty `@app.callback()` keeps `version` a subcommand. Keep the callback when adding S-6 commands.
 
 **PR:** one.
 **Depends on:** nothing.
