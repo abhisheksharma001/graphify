@@ -80,8 +80,9 @@ impl Cli {
 }
 
 /// Read before the database is opened, so a keyless run writes no file and sends nothing.
-/// S-11 adds the encrypted store; env wins over it either way, so reading env alone is the
-/// whole of this today.
+/// The encrypted store (S-11) is where a key set through the UI will come from; wiring
+/// these subcommands to it waits for S-12, which is what gives an org a key in the first
+/// place. The environment wins over the store either way, so this stays correct.
 fn vapi_key() -> Result<String> {
     std::env::var("VAPI_API_KEY")
         .ok()
