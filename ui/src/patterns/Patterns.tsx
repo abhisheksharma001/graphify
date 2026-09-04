@@ -184,7 +184,15 @@ export default function Patterns({
             ) : (
               <PatternChart
                 title={showing.chart?.title?.trim() || named(showing.id, showing.name)}
-                sub="Calls of this selection the rule matched, bucket by bucket."
+                sub={
+                  /* Not "the rule matched": in the two modes with a model in the loop the
+                     rule is a prefilter and the model has the last word over the calls it
+                     has read, so what is drawn here is the pattern's answer and not one
+                     half of it. */
+                  showing.mode === null || showing.mode === 'free'
+                    ? 'Calls of this selection the rule matched, bucket by bucket.'
+                    : 'Calls of this selection this pattern matched, rule and model together.'
+                }
                 buckets={measured.stats.per_bucket}
                 bucketSize={measured.stats.bucket_size}
                 kind={showing.chart?.kind}

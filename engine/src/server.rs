@@ -74,10 +74,7 @@ impl App {
             auth: Arc::new(auth),
             vapi_base: vapi::DEFAULT_BASE.to_string(),
             jobs: Arc::new(Jobs::new()),
-            brain: std::env::var("GRAPHIFY_BRAIN")
-                .ok()
-                .filter(|b| !b.trim().is_empty())
-                .unwrap_or_else(|| jobs::DEFAULT_BIN.to_string()),
+            brain: jobs::binary_from_env(),
         }
     }
 
