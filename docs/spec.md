@@ -1106,7 +1106,7 @@ batches it already bought. `PROGRESS` counts batches attempted, so the last line
 failure overstates by one. Nothing is written to `jobs`; that is the engine's, in S-25.
 `plan` and `clarify` are still unmetered (S-22).
 
-### S-24 — BAML `SynthesizeRule` + `RefineRule` + agreement via `rule-check` ☐
+### S-24 — BAML `SynthesizeRule` + `RefineRule` + agreement via `rule-check` ☑ (PR #25, 6b8ad87)
 **PR:** one. **Depends on:** S-23, S-21.
 **Files:** `brain/baml_src/rule.baml`, `brain/src/graphify_brain/synth.py`, `brain/tests/test_synth.py`.
 **Today:** labels only.
@@ -1117,6 +1117,55 @@ agreement, chart.
 **Acceptance:** WHEN labels have 40 matches and the rule matches 38 of those plus 2 others THEN agreement SHALL be reported as 0.984 (246/250).
 **Verify:** `uv run pytest -q tests/test_synth.py` with a fake `rule-check` on PATH.
 **Must not:** execute anything returned by the model.
+
+**Learned:** **nothing the model returns is executed, and that is a shape rather than a
+promise.** The rule reaches the engine as a *file named by path* in an argument list with
+no shell anywhere near it, `engine/src/rules.rs` is the only thing that ever reads one,
+and its regexes are compiled by the `regex` crate — never by Python. A test hands the
+synthesiser `'; rm -rf / #`, `$(whoami)` and `(a+)+$` and asserts none of it reaches an
+argv. Round-tripped by hand against `target/debug/graphify`: the hostile rule matched
+nothing and did nothing.
+
+**The engine is the only thing that says what a rule means.** `agreement` is counted from
+the ids `graphify rule-check` printed, never from a Python reimplementation of the DSL —
+one that drifted would report a number about a rule nobody runs. A rule the engine refuses
+comes back in the engine's own words, with the temp path scrubbed out because the file is
+gone by the time anyone reads the message.
+
+**Agreement is over the whole sample, not over the matches.** Two calls both sides said no
+to are two calls they agree about — which is why the register's example is 246/250 and not
+38/40. Reported next to `agreed`, `of`, `matched_by_rule` and `matched_by_model`, because a
+rule can score 0.9 by matching nothing at all when only a tenth of the sample matched.
+
+**The refinement has to earn its place.** Under 0.85, one `RefineRule` call gets at most
+thirty disagreements — all of them would make the second call bigger than the first for a
+rule that is badly wrong, which is exactly where the tokens buy least — and the rule it
+returns is scored the same way and **kept only if it agrees on more calls**. The model is
+not trusted to have improved anything; there is a number that says whether it did. One
+deviation: `RefineRule` returns a `Refinement` (rule *and* reason) rather than a bare rule,
+because the synthesis reason describes the draft the refinement replaced, and printing it
+beside the new rule explains something nobody is running. Its criterion, plan and DSL
+inputs are there for the S-22 and S-23 reason: without them it is fixing a rule against
+nothing and will invent a key the DSL does not have.
+
+**The `patterns` row is stored in `free` mode** — the whole point of having got here — and
+S-23's labels are attached to it with `rule_match` filled in from the same `rule-check`
+that produced the agreement figure, so the two can never come to disagree. `ESTIMATE`
+covers **both** calls, because the refinement is the worst case and a cap is only a cap
+against the worst case. No `GO`: one call on a few hundred short quotes, following a
+labelling the analyst paid for in the same click, and a second confirmation inside one flow
+trains people to click through both.
+
+Two tests read `engine/src/rules.rs` and pin its `Rule`, `Subject` and `Tool` field lists
+against what the brain sends, because both are `deny_unknown_fields` and the brain's CI job
+has no Rust toolchain to find that out for real.
+
+**Not done:** the cap must cover synthesize *plus* refine, so a cap sized for the typical
+run refuses the job outright. A rule the engine refuses ends the run at exit 1 with the
+money already spent and nothing stored — the engine's complaint would make a fine
+`RefineRule` input and is not used as one. `PROGRESS` is a fixed `n/3` and does not grow
+when a refinement happens. The chart is not re-suggested after a refinement. A pattern row
+is written before S-26's "Save", so a wizard the analyst abandons leaves one behind.
 
 ### S-25 — Engine spawns brain jobs; `/api/patterns/*` with progress `[Rust]` ☐
 **PR:** one. **Depends on:** S-24, S-12.
