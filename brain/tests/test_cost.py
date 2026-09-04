@@ -8,11 +8,20 @@ Nothing here touches the network.
 """
 
 import re
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
-from graphify_brain.cost import PRICES, PRICES_CHECKED, estimate, price
+from graphify_brain.cost import (
+    PRICES,
+    PRICES_CHECKED,
+    STALE_AFTER_DAYS,
+    checked_days_ago,
+    estimate,
+    is_stale,
+    price,
+)
 
 CLIENTS = Path(__file__).resolve().parents[1] / "baml_src" / "clients.baml"
 
@@ -59,18 +68,46 @@ def test_output_costs_more_than_input_everywhere():
         assert rate.usd_out > rate.usd_in, name
 
 
-def test_every_model_in_clients_baml_has_a_price():
+def test_every_client_in_clients_baml_is_priced_under_the_right_provider():
     """The drift guard.
 
-    `clients.baml` names the model that actually gets called. A model that can be called
-    but not priced is a model whose spend the daily cap cannot count, which is the one
-    failure this whole module exists to prevent.
-    """
-    named = set(re.findall(r'model\s+"([^"]+)"', CLIENTS.read_text()))
-    assert named, f"no model lines found in {CLIENTS}"
+    `clients.baml` is the file that says which model actually gets called and whose API
+    it is called on. A model that can be called but not priced is a model whose spend the
+    daily cap cannot count, which is the one failure this module exists to prevent; a
+    model priced under the wrong provider is one `graphify-brain models --check` would go
+    looking for in the wrong list; and a client whose name does not match a `PRICES` key
+    is one no job could ever price by the name it records.
 
-    priced = {rate.model for rate in PRICES.values()}
-    assert named == priced
+    Whole `client<llm> ... {}` blocks are matched, not loose `provider` and `model` lines,
+    so a comment that happens to contain either word cannot join two blocks together.
+    """
+    blocks = re.findall(
+        r"client<llm>\s+(\w+)\s*\{(.*?)\n\}", CLIENTS.read_text(), re.DOTALL
+    )
+    assert len(blocks) == len(PRICES), f"found {len(blocks)} client blocks in {CLIENTS}"
+
+    declared = {
+        name.lower(): (
+            re.search(r"^\s*provider\s+(\S+)", body, re.MULTILINE).group(1),
+            re.search(r'^\s*model\s+"([^"]+)"', body, re.MULTILINE).group(1),
+        )
+        for name, body in blocks
+    }
+
+    assert declared == {
+        client: (rate.provider, rate.model) for client, rate in PRICES.items()
+    }
+
+
+def test_the_price_table_knows_how_old_it_is():
+    assert checked_days_ago(date.fromisoformat(PRICES_CHECKED)) == 0
+    assert checked_days_ago(date.fromisoformat(PRICES_CHECKED) + timedelta(days=7)) == 7
+
+
+def test_staleness_turns_over_at_the_threshold():
+    read = date.fromisoformat(PRICES_CHECKED)
+    assert not is_stale(read + timedelta(days=STALE_AFTER_DAYS))
+    assert is_stale(read + timedelta(days=STALE_AFTER_DAYS + 1))
 
 
 def test_the_prices_say_when_they_were_read():
