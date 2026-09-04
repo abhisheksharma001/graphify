@@ -1439,7 +1439,7 @@ falls behind by a day at a time. And `daily` reports its progress per pattern wh
 reports it per batch down the same pipe, so a job's last `PROGRESS` line is the pattern one
 and the two interleave.
 
-### S-29 — Ask box (BAML `AskAnalysis`) ☐
+### S-29 — Ask box (BAML `AskAnalysis`) ☑ (PR #30, ae50bf0)
 **PR:** one. **Depends on:** S-25, S-17.
 **Files:** `brain/baml_src/ask.baml`, `brain/src/graphify_brain/ask.py`, `engine/src/server.rs` (`POST /api/ask`), `ui/src/Ask.tsx`.
 **Today:** no free-form analysis.
@@ -1448,6 +1448,53 @@ and the two interleave.
 **Acceptance:** WHEN the user cancels at the cost step THEN no job SHALL be created.
 **Verify:** tests for the three layers with mocks; manual once live.
 **Must not:** send more than the cap.
+
+
+**Learned:** *Where the price comes from decided the whole step.* The acceptance — a
+cancel at the cost step creates no job — cannot be met by the shape every other spend in
+graphify uses, where the brain prints `ESTIMATE` from a child that has already been
+started and parked on its stdin. A question is a thing people try, reword and abandon, and
+`MAX_LIVE` is four: four questions read and walked away from would hold the engine's whole
+job budget for half an hour each. So `POST /api/ask/quote` prices the question on the
+request, starting no process and writing no row, and `POST /api/ask` is the click. The ask
+job never parks, because the approval is behind it rather than ahead of it.
+
+*Pricing in the engine means the rates live in two files, and a test is what makes that
+one fact.* `engine/src/ask.rs` mirrors `graphify_brain.cost`'s table and the constants the
+estimate rests on; `engine/tests/ask.rs` parses `cost.py`, `label.py` and `ask.py` and
+fails if any of them disagree — the same trick `brain/tests/test_cost.py` plays on
+`clients.baml`. One place to edit a price, and drift is a failing build rather than a
+wrong number on a button.
+
+*Every count on the engine's side errs high, and that is what makes the two caps agree.*
+The engine counts the question and the statistics in bytes where the brain counts
+characters, and allows a flat `FACTS_CHARS` per call for a line it does not build. Its
+figure is therefore a ceiling the brain's own estimate comes in under — measured at about
+8% on the live run. The allowance is a trade, not a margin to maximise: too small and the
+engine quotes a context the brain then refuses as over the 60k cap, which is a question
+that cannot be asked at all; too large and the number on the button is visibly bigger than
+what the same question costs, which teaches people to stop reading it.
+
+*The sample is skewed by construction and everything has to say so.* Shortest transcripts
+first is how the most calls fit under one cap, and it makes the sample biased in exactly
+the dimension people generalise along. So the prompt separates the two kinds of evidence —
+numbers come from the statistics, which describe every call in the selection; quotes come
+from the sample, which is not typical — and the line under the box says the same to the
+reader.
+
+*The browser found two things the tests did not.* The route read the org with `org_param`,
+which refuses every query key but `org`, so a question asked over a window came back
+`unknown parameter window` — and every question is asked over a window. And the answer's
+footer showed `job.estimate_usd`, the brain's own quote, under the word "quoted": a figure
+the person never saw, beside a button that had said something else.
+
+**Not done:** the quote is taken twice per question and the statistics are built both
+times, which is two full passes over the selection for one answer. A question over a wide
+enough window is refused rather than answered from the statistics alone — `per_bucket`
+grows with the span and can fill the context on its own. `MAX_QUESTION_CHARS` is 2,000 and
+there is no history, so a follow-up is a new question that re-reads and re-pays. The
+Markdown subset is drawn by hand and anything outside it renders literally. And nothing
+stores an answer: it lives on the screen until the filters move.
 
 ### S-30 — PDF downloads: dashboard, per pattern, call list ☐
 **PR:** one. **Depends on:** S-27, S-18.
