@@ -17,14 +17,11 @@ import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
 import Login from './Login'
 import Settings from './Settings'
-import Wizard from './patterns/Wizard'
-import { initial, toParams } from './filters'
+import Patterns from './patterns/Patterns'
+import { initial, SETTLE_MS, toParams } from './filters'
 import type { Filters } from './filters'
 import { load } from './series'
 import type { Chart } from './series'
-
-/** Typing in the call-ID or last box should not fire a request per keystroke. */
-const SETTLE_MS = 250
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -141,14 +138,28 @@ export default function App() {
           name and a Vapi key, then sync.
         </p>
       ) : view === 'patterns' ? (
-        filters.org == null ? (
+        filters.org == null || query == null ? (
           <p className="notice">Loading…</p>
         ) : (
-          /* The org is the filter bar's, picked on the dashboard: a wizard is about one
-             client's calls, and there is no second place to say which client. Keyed by it
-             for the same reason the dashboard is — a half-filled wizard must not carry
-             over to somebody else's calls. */
-          <Wizard key={filters.org} org={filters.org} assistants={assistants} onError={fail} />
+          /* The same bar as the dashboard's, because a pattern's count is a count of the
+             calls on screen and the two have to be scoping one selection. Handed to the
+             screen rather than drawn above it: the wizard picks its own calls, and a bar
+             it ignores has no business over the top of it. */
+          <Patterns
+            key={filters.org}
+            org={filters.org}
+            assistants={assistants}
+            query={query}
+            bar={
+              <FilterBar
+                filters={filters}
+                orgs={orgs}
+                assistants={assistants}
+                onChange={setFilters}
+              />
+            }
+            onError={fail}
+          />
         )
       ) : (
         <>

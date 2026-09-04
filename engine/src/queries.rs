@@ -38,6 +38,9 @@ pub struct Filters {
     pub call_id: Option<String>,
     pub tool_failed: Option<bool>,
     pub transferred: Option<bool>,
+    /// One saved pattern's matches. Not a column on `calls` like the rest of these, and
+    /// not applied where they are — see `selection`.
+    pub pattern: Option<i64>,
 }
 
 impl Filters {
@@ -62,6 +65,7 @@ impl Filters {
                 "call_id" => f.call_id = Some(v),
                 "tool_failed" => f.tool_failed = Some(flag(&v)?),
                 "transferred" => f.transferred = Some(flag(&v)?),
+                "pattern" => f.pattern = Some(v.parse().context("pattern must be a pattern id")?),
                 other => bail!("unknown filter {other}"),
             }
         }
@@ -171,14 +175,28 @@ fn conditions(f: &Filters, floor: Option<&str>) -> Cond {
 
 /// The filtered call set, newest first, as a CTE the aggregates below select from.
 /// `LIMIT -1` is SQLite for "no limit", so `last` and its absence take the same path.
+///
+/// A pattern is applied to the page, not inside it. `last` says how many of the newest
+/// calls the whole screen is about, and a pattern's chart, the table under it and the count
+/// beside its name have to be three answers about that one set of calls. Folding the
+/// pattern into the `WHERE` would page the matches instead: 250 matched calls drawn from a
+/// span the count next to them was never taken over.
 fn selection(f: &Filters, floor: Option<&str>, limit: i64) -> (String, Vec<Sql>) {
     let cond = conditions(f, floor);
-    let sql = format!(
-        "WITH sel AS (SELECT * FROM calls WHERE {} ORDER BY created_at DESC LIMIT ?)",
-        cond.sql
-    );
     let mut params = cond.params;
     params.push(Sql::Integer(limit));
+    let matched = match f.pattern {
+        Some(id) => {
+            params.push(Sql::Integer(id));
+            " WHERE id IN (SELECT call_id FROM pattern_matches WHERE pattern_id = ?)"
+        }
+        None => "",
+    };
+    let sql = format!(
+        "WITH page AS (SELECT * FROM calls WHERE {} ORDER BY created_at DESC LIMIT ?),
+              sel AS (SELECT * FROM page{matched})",
+        cond.sql
+    );
     (sql, params)
 }
 
@@ -244,6 +262,30 @@ pub fn calls(db: &Db, f: &Filters) -> Result<Vec<CallRow>> {
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params), call_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// How many calls of this selection each pattern matched, by pattern id. A pattern with
+/// nothing in this window is absent rather than zero — the caller knows which patterns it
+/// asked about, and a row here means a count was taken.
+///
+/// One statement for every pattern rather than one request per pattern: the list beside the
+/// chart is a list, and counts that arrive one at a time are a list that fills in.
+///
+/// `DISTINCT`, because a hybrid pattern can have matched the same call twice — once by its
+/// rule and once by the model — and that is one call, not two.
+pub fn pattern_counts(db: &Db, f: &Filters) -> Result<BTreeMap<i64, i64>> {
+    let floor = f.floor(Utc::now())?;
+    let limit = f.last.unwrap_or(DEFAULT_CALL_LIMIT) as i64;
+    let (cte, params) = selection(f, floor.as_deref(), limit);
+    let sql = format!(
+        "{cte} SELECT m.pattern_id, count(DISTINCT m.call_id)
+           FROM pattern_matches m JOIN sel ON sel.id = m.call_id
+          GROUP BY m.pattern_id"
+    );
+    let conn = db.conn();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<BTreeMap<_, _>>>()?)
 }
 
 /// One tool invocation on a call, for the drawer.

@@ -1,4 +1,4 @@
-// How a number becomes text.
+// How a value becomes text.
 //
 // Every formatter here goes through one rule first: a missing number is drawn as "—" and
 // never as a zero. An hour that priced nothing has no cost; that is a different fact from
@@ -45,3 +45,8 @@ export function tokens(v: number | null): string {
 export function mean(v: number | null): string {
   return v === null ? DASH : String(Math.round(v * 100) / 100)
 }
+
+/** What a pattern is called when it was saved without a name: its id, because that is what
+ * the engine calls it in every message about it. Written once, so the list, the heading and
+ * the chart title can never come to disagree about which pattern is which. */
+export const named = (id: number, name: string | null) => name?.trim() || `#${id}`
