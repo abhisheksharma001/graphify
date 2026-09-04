@@ -331,24 +331,55 @@ pub fn apply(db: &mut Db) -> Result<Vec<Applied>> {
         let (Some(org_id), Some(json)) = (pattern.org_id, pattern.rule.as_deref()) else {
             continue;
         };
-        let rule = validate(json, &format!("pattern {}", pattern.name))?;
         if let Entry::Vacant(slot) = by_org.entry(org_id) {
             slot.insert(subjects(db, org_id)?);
         }
-        let calls = &by_org[&org_id];
-        let hits: Vec<String> = calls
-            .iter()
-            .filter(|c| matches(&rule, c))
-            .map(|c| c.id.clone())
-            .collect();
-        report.push(Applied {
-            name: pattern.name,
-            matched: hits.len(),
-            of: calls.len(),
-        });
-        db.replace_rule_matches(pattern.id, &hits)?;
+        report.push(run_one(db, pattern.id, &pattern.name, json, &by_org[&org_id])?);
     }
     Ok(report)
+}
+
+/// Re-run one pattern's rule, whatever mode it is in.
+///
+/// `apply` skips the modes with a model in the loop because re-counting one of those means
+/// spending; this does not, because it is only ever the rule half. It replaces the same
+/// `source='rule'` rows and leaves the model's answers where they are, so a hybrid pattern
+/// asked to re-apply gets its rule re-run and nothing bought.
+///
+/// `None` for a pattern with no rule yet or no org: a row someone is halfway through
+/// making is not an error.
+pub fn apply_one(db: &mut Db, id: i64) -> Result<Option<Applied>> {
+    let Some(pattern) = db.pattern(id)? else {
+        return Ok(None);
+    };
+    let (Some(org_id), Some(json)) = (pattern.org_id, pattern.rule.as_deref()) else {
+        return Ok(None);
+    };
+    let name = pattern.name.unwrap_or_else(|| format!("#{id}"));
+    let calls = subjects(db, org_id)?;
+    Ok(Some(run_one(db, id, &name, json, &calls)?))
+}
+
+/// One pattern over one org's calls: validate, match, store, count.
+fn run_one(
+    db: &mut Db,
+    id: i64,
+    name: &str,
+    json: &str,
+    calls: &[Subject],
+) -> Result<Applied> {
+    let rule = validate(json, &format!("pattern {name}"))?;
+    let hits: Vec<String> = calls
+        .iter()
+        .filter(|c| matches(&rule, c))
+        .map(|c| c.id.clone())
+        .collect();
+    db.replace_rule_matches(id, &hits)?;
+    Ok(Applied {
+        name: name.to_string(),
+        matched: hits.len(),
+        of: calls.len(),
+    })
 }
 
 fn free_patterns(db: &Db) -> Result<Vec<Stored>> {

@@ -180,7 +180,11 @@ impl Secrets {
 }
 
 /// The environment variable that overrides a given secret, for the names that have one.
-fn env_var(name: &str) -> Option<&'static str> {
+///
+/// Public because `jobs` hands the model keys to a spawned brain, and the variable it sets
+/// there has to be the same one this file would read back. Two spellings of
+/// `ANTHROPIC_API_KEY` would be a key that is set and a brain that cannot see it.
+pub fn env_var(name: &str) -> Option<&'static str> {
     match name {
         "vapi" => Some("VAPI_API_KEY"),
         "anthropic" => Some("ANTHROPIC_API_KEY"),

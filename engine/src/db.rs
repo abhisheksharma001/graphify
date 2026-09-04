@@ -30,6 +30,67 @@ pub struct Org {
     pub created_at: Option<String>,
 }
 
+/// A `jobs` row, as the API reports one.
+///
+/// `input`, `output` and `log` stay as the text they were written as. What the brain
+/// printed is stored unedited, so a row read back months later says what the brain
+/// answered rather than what today's engine would make of it.
+#[derive(Debug)]
+pub struct Job {
+    pub id: i64,
+    pub kind: String,
+    pub status: String,
+    pub input: Option<String>,
+    pub output: Option<String>,
+    pub cost_usd: f64,
+    pub log: String,
+    pub created_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+/// A `patterns` row. The four JSON columns come back as the text they were stored as;
+/// parsing them is the API's, which is where a column that will not parse can be dropped
+/// without taking the row with it.
+#[derive(Debug)]
+pub struct Pattern {
+    pub id: i64,
+    pub org_id: Option<i64>,
+    pub name: Option<String>,
+    pub criterion: Option<String>,
+    pub assistant_ids: Option<String>,
+    pub plan: Option<String>,
+    pub rule: Option<String>,
+    pub chart: Option<String>,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub daily_cap_usd: Option<f64>,
+    pub sample_size: Option<i64>,
+    pub agreement: Option<f64>,
+    pub created_at: Option<String>,
+}
+
+const PATTERN_COLUMNS: &str = "id, org_id, name, criterion, assistant_ids, plan, rule, chart,
+     model, mode, daily_cap_usd, sample_size, agreement, created_at";
+
+fn pattern_row(r: &Row) -> rusqlite::Result<Pattern> {
+    Ok(Pattern {
+        id: r.get(0)?,
+        org_id: r.get(1)?,
+        name: r.get(2)?,
+        criterion: r.get(3)?,
+        assistant_ids: r.get(4)?,
+        plan: r.get(5)?,
+        rule: r.get(6)?,
+        chart: r.get(7)?,
+        model: r.get(8)?,
+        mode: r.get(9)?,
+        daily_cap_usd: r.get(10)?,
+        sample_size: r.get(11)?,
+        agreement: r.get(12)?,
+        created_at: r.get(13)?,
+    })
+}
+
 /// A `calls` row. Every field Vapi may omit is an `Option`: missing stays NULL, never 0.
 #[derive(Debug, Default)]
 pub struct Call {
@@ -137,6 +198,10 @@ fn org_row(r: &Row) -> rusqlite::Result<Org> {
 
 pub struct Db {
     conn: Connection,
+    /// The file this connection was opened on. Kept because the engine spawns the brain
+    /// with `--db PATH`, and a path carried alongside the handle rather than taken from it
+    /// is a path that can point somewhere else.
+    path: PathBuf,
 }
 
 impl Db {
@@ -155,7 +220,15 @@ impl Db {
         Migrations::new(vec![M::up(INIT), M::up(GLOBAL_SECRETS)])
             .to_latest(&mut conn)
             .context("running migrations")?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The database file, which is what a spawned brain is handed as `--db`.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The open connection, for `queries`, which is read-only. Writes keep going through
@@ -502,6 +575,168 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(gone)
+    }
+
+    /// Start a job, in whatever state its kind begins in. Returns the new id.
+    ///
+    /// `input` holds the whole request, the org included: `jobs` has no org column and the
+    /// spend a finished job books is keyed by one, so it has to be recoverable from the row.
+    pub fn create_job(&self, kind: &str, status: &str, input: &str, created_at: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO jobs (kind, status, input, cost_usd, log, created_at)
+             VALUES (?1, ?2, ?3, 0, '', ?4)",
+            params![kind, status, input, created_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn job(&self, id: i64) -> Result<Option<Job>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, kind, status, input, output, cost_usd, log, created_at, finished_at
+                   FROM jobs WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(Job {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        status: r.get(2)?,
+                        input: r.get(3)?,
+                        output: r.get(4)?,
+                        cost_usd: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+                        log: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                        created_at: r.get(7)?,
+                        finished_at: r.get(8)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn set_job_status(&self, id: i64, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET status = ?2 WHERE id = ?1",
+            params![id, status],
+        )?;
+        Ok(())
+    }
+
+    /// Append one line to a job's log, as it arrives. A job that is still running is a job
+    /// somebody is watching, and a log written only at the end is no use to them.
+    pub fn append_job_log(&self, id: i64, line: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET log = COALESCE(log, '') || ?2 WHERE id = ?1",
+            params![id, format!("{line}\n")],
+        )?;
+        Ok(())
+    }
+
+    /// Close a job out: its final status, whatever it printed, and what it cost.
+    pub fn finish_job(
+        &self,
+        id: i64,
+        status: &str,
+        output: Option<&str>,
+        cost_usd: f64,
+        finished_at: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET status = ?2, output = ?3, cost_usd = ?4, finished_at = ?5
+              WHERE id = ?1",
+            params![id, status, output, cost_usd, finished_at],
+        )?;
+        Ok(())
+    }
+
+    /// How many jobs are still holding a subprocess. Counted before another is started:
+    /// a job waiting for its go holds a parked interpreter, and a wizard clicked ten times
+    /// should be refused rather than answered with ten of them.
+    /// The two statuses are the caller's to name: which of them mean a process is still
+    /// alive is `jobs`', not this file's.
+    pub fn live_jobs(&self, running: &str, waiting: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE status = ?1 OR status = ?2",
+            params![running, waiting],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Close out every job that a dead process left mid-flight. Called once at startup:
+    /// the children died with the engine, so a row still claiming to be running is a row
+    /// about a process that no longer exists.
+    pub fn abandon_live_jobs(
+        &self,
+        running: &str,
+        waiting: &str,
+        status: &str,
+        finished_at: &str,
+    ) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE jobs SET status = ?3, finished_at = ?4 WHERE status = ?1 OR status = ?2",
+            params![running, waiting, status, finished_at],
+        )?)
+    }
+
+    /// Book what a job cost against the org that asked for it, on the day it finished.
+    /// Added to whatever is already there: the cap in D-8 is a day's total, not a job's.
+    pub fn add_spend(&self, day: &str, org_id: i64, usd: f64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO spend (day, org_id, usd) VALUES (?1, ?2, ?3)
+               ON CONFLICT(day, org_id) DO UPDATE SET usd = usd + excluded.usd",
+            params![day, org_id, usd],
+        )?;
+        Ok(())
+    }
+
+    /// What has been spent on this org today, for the cap and for the wizard to show.
+    pub fn spend_on(&self, day: &str, org_id: i64) -> Result<f64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT usd FROM spend WHERE day = ?1 AND org_id = ?2",
+                params![day, org_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0.0))
+    }
+
+    pub fn list_patterns(&self, org_id: i64) -> Result<Vec<Pattern>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {PATTERN_COLUMNS} FROM patterns WHERE org_id = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map(params![org_id], pattern_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn pattern(&self, id: i64) -> Result<Option<Pattern>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {PATTERN_COLUMNS} FROM patterns WHERE id = ?1"),
+                params![id],
+                pattern_row,
+            )
+            .optional()?)
+    }
+
+    /// The three settings the analyst owns: what the pattern matches, whether a model is
+    /// in the loop, and how much that model may spend in a day. All three are written every
+    /// time, for the reason `set_org_limits` gives — with nullable columns, "leave this one
+    /// alone" and "clear this one" are otherwise the same request.
+    pub fn set_pattern_rule(
+        &self,
+        id: i64,
+        rule: Option<&str>,
+        mode: &str,
+        daily_cap_usd: f64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE patterns SET rule = ?2, mode = ?3, daily_cap_usd = ?4 WHERE id = ?1",
+            params![id, rule, mode, daily_cap_usd],
+        )?;
+        Ok(())
     }
 
     /// Replace one pattern's rule-sourced matches.
