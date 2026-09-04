@@ -9,19 +9,16 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Rectangle,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
+import { day, full, hour, money } from '../format'
 import { colour } from '../groups'
 import type { Group } from '../groups'
 import type { Chart, Series } from '../series'
-
-/** Rounded end, and the 2px of surface that separates one segment from the next. */
-const CAP = 4
-const GAP = 2
+import { BAR, Segment } from './frame'
 
 type Row = {
   ms: number
@@ -30,10 +27,6 @@ type Row = {
   /** The topmost segment with anything in it — the only one that gets a rounded cap. */
   top: Group | null
 } & Partial<Record<Group, number>>
-
-const hour = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
-const day = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
-const full = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
 function rowsFor(chart: Chart): Row[] {
   return chart.buckets.map(({ ms, cost }) => {
@@ -47,36 +40,6 @@ function rowsFor(chart: Chart): Row[] {
     }
     return row
   })
-}
-
-/** A stacked segment. The gap is taken off its own top, so it separates this segment from
- * whatever sits above it; the topmost has nothing above it and keeps its full height. */
-function Segment(props: Record<string, unknown>) {
-  const { height, y, payload, dataKey } = props as {
-    height: number
-    y: number
-    payload: Row
-    dataKey: Group
-  }
-  if (!height) return null
-  const isTop = payload.top === dataKey
-  // Never shrink a segment so far that it disappears: below ~3px the gap would cost more
-  // than it separates, and a bar that is there has to be visible.
-  const gap = isTop || height <= GAP + 1 ? 0 : GAP
-  return (
-    <Rectangle
-      {...props}
-      y={y + gap}
-      height={height - gap}
-      radius={isTop ? [CAP, CAP, 0, 0] : 0}
-    />
-  )
-}
-
-function money(cost: number | null): string {
-  // A missing number is never a zero: a bucket where nothing was priced has no cost,
-  // which is a different fact from a cost of nothing.
-  return cost === null ? '—' : `$${cost.toFixed(2)}`
 }
 
 type TipProps = {
@@ -203,7 +166,7 @@ export default function EndedGroups({ chart, stale }: { chart: Chart; stale: boo
                   dataKey={s.group}
                   stackId="ended"
                   fill={colour(s.group)}
-                  maxBarSize={24}
+                  maxBarSize={BAR}
                   isAnimationActive={false}
                   shape={<Segment />}
                   onMouseEnter={() => setHovered(s.group)}

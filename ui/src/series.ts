@@ -33,6 +33,11 @@ export type Series = {
 }
 
 export type Chart = {
+  /** Everything `/api/stats` said about this selection, as it said it. The ended-group
+   * chart cannot be drawn from it, which is why the loader below exists at all — but every
+   * other chart in the pack is one of its fields, and they read it here rather than asking
+   * for the same numbers a second time. */
+  stats: api.Stats
   /** The x axis: every bucket across the span, in order, with the bucket's cost. Cost is
    * null when nothing in the bucket was priced — which is not a cost of zero. */
   buckets: { ms: number; cost: number | null }[]
@@ -84,6 +89,7 @@ export async function load(params: URLSearchParams): Promise<Chart> {
     .sort((a, b) => a.ms - b.ms)
 
   return {
+    stats,
     buckets,
     bucketSize: stats.bucket_size,
     // Fixed order, so a filter that removes a group never repaints the ones that stay.

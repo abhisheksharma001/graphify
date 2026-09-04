@@ -34,6 +34,22 @@
   /* The residual bucket. Grey is chart chrome, not a ninth hue: the palette stops at
    * eight and a generated ninth would be indistinguishable from one of them. */
   --g-other: #898781;
+
+  /* The series palette: the same validated order with green taken out, so a cost slice
+   * or a latency component never wears the one hue a reader takes as a verdict. Green
+   * stays reserved for `customer`, the only place on the page where "this ended well"
+   * is a true thing to say. Dropping the first colour of a validated ordering creates no
+   * new adjacent pair, and the seven were re-validated in both modes anyway.
+   *
+   * Slots, not names: each chart maps its own members onto `--s-1` upward in a fixed
+   * order of its own, so a filter that empties a slice never repaints the others. */
+  --s-1: #2a78d6;
+  --s-2: #e87ba4;
+  --s-3: #eda100;
+  --s-4: #1baf7a;
+  --s-5: #eb6834;
+  --s-6: #4a3aa7;
+  --s-7: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -58,6 +74,14 @@
     --g-tts-error: #9085e9;
     --g-llm-error: #e66767;
     --g-other: #898781;
+
+    --s-1: #3987e5;
+    --s-2: #d55181;
+    --s-3: #c98500;
+    --s-4: #199e70;
+    --s-5: #d95926;
+    --s-6: #9085e9;
+    --s-7: #e66767;
   }
 }
 
@@ -82,6 +106,14 @@
   --g-tts-error: #9085e9;
   --g-llm-error: #e66767;
   --g-other: #898781;
+
+  --s-1: #3987e5;
+  --s-2: #d55181;
+  --s-3: #c98500;
+  --s-4: #199e70;
+  --s-5: #d95926;
+  --s-6: #9085e9;
+  --s-7: #e66767;
 }
 
 * {
@@ -240,6 +272,25 @@ button {
   border: 1px solid var(--hairline);
   border-radius: 10px;
   padding: 18px 18px 12px;
+}
+
+/* The pack: two columns where there is room, one where there is not. Every chart is its
+ * own card, with its own legend and its own table twin — none of them shares an axis with
+ * another, so none of them may share a card. */
+.pack {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  /* Each card is as tall as its own chart. Stretching them to match their neighbours
+   * would put a field of empty surface under the short ones, which reads as a chart
+   * that failed to draw. */
+  align-items: start;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+/* A panel with no subtitle still needs the space the subtitle would have held. */
+.card h2 + div {
+  margin-top: 14px;
 }
 
 .card h2 {

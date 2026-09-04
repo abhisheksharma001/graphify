@@ -25,10 +25,38 @@ export type Assistant = {
  * hour that priced nothing has no cost — it does not have a cost of zero. */
 export type Totals = {
   calls: number
+  tool_failures: number | null
+  transfers: number | null
   cost: number | null
+  /** What the cost was spent on. These add up to `cost`, so they stack under it. */
+  cost_stt: number | null
+  cost_llm: number | null
+  cost_tts: number | null
+  cost_vapi: number | null
+  cost_transport: number | null
+  cost_analysis: number | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  cached_tokens: number | null
+  /** Turn latency and what it was spent waiting on, in ms. The components are averages
+   * over the calls that reported them, so they add up to `latency_avg` — not to the
+   * percentiles, which are a different question about the same calls. */
+  latency_avg: number | null
+  latency_model: number | null
+  latency_voice: number | null
+  latency_transcriber: number | null
+  latency_endpointing: number | null
   duration_avg: number | null
   latency_p50: number | null
   latency_p95: number | null
+}
+
+/** One row of `by_assistant`. The engine leaves the breakdowns NULL here — they are not
+ * grouped per assistant — so this row is honest about carrying counts, cost and duration
+ * and nothing else. */
+export type ByAssistant = Totals & {
+  assistant_id: string | null
+  name: string | null
 }
 
 export type Bucket = Totals & { bucket: string }
@@ -40,6 +68,9 @@ export type Stats = {
   per_bucket: Bucket[]
   /** `1h` or `1d`, so the axis can be labelled without guessing. */
   bucket_size: string
+  /** Failed tool calls by tool name, over the whole selection. */
+  tool_failures_by_name: Record<string, number>
+  by_assistant: ByAssistant[]
   totals: Totals
 }
 

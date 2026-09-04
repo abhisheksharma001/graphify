@@ -408,6 +408,27 @@ pub struct Totals {
     pub tool_failures: Option<i64>,
     pub transfers: Option<i64>,
     pub cost: Option<f64>,
+    /// What the cost was spent on. Vapi bills these separately and they add up to `cost`,
+    /// so a chart can stack them under it. Each stays NULL on its own: a selection Vapi
+    /// priced but did not break down has a cost and no breakdown, which is not a breakdown
+    /// of zeroes.
+    pub cost_stt: Option<f64>,
+    pub cost_llm: Option<f64>,
+    pub cost_tts: Option<f64>,
+    pub cost_vapi: Option<f64>,
+    pub cost_transport: Option<f64>,
+    pub cost_analysis: Option<f64>,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub cached_tokens: Option<i64>,
+    /// Turn latency, and what it was spent waiting on. Vapi reports each of these as a
+    /// per-call average, so these are averages of averages over the calls that carried
+    /// one — never over every call, which would average a missing number in as a zero.
+    pub latency_avg: Option<f64>,
+    pub latency_model: Option<f64>,
+    pub latency_voice: Option<f64>,
+    pub latency_transcriber: Option<f64>,
+    pub latency_endpointing: Option<f64>,
     pub duration_avg: Option<f64>,
     pub latency_p50: Option<f64>,
     pub latency_p95: Option<f64>,
@@ -452,8 +473,22 @@ struct Point {
     created_at: Option<String>,
     duration_s: Option<f64>,
     cost: Option<f64>,
+    cost_stt: Option<f64>,
+    cost_llm: Option<f64>,
+    cost_tts: Option<f64>,
+    cost_vapi: Option<f64>,
+    cost_transport: Option<f64>,
+    cost_analysis: Option<f64>,
+    prompt_tokens: Option<i64>,
+    completion_tokens: Option<i64>,
+    cached_tokens: Option<i64>,
     tool_failures: Option<i64>,
     transferred: Option<bool>,
+    turn_avg: Option<f64>,
+    model_avg: Option<f64>,
+    voice_avg: Option<f64>,
+    transcriber_avg: Option<f64>,
+    endpointing_avg: Option<f64>,
     p50: Option<f64>,
     p95: Option<f64>,
 }
@@ -542,10 +577,11 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
                     transfers: r.get(4)?,
                     cost: r.get(5)?,
                     duration_avg: r.get(6)?,
-                    // Percentiles do not come out of a GROUP BY; the per-assistant chart
-                    // reads counts and cost, and the latency chart is the bucket series.
-                    latency_p50: None,
-                    latency_p95: None,
+                    // Percentiles do not come out of a GROUP BY, and the breakdowns are
+                    // not asked for per assistant. They stay NULL, which the charts render
+                    // as "—" rather than as a zero — so a chart that starts reading one
+                    // will show that nothing measured it, not that it measured nothing.
+                    ..Default::default()
                 },
             })
         })?;
@@ -554,7 +590,11 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
 
     let points = {
         let sql = format!(
-            "{cte} SELECT created_at, duration_s, cost, tool_failures, transferred,
+            "{cte} SELECT created_at, duration_s, cost, cost_stt, cost_llm, cost_tts,
+                          cost_vapi, cost_transport, cost_analysis, llm_prompt_tokens,
+                          llm_completion_tokens, llm_cached_tokens, tool_failures,
+                          transferred, lat_turn_avg_ms, lat_model_avg_ms, lat_voice_avg_ms,
+                          lat_transcriber_avg_ms, lat_endpointing_avg_ms,
                           lat_turn_p50_ms, lat_turn_p95_ms FROM sel"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -563,10 +603,24 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
                 created_at: r.get(0)?,
                 duration_s: r.get(1)?,
                 cost: r.get(2)?,
-                tool_failures: r.get(3)?,
-                transferred: r.get(4)?,
-                p50: r.get(5)?,
-                p95: r.get(6)?,
+                cost_stt: r.get(3)?,
+                cost_llm: r.get(4)?,
+                cost_tts: r.get(5)?,
+                cost_vapi: r.get(6)?,
+                cost_transport: r.get(7)?,
+                cost_analysis: r.get(8)?,
+                prompt_tokens: r.get(9)?,
+                completion_tokens: r.get(10)?,
+                cached_tokens: r.get(11)?,
+                tool_failures: r.get(12)?,
+                transferred: r.get(13)?,
+                turn_avg: r.get(14)?,
+                model_avg: r.get(15)?,
+                voice_avg: r.get(16)?,
+                transcriber_avg: r.get(17)?,
+                endpointing_avg: r.get(18)?,
+                p50: r.get(19)?,
+                p95: r.get(20)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -603,19 +657,30 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
 fn totals<'a>(points: impl Iterator<Item = &'a Point>) -> Totals {
     let mut t = Totals::default();
     let (mut p50, mut p95) = (Vec::new(), Vec::new());
-    // Averaged over the calls that carried a duration, not over every call: a call still
-    // running has no duration to average in.
-    let (mut duration_sum, mut durations) = (0.0, 0);
+    let mut duration = Mean::default();
+    let (mut turn, mut model, mut voice) = (Mean::default(), Mean::default(), Mean::default());
+    let (mut transcriber, mut endpointing) = (Mean::default(), Mean::default());
 
     for p in points {
         t.calls += 1;
         add_i64(&mut t.tool_failures, p.tool_failures);
         add_i64(&mut t.transfers, p.transferred.map(i64::from));
         add_f64(&mut t.cost, p.cost);
-        if let Some(v) = p.duration_s {
-            duration_sum += v;
-            durations += 1;
-        }
+        add_f64(&mut t.cost_stt, p.cost_stt);
+        add_f64(&mut t.cost_llm, p.cost_llm);
+        add_f64(&mut t.cost_tts, p.cost_tts);
+        add_f64(&mut t.cost_vapi, p.cost_vapi);
+        add_f64(&mut t.cost_transport, p.cost_transport);
+        add_f64(&mut t.cost_analysis, p.cost_analysis);
+        add_i64(&mut t.prompt_tokens, p.prompt_tokens);
+        add_i64(&mut t.completion_tokens, p.completion_tokens);
+        add_i64(&mut t.cached_tokens, p.cached_tokens);
+        duration.add(p.duration_s);
+        turn.add(p.turn_avg);
+        model.add(p.model_avg);
+        voice.add(p.voice_avg);
+        transcriber.add(p.transcriber_avg);
+        endpointing.add(p.endpointing_avg);
         if let Some(v) = p.p50 {
             p50.push(v);
         }
@@ -624,14 +689,40 @@ fn totals<'a>(points: impl Iterator<Item = &'a Point>) -> Totals {
         }
     }
 
-    if durations > 0 {
-        t.duration_avg = Some(duration_sum / f64::from(durations));
-    }
+    t.duration_avg = duration.value();
+    t.latency_avg = turn.value();
+    t.latency_model = model.value();
+    t.latency_voice = voice.value();
+    t.latency_transcriber = transcriber.value();
+    t.latency_endpointing = endpointing.value();
     p50.sort_by(f64::total_cmp);
     p95.sort_by(f64::total_cmp);
     t.latency_p50 = percentile(&p50, 0.50);
     t.latency_p95 = percentile(&p95, 0.95);
     t
+}
+
+/// A running mean that reports nothing until something contributes to it. Averaged over
+/// the calls that carried the number, never over every call: a call still running has no
+/// duration, and a call Vapi reported no model latency for must not be averaged in as a
+/// zero — that would drag every average towards a number nothing measured.
+#[derive(Default)]
+struct Mean {
+    sum: f64,
+    n: u32,
+}
+
+impl Mean {
+    fn add(&mut self, v: Option<f64>) {
+        if let Some(v) = v {
+            self.sum += v;
+            self.n += 1;
+        }
+    }
+
+    fn value(&self) -> Option<f64> {
+        (self.n > 0).then(|| self.sum / f64::from(self.n))
+    }
 }
 
 fn add_i64(acc: &mut Option<i64>, v: Option<i64>) {
