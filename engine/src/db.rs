@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const INIT: &str = include_str!("../migrations/0001_init.sql");
+const GLOBAL_SECRETS: &str = include_str!("../migrations/0002_global_secrets.sql");
 
 /// Where the DB lives when the caller does not say: `$GRAPHIFY_DB`, else `data/graphify.db`.
 pub fn default_path() -> PathBuf {
@@ -151,7 +152,7 @@ impl Db {
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        Migrations::new(vec![M::up(INIT)])
+        Migrations::new(vec![M::up(INIT), M::up(GLOBAL_SECRETS)])
             .to_latest(&mut conn)
             .context("running migrations")?;
         Ok(Self { conn })
@@ -387,9 +388,11 @@ impl Db {
 
     /// Store a secret's ciphertext. `last4` is the only part of the value that lands in
     /// clear, and it is `None` for a value too short to give a tail away safely.
+    /// `org_id` is `None` for a key that belongs to the whole install rather than to one
+    /// client — the model keys are one account's, not one org's.
     pub fn upsert_secret(
         &self,
-        org_id: i64,
+        org_id: Option<i64>,
         name: &str,
         ciphertext: &[u8],
         last4: Option<&str>,
@@ -404,15 +407,38 @@ impl Db {
     }
 
     /// A secret's ciphertext and its stored tail, or `None` if it was never set.
-    pub fn secret(&self, org_id: i64, name: &str) -> Result<Option<(Vec<u8>, Option<String>)>> {
+    ///
+    /// `IS`, not `=`: `org_id = NULL` is NULL rather than true, so the global row would
+    /// never be found by the query that stored it.
+    pub fn secret(
+        &self,
+        org_id: Option<i64>,
+        name: &str,
+    ) -> Result<Option<(Vec<u8>, Option<String>)>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT ciphertext, last4 FROM secrets WHERE org_id = ?1 AND name = ?2",
+                "SELECT ciphertext, last4 FROM secrets WHERE org_id IS ?1 AND name = ?2",
                 params![org_id, name],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
+    }
+
+    /// The org's retention settings. Both are written every time, because both are
+    /// nullable and "leave this one alone" and "clear this one" would otherwise be the
+    /// same request.
+    pub fn set_org_limits(
+        &self,
+        id: i64,
+        keep_days: Option<i64>,
+        max_calls: Option<i64>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE orgs SET keep_days = ?2, max_calls = ?3 WHERE id = ?1",
+            params![id, keep_days, max_calls],
+        )?;
+        Ok(())
     }
 
     /// Enforce retention: drop calls older than `keep_days`, then drop everything past the

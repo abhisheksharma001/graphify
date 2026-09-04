@@ -16,6 +16,7 @@ import CallTable from './CallTable'
 import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
 import Login from './Login'
+import Settings from './Settings'
 import { initial, toParams } from './filters'
 import type { Filters } from './filters'
 import { load } from './series'
@@ -26,7 +27,12 @@ const SETTLE_MS = 250
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
+/** Which of the two screens is showing. Not a route: graphify is one page served from
+ * one binary, and a URL to a settings screen is not a thing anyone needs to share. */
+type View = 'dashboard' | 'settings'
+
 export default function App() {
+  const [view, setView] = useState<View>('dashboard')
   const [signedOut, setSignedOut] = useState(false)
   const [orgs, setOrgs] = useState<Org[] | null>(null)
   const [assistants, setAssistants] = useState<Assistant[]>([])
@@ -97,19 +103,35 @@ export default function App() {
     <div className="page">
       <header className="top">
         <h1 className="wordmark">graphify</h1>
+        <nav>
+          {(['dashboard', 'settings'] as View[]).map((v) => (
+            // `aria-current`, not a class alone: which screen you are on is a fact about
+            // the page, and a reader who cannot see the underline still gets told.
+            <button
+              key={v}
+              type="button"
+              className="tab"
+              aria-current={view === v ? 'page' : undefined}
+              onClick={() => setView(v)}
+            >
+              {v === 'dashboard' ? 'Dashboard' : 'Settings'}
+            </button>
+          ))}
+        </nav>
         <span className="spacer" />
-        {stale && <span className="hint">loading…</span>}
+        {stale && view === 'dashboard' && <span className="hint">loading…</span>}
       </header>
 
       {error && <p className="error">{error}</p>}
 
       {orgs === null ? (
         <p className="notice">Loading…</p>
+      ) : view === 'settings' ? (
+        <Settings orgs={orgs} onOrgs={loadOrgs} onError={fail} />
       ) : orgs.length === 0 ? (
         <p className="notice">
-          No orgs yet, so there is nothing to chart. Creating one from the dashboard comes
-          with the settings screen; until then, POST <code>{'{"name": "acme"}'}</code> to{' '}
-          <code>/api/orgs</code>, then sync.
+          No orgs yet, so there is nothing to chart. Add one on the settings screen: a
+          name and a Vapi key, then sync.
         </p>
       ) : (
         <>

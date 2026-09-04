@@ -277,7 +277,66 @@ async fn a_stored_key_comes_back_as_a_tail_and_never_as_a_value() {
         .unwrap();
     assert_eq!(vapi["set"], true);
     assert_eq!(vapi["last4"], "9911");
-    assert_eq!(listed[1]["set"], false, "the other names stay unset");
+    // An org's status is about the org's own names. The model keys are the install's, so
+    // they are not this org's business and are not in this list.
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+}
+
+/// The model keys are the install's, and the global routes are where they live.
+#[tokio::test]
+async fn a_global_key_is_stored_once_and_comes_back_as_a_tail() {
+    let _guard = env_lock().await;
+    clear_env();
+    let s = plain(|_, _| {}).await;
+    let http = reqwest::Client::new();
+    let secret = "sk-ant-must-never-be-returned-4242";
+
+    let put = http
+        .put(s.url("/api/secrets/anthropic"))
+        .json(&json!({ "value": secret }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200);
+    let put_body = put.text().await.unwrap();
+    assert!(!put_body.contains(secret), "PUT echoed the value: {put_body}");
+
+    let res = reqwest::get(s.url("/api/secrets")).await.unwrap();
+    let body = res.text().await.unwrap();
+    assert!(!body.contains(secret), "GET returned the value: {body}");
+
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    let anthropic = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "anthropic")
+        .unwrap();
+    assert_eq!(anthropic["set"], true);
+    assert_eq!(anthropic["last4"], "4242");
+}
+
+/// Each name has one scope. Putting a model key on an org, or a Vapi key on the install,
+/// is refused rather than quietly stored where nothing will look for it.
+#[tokio::test]
+async fn a_secret_put_at_the_wrong_scope_is_refused() {
+    let _guard = env_lock().await;
+    clear_env();
+    let s = plain(|_, _| {}).await;
+    let http = reqwest::Client::new();
+
+    for (url, name) in [
+        ("/api/orgs/1/secrets/anthropic", "anthropic"),
+        ("/api/secrets/vapi", "vapi"),
+    ] {
+        let res = http
+            .put(s.url(url))
+            .json(&json!({ "value": "sk-whatever-0001" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 400, "{name} at {url}");
+    }
 }
 
 #[tokio::test]
@@ -845,4 +904,57 @@ async fn a_short_since_gets_hourly_buckets_without_a_window() {
 
     assert_eq!(body["bucket_size"], "1h");
     assert_eq!(body["totals"]["calls"], 10);
+}
+
+/// The retention settings are editable, and the response is the stored row.
+#[tokio::test]
+async fn retention_settings_are_saved_and_read_back() {
+    let s = plain(|_, _| {}).await;
+    let http = reqwest::Client::new();
+
+    let saved = http
+        .put(s.url("/api/orgs/1"))
+        .json(&json!({ "keep_days": 7, "max_calls": 500 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status().as_u16(), 200);
+    let body: Value = saved.json().await.unwrap();
+    assert_eq!(body["keep_days"], 7);
+    assert_eq!(body["max_calls"], 500);
+
+    // Absent means no limit, and has to be storable — otherwise a cap could be set and
+    // never lifted.
+    let cleared = http
+        .put(s.url("/api/orgs/1"))
+        .json(&json!({ "keep_days": 14, "max_calls": null }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = cleared.json().await.unwrap();
+    assert_eq!(body["max_calls"], Value::Null);
+
+    let (_, listed) = get(&s.url("/api/orgs")).await;
+    assert_eq!(listed[0]["keep_days"], 14);
+}
+
+/// D-5 is a cap. An org may keep less than fourteen days, never more, and the refusal
+/// arrives while someone is looking at the form rather than at the next unattended sync.
+#[tokio::test]
+async fn a_keep_days_above_the_cap_is_refused() {
+    let s = plain(|_, _| {}).await;
+    let http = reqwest::Client::new();
+
+    for bad in [json!({ "keep_days": 30 }), json!({ "keep_days": 0 })] {
+        let res = http.put(s.url("/api/orgs/1")).json(&bad).send().await.unwrap();
+        assert_eq!(res.status().as_u16(), 400, "accepted {bad}");
+    }
+
+    let missing = http
+        .put(s.url("/api/orgs/77"))
+        .json(&json!({ "keep_days": 7 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status().as_u16(), 404);
 }

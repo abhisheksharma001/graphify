@@ -13,7 +13,23 @@ export class Unauthorized extends Error {}
 export type Org = {
   id: number
   name: string
+  /** Retention. `keep_days` is capped at 14 by the engine; `max_calls` is null for no
+   * limit at all, which is a real setting and not a missing one. */
+  keep_days: number | null
+  max_calls: number | null
 }
+
+/** What the settings screen is allowed to know about a key: that there is one, and its
+ * last four characters. There is no shape of this type that could carry the value. */
+export type SecretStatus = {
+  name: string
+  set: boolean
+  last4: string | null
+}
+
+/** What `POST /api/orgs/{id}/test` answers. A key that does not work is an answer, not a
+ * failure — the request succeeded and told us the truth. */
+export type TestResult = { ok: true; assistants: number } | { ok: false; error: string }
 
 /** `/api/assistants` returns far more per row; the picker needs a name and an id. */
 export type Assistant = {
@@ -131,9 +147,9 @@ async function get<T>(path: string, params?: URLSearchParams): Promise<T> {
   return (await res.json()) as T
 }
 
-async function put<T>(path: string, params: URLSearchParams, body: unknown): Promise<T> {
-  const res = await fetch(`${path}?${params}`, {
-    method: 'PUT',
+async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
   })
@@ -142,7 +158,35 @@ async function put<T>(path: string, params: URLSearchParams, body: unknown): Pro
   return (await res.json()) as T
 }
 
+const put = <T>(path: string, params: URLSearchParams, body: unknown) =>
+  send<T>('PUT', `${path}?${params}`, body)
+
 export const orgs = () => get<Org[]>('/api/orgs')
+
+export const createOrg = (name: string) => send<Org>('POST', '/api/orgs', { name })
+
+/** Both limits go every time. They are both nullable, so "leave this one alone" and
+ * "clear this one" would otherwise be the same request. */
+export const saveLimits = (org: number, keep_days: number | null, max_calls: number | null) =>
+  send<Org>('PUT', `/api/orgs/${org}`, { keep_days, max_calls })
+
+/** The org's own keys — the Vapi key. The response is the new status, never the value. */
+export const secrets = (org: number) => get<SecretStatus[]>(`/api/orgs/${org}/secrets`)
+
+export const setSecret = (org: number, name: string, value: string) =>
+  send<SecretStatus[]>('PUT', `/api/orgs/${org}/secrets/${encodeURIComponent(name)}`, {
+    value,
+  })
+
+/** The install's own keys — the model providers, which no client org owns. */
+export const globalSecrets = () => get<SecretStatus[]>('/api/secrets')
+
+export const setGlobalSecret = (name: string, value: string) =>
+  send<SecretStatus[]>('PUT', `/api/secrets/${encodeURIComponent(name)}`, { value })
+
+/** One `GET /assistant` at Vapi with the org's stored key, to answer "is this key any
+ * good". The engine makes the call; the browser never holds the key. */
+export const testOrg = (org: number) => send<TestResult>('POST', `/api/orgs/${org}/test`, null)
 
 export const assistants = (org: number | null) =>
   get<Assistant[]>('/api/assistants', new URLSearchParams(org == null ? {} : { org: String(org) }))
