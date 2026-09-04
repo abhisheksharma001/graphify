@@ -1372,7 +1372,7 @@ does not page. `daily_cap_usd` is stored and read by nobody until S-28. `pattern
 never sends both. And there is still no UI test runner, so the screen is held by a browser
 walkthrough and by the engine's tests, not by a test of its own.
 
-### S-28 — Daily hybrid/full modes with spend cap ☐
+### S-28 — Daily hybrid/full modes with spend cap ☑ (PR #29, 5c176e3)
 **PR:** one. **Depends on:** S-27, S-23.
 **Files:** `brain/src/graphify_brain/daily.py`, `engine/src/sync.rs`.
 **Today:** free mode only.
@@ -1383,6 +1383,61 @@ that the rule matched since last run and are unlabeled → `LabelBatch` confirm;
 **Acceptance:** WHEN the cap is $0.01 THEN at most one batch SHALL run and the job log SHALL say `cap reached`.
 **Verify:** `uv run pytest -q tests/test_daily.py`; `cargo test -q --test sync_daily`.
 **Must not:** run without a cap.
+
+**Learned:** the step is three decisions and one of them is not in the register.
+
+**Where the rule half runs, and why it is inside `sync`.** In hybrid the rule chooses which
+calls a model is paid to read, so a prefilter that has not seen this morning's calls is a
+model that reads none of them. `graphify apply` is free-only on purpose — re-counting a
+model-backed pattern from the outside is somebody asking for a number and getting a bill —
+so `sync` grew `rules::apply_org`, which runs the rule half for every pattern in one org in
+whatever mode it is in. That is still arithmetic and still free; it is the same pass the
+Re-apply button does. The order in S-31's crontab line — sync, assistants, apply, daily —
+is now literally what `graphify sync` does, in that order, in one command.
+
+**What a verdict does to a rule's row.** This is the decision the register does not name and
+the mode is incoherent without it. A confirmed call gets a `source='llm'` match of its own,
+which in hybrid is a second row for one call — exactly what S-27's `count(DISTINCT
+call_id)` was written for. A **rejected** call loses the rule's row, and `run_one` will not
+put it back the next time the rule is run. Leave it in and the count beside the pattern
+reads the same before and after the model was asked: hybrid mode becomes a bill for a number
+that did not move, and Re-apply quietly undoes every confirmation that was paid for — which
+the next daily run cannot buy back, because those calls have been read once and a model is
+not asked the same question twice. Free patterns are deliberately exempt: the wizard stores
+its sample against every pattern, and a free pattern is one whose rule was chosen to
+disagree with part of that sample by a measured amount. That figure is `agreement`, and a
+rule quietly edited to agree with it would make it meaningless.
+
+**Two caps, and neither of them is a click.** The pattern's `daily_cap_usd` bounds one
+pattern in one run; what is left of the org's day — `GRAPHIFY_DAILY_CAP_USD`, default $5,
+less what `spend` already holds — bounds the whole run, so a first pattern that eats the
+budget leaves the second unread rather than doubling the bill. Both go through
+`label._affordable`, which prices a wave and refuses it *before* it is sent; checking
+afterwards is finding out that the cap was passed. A cap that will not parse is an error,
+not a fall back to five dollars — somebody who wrote `2,50` meant to set a cap. A cap of
+zero is allowed and means zero, which is how the daily modes are turned off on a machine
+without editing every pattern on it.
+
+**The spend is reported even when the run is not clean.** The engine books a job's cost off
+the brain's last line, so a traceback out of `daily` is money spent with nothing to book it
+from. A pattern that falls over is caught, recorded against that pattern with its error,
+and the run carries on. The job ends `done` with the failure in its log and its output,
+because `failed` would book $0.
+
+**A blocking spawn.** `jobs::start` answers an HTTP request while the child works; a `sync`
+at six in the morning has nobody to answer, and a command that returned early would exit
+and take its child with it. `jobs::run_blocking` is the same supervisor on the calling
+thread — no `Jobs` map, because `daily` is a kind that never parks.
+
+**Not done:** `spend` is keyed `(day, org)`, so there is no per-pattern record of a day —
+the pattern's cap bounds one run and the global cap is what bounds the day. A batch that
+was charged inside a run that later raises still loses its `usd`; that is S-23's own path
+and it is unchanged. `apply_org` is reachable only through `sync` and the Re-apply button:
+there is no `graphify apply --org`. The candidate list is capped at 500 calls per pattern
+per run, which is memory and not money, and a full-mode pattern on a busier org than that
+falls behind by a day at a time. And `daily` reports its progress per pattern while `label`
+reports it per batch down the same pipe, so a job's last `PROGRESS` line is the pattern one
+and the two interleave.
 
 ### S-29 — Ask box (BAML `AskAnalysis`) ☐
 **PR:** one. **Depends on:** S-25, S-17.
