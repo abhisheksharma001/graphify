@@ -978,7 +978,7 @@ calls and will not be at a million. Nothing calls `apply` on a schedule or after
 it is a command a person runs. The UI cannot see a pattern or its matches yet; the
 `patterns` rows tested here were written by hand, because nothing creates one until S-24.
 
-### S-22 — BAML `PlanPattern` + `ClarifyPattern` ☐
+### S-22 — BAML `PlanPattern` + `ClarifyPattern` ☑ (PR #23, 825de65)
 **PR:** one. **Depends on:** S-20.
 **Files:** `brain/baml_src/plan.baml`, `brain/src/graphify_brain/plan.py`, `brain/tests/test_plan.py`.
 **Today:** nothing.
@@ -988,6 +988,55 @@ questions: string[], confidence: float, expressible: bool, reason: string }`. CL
 **Acceptance:** WHEN a mocked model returns confidence 0.7 with 2 questions THEN the CLI SHALL output them unchanged and exit 0.
 **Verify:** `uv run pytest -q tests/test_plan.py`.
 **Must not:** call a model in tests.
+
+**Learned:** **neither function grades its own answer.** A plan at 0.7 confidence with two
+questions is printed as it stands and exits 0 — that is the acceptance test, and a brain
+that withheld it would leave the analyst nothing to answer. The gate that will not spend
+below 0.95 lives in the wizard, where the person spending can see it.
+
+**Two deviations from the register's input table**, both because the model would otherwise
+be grading an answer it cannot check. `ClarifyPattern` is given the **criterion**: a `Plan`
+holds rows, questions and a reason, and none of those is the sentence an answer has to be
+judged against. It is also given the **DSL**: an answer can add a row the DSL cannot
+express, and `expressible` is the flag the wizard opens its spend button on, so a clarify
+that could not see the DSL could only carry the old flag forward.
+
+**The DSL description is a constant in `plan.py`, not an input.** There is one rule DSL and
+`engine/src/rules.rs` decides what it means; a description somebody typed into a request
+would promise conditions the engine cannot check. It is passed as a function argument
+rather than baked into the prompt so a test can assert the model was shown it — and that
+test earns its place: deleting `{{ dsl }}` from the prompt fails it while `baml-cli
+generate` stays green. The description ends by naming what the DSL *cannot* do (turns,
+silence, tone, comparing calls), because `expressible` means nothing unless the model has
+been told where the edge is.
+
+**`if_` the whole way through** — BAML class, JSON, engine, UI. `if` is a Python keyword,
+so one hop would have to rename it, and a field with two names is a field somebody reads
+under the wrong one. `_envelope` refuses an unknown key for the S-21 reason: a `criteria`
+for `criterion` would reach the model as no criterion at all and it would invent one.
+
+**Every model call goes through `plan.client()`, the one seam.** Tests that expect a call
+install a `Recorder`; tests that expect none install `Never`, which raises on any attribute
+access. `Never` caught two real bugs — `client().PlanPattern(...)` resolves the function
+before evaluating its arguments, so validation now happens on its own lines first. Both
+prompts are also rendered with no key and no network (`b.request.*` builds the request
+without sending it), which is the only way to catch a template that no longer carries the
+DSL.
+
+**The generated client moved to `brain/src/baml_client/`** — the one directory the editable
+install puts on `sys.path`. In `brain/` it was importable only from a process whose working
+directory happened to be `brain/`, and S-25 spawns this program from wherever the engine
+was started. Still gitignored, still generated in CI before pytest. `plan.py` imports it
+inside the function, so `graphify-brain version` runs on a fresh checkout.
+
+**Not done:** **neither call is metered** — `plan` and `clarify` spend real money per
+message in the wizard's chat, no cost is reported, and no daily cap counts them; the
+estimate/GO handshake arrives in S-23 for labelling, where the spend is large, and these
+two are a few cents each with the send button as the explicit go. Extra keys *inside* a
+submitted `plan` object are ignored rather than refused (pydantic's default; the envelope
+around it does refuse them). `--db` is opened and closed by both commands but no row is
+read — it is checked so a wrong path fails at the first step of the wizard instead of
+after the labelling is paid for. No `Haiku` client yet.
 
 ### S-23 — BAML `LabelBatch` with batched loop + cost gate ☐
 **PR:** one. **Depends on:** S-22.
