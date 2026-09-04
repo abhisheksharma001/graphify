@@ -472,7 +472,9 @@ each end up at two versions because `chacha20poly1305 0.10` pins the older ones.
 **Change:** `axum`. Routes: `GET /api/orgs`, `POST /api/orgs`, `GET /api/orgs/{id}/secrets`,
 `PUT /api/orgs/{id}/secrets/{name}` (body `{value}`), `POST /api/orgs/{id}/test`
 (one GET /assistant with that key → ok/err), `GET /api/assistants?org=`,
-`GET /api/calls?…`, `GET /api/calls/{id}`, `GET /api/stats?…`. Shared filters: `org`,
+`GET /api/calls?…`, `GET /api/calls/{id}`, `GET /api/stats?…`, and — added in S-17 —
+`GET|PUT /api/dashboard?org=` (body `{charts:[{id, on}]}`, which takes `org` and
+nothing else). Shared filters: `org`,
 `assistant_id` (repeatable), `since`, `until`, `window` (`1d|5h|7h|<n>h|<n>d`), `last`,
 `ended_group`, `call_id`, `tool_failed`, `transferred`. `/api/stats` returns
 `{by_ended_group, by_ended_reason, per_bucket:{calls, tool_failures, transfers,
@@ -697,7 +699,7 @@ in it keeps a card's width instead of stretching across the page.
 **Not done:** the same keyboard gap as S-14 and S-15 — recharts marks are not focusable, so
 hover has no keyboard equivalent and the table twin is the reachable relief.
 
-### S-17 — Chart toggles + saved dashboard layout ☐
+### S-17 — Chart toggles + saved dashboard layout ☑ (PR #17, a67e762)
 **PR:** one. **Depends on:** S-16.
 **Files:** `ui/src/Dashboard.tsx`, `engine/src/server.rs` (`GET/PUT /api/dashboard?org=`).
 **Today:** all charts always on.
@@ -705,6 +707,49 @@ hover has no keyboard equivalent and the table twin is the reachable relief.
 **Acceptance:** WHEN a chart is disabled and the page reloads THEN it SHALL stay hidden.
 **Verify:** `cargo test -q --test dashboard`; `pnpm build`; manual reload.
 **Must not:** lose the config on sync.
+**Learned:** every card is now one `Entry` — `{id, title, wide?, node}` — and `Pack` and
+`Analysis` return lists of them rather than packs of their own. `Dashboard.tsx` draws the
+one pack, and is the only file that knows which charts exist. `card(id, title, node)` in
+`ui/src/charts/entry.ts` writes each title once, so the menu and the card's heading cannot
+come to disagree.
+
+The layout is a preference and nothing else: it names ids and says nothing about what they
+draw. That is what lets the two kinds of chart coexist — the fixed ones, always there, and
+the structured keys, which exist only while a call in the selection carries them. Two rules
+follow, and they are the whole file. **An id the layout has never seen is new, and is
+drawn**: a chart added by an upgrade, or a key that arrived with the last sync. Hiding it
+would be the dashboard deciding for the reader that a number they have never seen is not
+worth seeing. **An id with no chart behind it is remembered anyway**: it shows in the menu
+marked "not in this range", is not drawn, and is still settable — narrowing a filter must
+not quietly delete a preference. Nothing is written until the reader actually changes
+something, so a fresh org's layout stays empty and empty means "draw everything".
+
+The engine checks the layout's shape, never its contents: it cannot know a structured key's
+name at compile time, so there is no closed set of ids to check against. It refuses a blank
+or over-long id, more than `MAX_CHARTS` (200) of them, and — the one worth refusing outright
+— the same id twice, because the dashboard keys its charts by id and two rows claiming one
+leave the order of the page undefined. A stored layout that will not parse comes back as the
+default rather than a 500: a preference that cannot be honoured must not take every chart
+down with it. `?org=` is read by hand rather than through `Filters` — a layout belongs to an
+org, not to a selection, and accepting `?window=7h` would say it could differ per range.
+
+Ids are namespaced: a structured key is `structured:<key>`, so a schema with a key called
+`cost` in it can never be mistaken for the cost chart.
+
+Dragging is a pointer gesture and nothing else, so every row also carries a pair of real ↑/↓
+buttons. Both paths were verified live; the drag by dispatching the drag events the handlers
+are wired to, because the browser's own gesture does not fire them under a synthetic mouse.
+
+The must-not is pinned where it would actually break: `a_sync_does_not_lose_the_layout`
+writes a layout through the API, then upserts and purges through a second connection the way
+a sync does, and reads it back unchanged. The `dashboard` table has been in `0001_init.sql`
+since the start, so this step needed no migration.
+
+`.pack > .wide` gives the ended-group chart the full width wherever the reader puts it.
+
+**Not done:** the menu closes only by its own button — no click-outside, no Escape; it is a
+disclosure panel above the charts, not a modal. Recharts marks are still not focusable, the
+same gap as S-14/S-15/S-16, with the table twin as the reachable relief.
 
 ### S-18 — Call table + call drawer ☐
 **PR:** one. **Depends on:** S-14.
