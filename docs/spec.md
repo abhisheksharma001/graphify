@@ -1237,7 +1237,7 @@ yet — `spend` is written, and S-28 is what checks it. A job's log is capped at
 dropping later lines, which is the wrong end of a traceback to keep. And a job row is never
 deleted, so `jobs` grows for ever.
 
-### S-26 — UI pattern wizard: config step, chat step, plan table, ≥95% gate, cost go ☐
+### S-26 — UI pattern wizard: config step, chat step, plan table, ≥95% gate, cost go ☑ (PR #27, 98e6f83)
 **PR:** one. **Depends on:** S-25, S-18.
 **Files:** `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/PlanTable.tsx`.
 **Today:** no pattern UI.
@@ -1249,6 +1249,63 @@ agreement, suggested chart, "Save".
 **Acceptance:** WHEN confidence is below 0.95 THEN the read button SHALL be disabled; WHEN it is clicked THEN `/go` SHALL be called exactly once.
 **Verify:** `pnpm build`; manual walkthrough with a real key after Abhishek's go (Sonnet, sample 25).
 **Must not:** show a key; start spend without the click.
+
+**Learned.** **The go is two clicks on one button, and the price is on it before the one
+that costs.** The register asks for a button reading "Read N calls · ~$X", and the only
+honest source of that `$X` is the brain — the estimate is arithmetic over the transcripts
+and the model's rates, and reproducing it in TypeScript would be a second copy free to
+drift. So the first click starts the labelling job and lets it park on its own quote: the
+child is alive with its stdin open, having read nothing and bought nothing. The button then
+carries that figure and the second click is the go. **Quoting on a deliberate click rather
+than the moment the plan clears the gate is the whole reason there are two.** A parked job
+holds a live child for half an hour, there is no cancel, and `MAX_LIVE` is four — so
+quoting automatically on every clarify that happened to land above 0.95 would wedge the
+engine with jobs nobody asked for, after which nothing starts at all. The go is sent behind
+a `useRef` and not a piece of state, because a re-render is too late for the second click of
+a double-click.
+
+**A client polling a job has to treat `waiting` as in flight.** `POST /api/jobs/{id}/go`
+answers as soon as the word is on its way to the child; the row goes back to `running` in
+the thread that was parked on it, after that. Six goes in a row here were all `running` by
+the next request, so the window is small — but a client that read `waiting` as an ending
+would fail a labelling run that was about to succeed.
+
+**"Read the agent's prompt" needed an engine route**, and that is the one thing here that is
+not a UI file. `/api/assistants` deliberately leaves the prompt behind — the list is a
+picker and the prompts run to tens of kilobytes each — so there was nowhere to go and read
+one. `GET /api/assistants/{id}/prompt` reads exactly the assistant it names, and the org is
+part of the lookup rather than a filter on the answer: one client's assistant id must never
+read another's prompt.
+
+**A run is one object, tagged with what it is about.** The quote, the calls it was priced
+against, the labels it bought and the pattern written from them are never separately true,
+so they travel together under the settings string they belong to, compared during render —
+the dashboard's trick with its query string. There is no effect racing the edit that caused
+it, and a stale run is simply not shown; its parked job is left to expire, unspent.
+
+**The failure headline is a guess, and had to be.** The brain's own refusals are one tidy
+line. Anything it did not expect is a Python traceback whose last line is the tail of a
+wrapped sentence: "to be set but it is not" is a true last line and tells nobody that no
+model key is configured, while `BamlError: LLM client 'Sonnet' requires environment variable
+'ANTHROPIC_API_KEY'` is four lines above it. So the headline is the last line that *starts*
+with an exception's name, the last non-empty line when there is none, and the whole log is
+one disclosure away underneath. Showing it is safe: the engine scrubbed the keys on the way
+into that column.
+
+**Verified without spending anything.** The wizard's exact bodies were sent to the real
+`graphify-brain` through the engine: `plan` with a `system_prompt` and `synthesize` with
+labels were both accepted and both died at the missing provider key — which is the proof
+they passed validation — and `label` parked at `ESTIMATE 0.0431` with argv
+`label --db …`, no key and no `--yes`. The engine was killed with no `GO` ever sent, and
+`spend`, `pattern_labels` and `patterns` were all empty.
+
+**Not done:** `plan` and `clarify` are unmetered, so the wizard cannot say what the
+conversation cost. There is no cancel — a quote the analyst walks away from holds a child
+until the engine expires it, and three abandoned quotes plus one real job is the cap. The
+Save button shows the cap rather than an estimate, because `synthesize` prints its price and
+does not wait for a go. The wizard cannot change org: that is the filter bar's, on the
+dashboard. And there is still no UI test runner, so the two acceptances are held by the
+shape of the code and a manual walkthrough, not by a test.
 
 ### S-27 — Patterns list, pattern chart, edit rule, mode + cap, re-apply ☐
 **PR:** one. **Depends on:** S-26.
