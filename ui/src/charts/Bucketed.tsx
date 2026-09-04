@@ -19,16 +19,24 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { Bucket, Totals } from '../api'
+import type { Totals } from '../api'
 import { day, full, hour } from '../format'
 import { BAR, Legend, Panel, Segment } from './frame'
 import type { Key } from './frame'
 
 /** A number the engine reports per bucket. Named by its field, so the chart and the table
- * can never disagree about which number they are showing. */
-export type Field = keyof Omit<Totals, 'calls'>
+ * can never disagree about which number they are showing.
+ *
+ * The pack's charts name fields of `Totals`. A structured numeric key has no field of its
+ * own — the engine cannot know its name at compile time — so it arrives on a series of
+ * its own under `avg`, which is why that one name is in here too. */
+export type Field = keyof Omit<Totals, 'calls'> | 'avg'
 
 export type Measure = { field: Field; label: string; colour: string }
+
+/** Anything with a bucket stamp and some of these numbers on it: `Bucket` from the
+ * engine, or a structured key's own series. */
+export type Series = { bucket: string } & Partial<Record<Field, number | null>>
 
 type Row = { ms: number; top: string | null } & Partial<Record<Field, number | null>>
 
@@ -36,7 +44,7 @@ type Row = { ms: number; top: string | null } & Partial<Record<Field, number | n
  *
  * A NULL stays NULL. Recharts draws no bar and breaks the line at one, which is exactly
  * right: an hour nothing was measured in is a gap, not a floor. */
-function rowsFor(buckets: Bucket[], fields: Measure[], stack: Measure[]): Row[] {
+function rowsFor(buckets: Series[], fields: Measure[], stack: Measure[]): Row[] {
   return buckets.map((b) => {
     const ms = Date.parse(b.bucket)
     const row: Row = { ms, top: null }
@@ -90,7 +98,7 @@ export default function Bucketed({
 }: {
   title: string
   sub?: string
-  buckets: Bucket[]
+  buckets: Series[]
   bucketSize: string
   stale: boolean
   /** Drawn as stacked bars, bottom of the stack first. */

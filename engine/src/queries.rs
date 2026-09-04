@@ -462,10 +462,151 @@ pub struct Stats {
     pub tool_failures_by_name: BTreeMap<String, i64>,
     pub by_assistant: Vec<ByAssistant>,
     pub success_eval_counts: BTreeMap<String, i64>,
-    /// How many calls carry each top-level key of `analysis.structuredData`. This is what
-    /// tells the UI which structured columns are worth offering.
-    pub structured_keys: BTreeMap<String, i64>,
+    /// Every top-level key of `analysis.structuredData` the selection carried, in name
+    /// order — never in count order, so a filter that changes the numbers never reorders
+    /// the charts drawn from them.
+    pub structured_fields: Vec<StructuredField>,
     pub totals: Totals,
+}
+
+/// One structured key, and the only chart it can honestly carry.
+#[derive(Debug, Serialize)]
+pub struct StructuredField {
+    pub key: String,
+    /// `number` when every value the key carried was one, `text` when they were all
+    /// scalars, `other` when any of them was an object or a list. Classified over the
+    /// whole selection rather than per value: one string among the numbers means the
+    /// average would be over some of the calls, which is not the average of anything.
+    pub kind: &'static str,
+    /// Calls that carried a non-null value for this key.
+    pub calls: i64,
+    /// `text` only: value -> calls, the `VALUES_SHOWN` commonest, in name order.
+    pub counts: BTreeMap<String, i64>,
+    /// `text` only: what `counts` left out. NULL when it left out nothing.
+    pub tail: Option<Tail>,
+    /// `number` only: the average per bucket, on the same axis as `per_bucket`.
+    pub per_bucket: Vec<NumberBucket>,
+}
+
+/// The values past the cap, summed here rather than dropped. The chart draws them as one
+/// row, so a key with two hundred distinct values still adds up to the calls that carried
+/// it.
+#[derive(Debug, Serialize)]
+pub struct Tail {
+    pub values: i64,
+    pub calls: i64,
+}
+
+/// One bucket of a numeric structured key.
+#[derive(Debug, Serialize)]
+pub struct NumberBucket {
+    pub bucket: String,
+    /// Averaged over the calls in this bucket that carried the key. NULL when none did,
+    /// which the chart draws as a gap and not as a zero.
+    pub avg: Option<f64>,
+}
+
+/// How many values a count chart shows before the rest is folded into one row. The fold
+/// happens here, over every value, so the row is the true remainder — a chart folding its
+/// own tail could only ever sum the values it was sent.
+const VALUES_SHOWN: usize = 10;
+
+/// Everything seen for one structured key while the rows are read, before it is known
+/// what kind of key it is.
+#[derive(Default)]
+struct Values {
+    calls: i64,
+    /// Every scalar value as it will be shown. Thrown away if the key turns out numeric.
+    counts: BTreeMap<String, i64>,
+    /// Bucket stamp -> mean of the numbers in it.
+    numbers: BTreeMap<String, Mean>,
+    /// A value that was not a number, and a value that was not a scalar at all.
+    non_number: bool,
+    nested: bool,
+}
+
+impl Values {
+    fn add(&mut self, v: &serde_json::Value, bucket: Option<&str>) {
+        self.calls += 1;
+        match v {
+            serde_json::Value::Number(n) => {
+                match n.as_f64() {
+                    // A call with no `created_at` still counts, it just is not anywhere in
+                    // particular — the same rule the time axis itself uses.
+                    Some(f) => {
+                        if let Some(b) = bucket {
+                            self.numbers.entry(b.to_string()).or_default().add(Some(f));
+                        }
+                    }
+                    None => self.non_number = true,
+                }
+                *self.counts.entry(n.to_string()).or_default() += 1;
+            }
+            serde_json::Value::String(s) => {
+                self.non_number = true;
+                *self.counts.entry(s.clone()).or_default() += 1;
+            }
+            serde_json::Value::Bool(b) => {
+                self.non_number = true;
+                *self.counts.entry(b.to_string()).or_default() += 1;
+            }
+            // An object or a list is neither a count nor a number. Saying so is better
+            // than counting `[object Object]` eleven times.
+            _ => self.nested = true,
+        }
+    }
+
+    fn finish(self, key: String, axis: &[Bucket]) -> StructuredField {
+        let kind = if self.nested {
+            "other"
+        } else if self.non_number {
+            "text"
+        } else {
+            "number"
+        };
+        let per_bucket = if kind == "number" {
+            axis.iter()
+                .map(|b| NumberBucket {
+                    bucket: b.bucket.clone(),
+                    avg: self.numbers.get(&b.bucket).and_then(Mean::value),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (counts, tail) = if kind == "text" {
+            fold(self.counts)
+        } else {
+            (BTreeMap::new(), None)
+        };
+        StructuredField {
+            key,
+            kind,
+            calls: self.calls,
+            counts,
+            tail,
+            per_bucket,
+        }
+    }
+}
+
+/// The commonest `VALUES_SHOWN` values, and one row for everything else.
+///
+/// Folding at exactly one more than the cap: with eleven values there is nothing to gain
+/// by hiding one of them behind the word "other".
+fn fold(counts: BTreeMap<String, i64>) -> (BTreeMap<String, i64>, Option<Tail>) {
+    if counts.len() <= VALUES_SHOWN + 1 {
+        return (counts, None);
+    }
+    let mut sorted: Vec<(String, i64)> = counts.into_iter().collect();
+    // Commonest first, ties by name, so the same selection always folds the same way.
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let rest = sorted.split_off(VALUES_SHOWN);
+    let tail = Tail {
+        values: rest.len() as i64,
+        calls: rest.iter().map(|(_, n)| n).sum(),
+    };
+    (sorted.into_iter().collect(), Some(tail))
 }
 
 /// The per-call numbers the buckets are built from, before they are bucketed.
@@ -537,26 +678,6 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?;
         rows.collect::<rusqlite::Result<BTreeMap<_, _>>>()?
-    };
-
-    let structured_keys = {
-        let sql = format!("{cte} SELECT structured FROM sel WHERE structured IS NOT NULL");
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(params.clone()), |r| {
-            r.get::<_, String>(0)
-        })?;
-        let mut keys: BTreeMap<String, i64> = BTreeMap::new();
-        for raw in rows {
-            let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&raw?) else {
-                continue;
-            };
-            // A key present but null is a key the assistant was asked for and did not
-            // fill. That is not a column worth offering, so it does not count.
-            for k in map.iter().filter(|(_, v)| !v.is_null()).map(|(k, _)| k) {
-                *keys.entry(k.clone()).or_default() += 1;
-            }
-        }
-        keys
     };
 
     let by_assistant = {
@@ -638,6 +759,39 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
     let per_bucket = bucketed(&points, hourly, floor.as_deref(), f.until.as_deref(), now);
     let totals = totals(points.iter());
 
+    // Read after the axis exists, so a numeric key's series is built on the same buckets
+    // as everything else on the page rather than on an axis of its own.
+    let structured_fields = {
+        let sql =
+            format!("{cte} SELECT created_at, structured FROM sel WHERE structured IS NOT NULL");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(params.clone()), |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut seen: BTreeMap<String, Values> = BTreeMap::new();
+        for row in rows {
+            let (created_at, raw) = row?;
+            let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&raw)
+            else {
+                continue;
+            };
+            let bucket = created_at
+                .as_deref()
+                .and_then(parse_instant)
+                .map(|t| truncate(t, hourly));
+            // A key present but null is a key the assistant was asked for and did not
+            // fill. That is not a column worth offering, so it does not count.
+            for (k, v) in map.iter().filter(|(_, v)| !v.is_null()) {
+                seen.entry(k.clone())
+                    .or_default()
+                    .add(v, bucket.as_deref());
+            }
+        }
+        seen.into_iter()
+            .map(|(key, v)| v.finish(key, &per_bucket))
+            .collect()
+    };
+
     Ok(Stats {
         by_ended_group,
         by_ended_reason,
@@ -646,7 +800,7 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
         tool_failures_by_name,
         by_assistant,
         success_eval_counts,
-        structured_keys,
+        structured_fields,
         totals,
     })
 }

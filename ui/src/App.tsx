@@ -9,6 +9,7 @@ import { Unauthorized } from './api'
 import type { Assistant, Org } from './api'
 import FilterBar from './FilterBar'
 import Login from './Login'
+import Analysis from './charts/Analysis'
 import EndedGroups from './charts/EndedGroups'
 import Pack from './charts/Pack'
 import { initial, toParams } from './filters'
@@ -120,6 +121,7 @@ export default function App() {
             <>
               <EndedGroups chart={chart.data} stale={stale} />
               <Pack stats={chart.data.stats} stale={stale} />
+              <Analysis stats={chart.data.stats} stale={stale} />
             </>
           ) : (
             <p className="notice">Loading…</p>
