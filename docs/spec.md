@@ -603,7 +603,7 @@ for the first time, against a real Vite build rather than an empty table.
 Not done: the chart's hover has no keyboard equivalent — recharts bars are not focusable. The
 table view is the reachable twin, and carries every value the tooltip does.
 
-### S-15 — Chart pack A: tools, transfers, latency, cost, duration, per-assistant ☐
+### S-15 — Chart pack A: tools, transfers, latency, cost, duration, per-assistant ☑ (PR #15, 54da7c2)
 **PR:** one. **Depends on:** S-14.
 **Files:** `ui/src/charts/*.tsx`.
 **Today:** one chart.
@@ -613,6 +613,43 @@ calls per assistant. All from `/api/stats`.
 **Acceptance:** WHEN stats contain `tool_failures_by_name` with 2 tools THEN the tools chart SHALL show 2 bars with those names.
 **Verify:** `pnpm build` clean; screenshot.
 **Must not:** invent a value for a NULL series.
+**Learned:** The engine had the columns and was not aggregating them. `calls` already stored
+`cost_stt`…`cost_analysis`, the three token counts and the four `lat_*_avg_ms` components, but
+`Totals` carried none of them, so three of the charts this step names could not be drawn from
+`/api/stats` at all. `Totals` now carries all fourteen plus `latency_avg`. The step's file list
+said `ui/src/charts/*.tsx`; the data it asks for was not there yet.
+Averages go through a `Mean` that counts only the calls that carried the number. Averaging a
+missing latency in as a zero would drag every component towards a figure nothing measured —
+and it would read **lowest** for exactly the calls that went wrong. `by_assistant` is built
+from a `GROUP BY`, which yields no percentiles and none of the new breakdowns, so those stay
+NULL there with a comment saying so: a chart that starts reading one will show that nothing
+measured it, not that it measured nothing.
+Six of the seven charts are one component. `Bucketed` is a `ComposedChart` where bars stack
+and lines overlay, which covers a pure stack (cost), a pure line (tool failures) and the
+latency chart, which is both — the four components add up to the average turn and the p50/p95
+are lines over them, in the same milliseconds. One axis throughout. Lines are `type="linear"`,
+never `monotone`: a spline between two buckets passes through values nothing measured.
+The 2px surface ring goes on a line's dots **only when the chart also has bars**. A p50 drawn
+straight onto a stacked fill of nearly its own value disappears into it; on a chart that is
+nothing but the line, the same ring chops the stroke into dashes at every bucket.
+Palette: the S-14 order with green removed, as `--s-1`…`--s-7`, so a cost slice or a latency
+component never wears the one hue read as a verdict — green stays reserved for `customer`.
+Dropping the first colour of a validated ordering creates no new adjacent pair; re-validated
+anyway (light CVD ΔE 9.1 / normal 19.6, dark 8.4 / 19.3). Each chart maps its own members onto
+slots in a fixed order of its own, so an empty slice never repaints the others. `Ranked` has no
+colour encoding at all — length is the whole answer, and colouring by rank would repaint the
+chart whenever a filter changed the order.
+`Ranked` folds past ten names into a grey `other` row that is counted, labelled and says how
+many names it covers. A recharts `<Cell>` composes with a custom `shape`, so the fold can wear
+its own fill — verified with a fourteen-tool database: 11 bars, the last `var(--g-other)`.
+A chart whose measures are all empty says so in words rather than drawing a floor, and the
+message is per chart where the reason is specific: a selection can have a cost and no
+breakdown of it, and "Vapi reported no cost breakdown for these calls" is a different fact
+from "this cost nothing".
+`.pack` uses `align-items: start`. Stretching each card to match its neighbours put a field of
+empty surface under the short ones, which reads as a chart that failed to draw.
+Not done: recharts marks are still not focusable, so the pack inherits S-14's missing keyboard
+equivalent for hover. Every chart's table twin carries the same numbers and is reachable.
 
 ### S-16 — Chart pack B: Vapi analysis fields ☐
 **PR:** one. **Depends on:** S-15.
