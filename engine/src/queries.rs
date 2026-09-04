@@ -220,6 +220,13 @@ pub struct CallRow {
     pub lat_turn_p95_ms: Option<f64>,
     pub success_eval: Option<String>,
     pub summary: Option<String>,
+    /// Why a model said this call is one of the pattern's, in its own words. Only ever
+    /// present when the request named a pattern, and NULL even then for a call the model
+    /// never read — a rule can match thousands, and only the sample was ever labelled.
+    ///
+    /// Belongs to the pair and not to the call: the same call carries a different reason
+    /// under a different pattern, so there is no such thing as "the evidence for c1".
+    pub evidence: Option<String>,
 }
 
 const CALL_COLUMNS: &str = "sel.id, sel.org_id, sel.assistant_id, a.name, sel.created_at,
@@ -227,6 +234,9 @@ const CALL_COLUMNS: &str = "sel.id, sel.org_id, sel.assistant_id, a.name, sel.cr
     sel.tool_calls, sel.tool_failures, sel.turns, sel.lat_turn_p50_ms, sel.lat_turn_p95_ms,
     sel.success_eval, sel.summary";
 
+/// The seventeen columns of `CALL_COLUMNS`, in order. `evidence` is not among them — it
+/// is not a column of `calls` at all — so it is left empty here and filled in by the one
+/// caller that selects it.
 fn call_row(r: &Row) -> rusqlite::Result<CallRow> {
     Ok(CallRow {
         id: r.get(0)?,
@@ -246,21 +256,36 @@ fn call_row(r: &Row) -> rusqlite::Result<CallRow> {
         lat_turn_p95_ms: r.get(14)?,
         success_eval: r.get(15)?,
         summary: r.get(16)?,
+        evidence: None,
     })
 }
 
 pub fn calls(db: &Db, f: &Filters) -> Result<Vec<CallRow>> {
     let floor = f.floor(Utc::now())?;
     let limit = f.last.unwrap_or(DEFAULT_CALL_LIMIT) as i64;
-    let (cte, params) = selection(f, floor.as_deref(), limit);
+    let (cte, mut params) = selection(f, floor.as_deref(), limit);
+    // The reason a model gave, joined in only when the request named the pattern it was
+    // given for. Without one there is nothing to join on — a call can be labelled under
+    // several patterns, and picking one of them arbitrarily would be inventing an answer.
+    let evidence = match f.pattern {
+        Some(id) => {
+            params.push(Sql::Integer(id));
+            "LEFT JOIN pattern_labels l ON l.call_id = sel.id AND l.pattern_id = ?"
+        }
+        None => "",
+    };
+    let column = if f.pattern.is_some() { "l.evidence" } else { "NULL" };
     let sql = format!(
-        "{cte} SELECT {CALL_COLUMNS} FROM sel
+        "{cte} SELECT {CALL_COLUMNS}, {column} FROM sel
            LEFT JOIN assistants a ON a.id = sel.assistant_id
+           {evidence}
           ORDER BY sel.created_at DESC"
     );
     let conn = db.conn();
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(params), call_row)?;
+    let rows = stmt.query_map(params_from_iter(params), |r| {
+        Ok(CallRow { evidence: r.get(17)?, ..call_row(r)? })
+    })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

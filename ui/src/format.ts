@@ -46,6 +46,21 @@ export function mean(v: number | null): string {
   return v === null ? DASH : String(Math.round(v * 100) / 100)
 }
 
+/** A `boolean | null` as text. `false` is an answer and says so; only NULL is a dash. */
+export const yesNo = (v: boolean | null) => (v === null ? DASH : v ? 'yes' : 'no')
+
+/** Tool calls and how many of them failed, as one fact. A call that made no tool calls
+ * made no failed ones either, so the failure count is only worth its own words when there
+ * is one.
+ *
+ * Here rather than in the table, because a downloaded call list is the table: two spellings
+ * of "3 · 1 failed" would be two documents disagreeing about one call. */
+export function tools(calls: number | null, failures: number | null): string {
+  if (calls === null) return DASH
+  const failed = failures ?? 0
+  return failed > 0 ? `${calls} · ${failed} failed` : String(calls)
+}
+
 /** What a pattern is called when it was saved without a name: its id, because that is what
  * the engine calls it in every message about it. Written once, so the list, the heading and
  * the chart title can never come to disagree about which pattern is which. */

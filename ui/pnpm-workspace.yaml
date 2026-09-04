@@ -1,0 +1,5 @@
+# jsPDF pulls `core-js` in through `canvg`, its SVG path. Its install script prints a
+# funding banner and nothing else, so it is not run — declared here rather than left to
+# a prompt, because CI installs with no one to answer it.
+allowBuilds:
+  core-js: false

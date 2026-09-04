@@ -753,6 +753,35 @@ async fn the_call_list_can_be_cut_to_one_patterns_matches() {
 }
 
 #[tokio::test]
+async fn a_matched_call_carries_the_reason_it_was_labelled_only_under_its_own_pattern() {
+    let server = serve_with("/nonexistent/brain", a_pattern).await;
+    server
+        .db()
+        .conn()
+        .execute(
+            "INSERT INTO pattern_labels (pattern_id, call_id, llm_match, rule_match, evidence)
+             VALUES (1, 'c1', 1, 1, 'the caller says \"get me a human\" at 0:14')",
+            [],
+        )
+        .unwrap();
+    post(&server.url("/api/patterns/1/apply"), json!({})).await;
+
+    let (status, body) = get(&server.url("/api/calls?org=1&pattern=1")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body[0]["evidence"], "the caller says \"get me a human\" at 0:14");
+
+    // The same call, asked for without naming a pattern. A reason belongs to the pair, so
+    // there is nothing to report here — and NULL, not the string, is what says so.
+    let (_, all) = get(&server.url("/api/calls?org=1")).await;
+    let c1 = all.as_array().unwrap().iter().find(|c| c["id"] == "c1").unwrap();
+    assert!(c1["evidence"].is_null(), "{c1}");
+
+    // And a call the model never read is in the list with no reason rather than out of it.
+    let (_, drawer) = get(&server.url("/api/calls/c2")).await;
+    assert!(drawer["evidence"].is_null(), "{drawer}");
+}
+
+#[tokio::test]
 async fn a_pattern_narrows_the_selection_rather_than_paging_its_own_matches() {
     let server = serve_with("/nonexistent/brain", a_pattern).await;
     post(&server.url("/api/patterns/1/apply"), json!({})).await;

@@ -19,6 +19,9 @@ import CallTable from '../CallTable'
 import PatternChart from '../charts/pattern'
 import { SETTLE_MS } from '../filters'
 import { count, DASH, full, named } from '../format'
+import { patternPdf } from '../pdf'
+import type { Pair } from '../pdf'
+import PdfButton from '../pdf/Button'
 import Editor from './Editor'
 import List from './List'
 import Wizard from './Wizard'
@@ -37,6 +40,7 @@ export default function Patterns({
   org,
   assistants,
   query,
+  selection,
   bar,
   onError,
 }: {
@@ -44,6 +48,9 @@ export default function Patterns({
   assistants: Assistant[]
   /** The filter bar's query string. The pattern is added to it, never the other way. */
   query: string
+  /** Which calls the bar is describing, for the headers of the two files this screen can
+   * download. The pattern is added to it here, the same way the query is. */
+  selection: Pair[]
   /** The filter bar itself, handed down rather than built here, because the filters belong
    * to the page. This screen only decides where it goes — and that it does not go above
    * the wizard, which picks its own calls and would be ignoring every control on it. */
@@ -147,7 +154,19 @@ export default function Patterns({
              one before is still in the box while this one is being read. */
           <div className="pattern" key={showing.id}>
             <section className="card about">
-              <h2>{named(showing.id, showing.name)}</h2>
+              <h2>
+                {named(showing.id, showing.name)}
+                {/* Only once the calls are here. The file's list is the table's rows, so
+                    downloading before they land would produce a report that says this
+                    pattern matched nothing — one load, and the file cannot describe a set
+                    the screen is not showing. */}
+                {measured !== null && (
+                  <PdfButton
+                    make={() => patternPdf(selection, showing, measured.calls)}
+                    onError={onError}
+                  />
+                )}
+              </h2>
               {showing.criterion && <p className="sub">{showing.criterion}</p>}
               {/* Each pair in its own box: a `dl` laid out as a grid puts its terms and
                   its values in document order, which reads as a value under the wrong
@@ -208,8 +227,13 @@ export default function Patterns({
       {/* The calls themselves, cut to the pattern above. Clicking a different pattern in
           the list is what filters this table — it is the same request with a different
           `pattern=` on it, so the table can never be showing a set the chart is not. */}
-      {measured !== null && (
-        <CallTable rows={measured.calls} stale={detailStale} onError={onError} />
+      {measured !== null && showing !== null && (
+        <CallTable
+          rows={measured.calls}
+          selection={[...selection, ['Pattern', named(showing.id, showing.name)]]}
+          stale={detailStale}
+          onError={onError}
+        />
       )}
     </>
   )

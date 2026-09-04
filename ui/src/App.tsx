@@ -20,6 +20,7 @@ import Login from './Login'
 import Settings from './Settings'
 import Patterns from './patterns/Patterns'
 import { initial, SETTLE_MS, toParams } from './filters'
+import { describe } from './pdf/selection'
 import type { Filters } from './filters'
 import { load } from './series'
 import type { Chart } from './series'
@@ -103,6 +104,12 @@ export default function App() {
 
   const stale = chart !== null && chart.query !== query
 
+  /** The filter bar in words, for the header of anything downloaded from below it. Built
+   * here because this is where the orgs and the assistants are, and handed down rather
+   * than rebuilt per screen: two screens working out what "the selection" is called is two
+   * chances for a file to describe a slice nobody chose. */
+  const selection = describe(filters, orgs ?? [], assistants)
+
   if (signedOut) return <Login onDone={loadOrgs} />
 
   return (
@@ -173,6 +180,7 @@ export default function App() {
             org={filters.org}
             assistants={assistants}
             query={query}
+            selection={selection}
             bar={
               <FilterBar
                 filters={filters}
@@ -203,10 +211,16 @@ export default function App() {
                 key={filters.org}
                 org={filters.org}
                 chart={chart.data}
+                selection={selection}
                 stale={stale}
                 onError={fail}
               />
-              <CallTable rows={chart.data.rows} stale={stale} onError={fail} />
+              <CallTable
+                rows={chart.data.rows}
+                selection={selection}
+                stale={stale}
+                onError={fail}
+              />
             </>
           ) : (
             <p className="notice">Loading…</p>

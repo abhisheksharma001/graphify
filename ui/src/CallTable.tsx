@@ -10,27 +10,23 @@
 import { useState } from 'react'
 import type { Call } from './api'
 import CallDrawer from './CallDrawer'
-import { DASH, full, money, seconds } from './format'
+import { DASH, full, money, seconds, tools, yesNo } from './format'
 import { colour, display } from './groups'
-
-/** A `boolean | null` as text. `false` is an answer and says so; only NULL is a dash. */
-const yesNo = (v: boolean | null) => (v === null ? DASH : v ? 'yes' : 'no')
-
-/** Tool calls and how many of them failed, as one fact. A call that made no tool calls
- * made no failed ones either, so the failure count is only worth its own words when
- * there is one. */
-function tools(row: Call): string {
-  if (row.tool_calls === null) return DASH
-  const failed = row.tool_failures ?? 0
-  return failed > 0 ? `${row.tool_calls} · ${failed} failed` : String(row.tool_calls)
-}
+import { callsPdf } from './pdf'
+import type { Pair } from './pdf'
+import PdfButton from './pdf/Button'
 
 export default function CallTable({
   rows,
+  selection,
   stale,
   onError,
 }: {
   rows: Call[]
+  /** What this table is a table of, for the header of the downloaded copy. The table
+   * itself never shows it — the filter bar above is already saying it — but a file that
+   * leaves the page has to carry it. */
+  selection: Pair[]
   stale: boolean
   onError: (e: unknown) => void
 }) {
@@ -39,7 +35,10 @@ export default function CallTable({
 
   return (
     <section className="card calls">
-      <h2>Calls</h2>
+      <h2>
+        Calls
+        <PdfButton make={() => callsPdf(selection, rows)} onError={onError} />
+      </h2>
       <p className="sub">
         {rows.length} call{rows.length === 1 ? '' : 's'} in this selection, newest first.
         Open one for its transcript and its tool calls.
@@ -87,7 +86,7 @@ export default function CallTable({
                       DASH
                     )}
                   </td>
-                  <td>{tools(row)}</td>
+                  <td>{tools(row.tool_calls, row.tool_failures)}</td>
                   <td>{yesNo(row.transferred)}</td>
                   <td>{money(row.cost)}</td>
                 </tr>
