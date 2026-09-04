@@ -1362,3 +1362,31 @@ thead th {
   border-radius: 3px;
   padding: 1px 4px;
 }
+
+/* The three download buttons. Quiet: a report is a thing you go and get, not a thing the
+ * page is asking you to do, so it wears the same border as every other button and none of
+ * the weight. While it is working it says so and stops taking clicks — a second press
+ * makes a second file, not a faster one. */
+.pdf-button {
+  font-size: 12px;
+  color: var(--ink-2);
+  padding: 4px 8px;
+}
+
+.pdf-button:disabled {
+  color: var(--ink-muted);
+  cursor: progress;
+}
+
+.charts-bar {
+  gap: 8px;
+}
+
+/* Only the headings that carry a button. A card's `h2` is otherwise a line of text, and
+ * making every one of them a flex row to suit two of them would be the tail wagging. */
+.card h2:has(.pdf-button) {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}

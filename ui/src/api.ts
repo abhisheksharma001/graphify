@@ -210,6 +210,10 @@ export type Call = {
   lat_turn_p95_ms: number | null
   success_eval: string | null
   summary: string | null
+  /** Why a model said this call is one of a pattern's, in its own words. Only ever set
+   * when the request named a pattern, and null even then for a call the model never read:
+   * a rule matches every call it matches, and only the sample was labelled. */
+  evidence: string | null
 }
 
 /** One tool invocation on a call. `result_excerpt` is an excerpt: the engine stores a

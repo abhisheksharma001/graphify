@@ -24,6 +24,9 @@ import type { ChartPref } from './api'
 import analysisEntries, { STRUCTURED } from './charts/Analysis'
 import EndedGroups from './charts/EndedGroups'
 import packEntries from './charts/Pack'
+import { dashboardPdf } from './pdf'
+import type { Card, Pair } from './pdf'
+import PdfButton from './pdf/Button'
 import type { Entry } from './charts/entry'
 import type { Chart } from './series'
 
@@ -82,16 +85,24 @@ function drawn(entries: Entry[], list: Row[]): Entry[] {
 export default function Dashboard({
   org,
   chart,
+  selection,
   stale,
   onError,
 }: {
   org: number
   chart: Chart
+  /** Which calls these charts are about, for the header of the downloaded copy. */
+  selection: Pair[]
   stale: boolean
   onError: (e: unknown) => void
 }) {
   const [layout, setLayout] = useState<ChartPref[]>([])
   const [open, setOpen] = useState(false)
+  /** The card each drawn chart is in, by id. A ref and not state: the PDF reads it at the
+   * moment of the click and nothing on screen depends on it. Registered by the cards
+   * themselves rather than looked up by selector, so the file gets the charts the page
+   * actually drew and cannot go stale against the layout. */
+  const cards = useRef(new Map<string, HTMLElement>())
 
   // Per org: two orgs are two dashboards, and one's choices must not survive into the
   // other. What resets the state between them is the remount `App` forces, not this.
@@ -131,17 +142,41 @@ export default function Dashboard({
     save(next)
   }
 
+  const showing = drawn(entries, list)
+
+  /** The cards the PDF is made of: the drawn charts, in their order, each with the DOM node
+   * it was drawn into. Read at the click and not before — a card the layout has since
+   * turned off has already taken its node out of the map. */
+  const captured = () => {
+    const out: Card[] = []
+    for (const entry of showing) {
+      const node = cards.current.get(entry.id)
+      if (node) out.push({ node, wide: entry.wide === true })
+    }
+    return out
+  }
+
   return (
     <>
       <div className="charts-bar">
         <button aria-expanded={open} aria-controls="chart-menu" onClick={() => setOpen(!open)}>
           Charts
         </button>
+        {/* The order is the reader's order and the charts are the reader's charts, so the
+            file is built from `showing` — the same list, read at the click. */}
+        <PdfButton make={() => dashboardPdf(selection, captured())} onError={onError} />
       </div>
       {open && <Menu list={list} onToggle={toggle} onMove={move} />}
       <div className="pack">
-        {drawn(entries, list).map((entry) => (
-          <div key={entry.id} className={entry.wide ? 'wide' : undefined}>
+        {showing.map((entry) => (
+          <div
+            key={entry.id}
+            className={entry.wide ? 'wide' : undefined}
+            ref={(el) => {
+              if (el) cards.current.set(entry.id, el)
+              else cards.current.delete(entry.id)
+            }}
+          >
             {entry.node}
           </div>
         ))}
