@@ -1,0 +1,27 @@
+# What the daemon is not sent. Everything here is either rebuilt inside the image or is
+# something that must never be inside one.
+
+# Rebuilt by the build stages, and enormous.
+engine/target/
+ui/node_modules/
+ui/dist/
+brain/.venv/
+brain/src/baml_client/
+__pycache__/
+*.pyc
+
+# Keys and the database. `data/` holds `graphify.db` and the `.secret` beside it, and a
+# `.env` is where a password lives. A COPY that pulls one of these in puts it in a layer,
+# and a layer is readable by anyone who can pull the image — after the key is rotated too.
+data/
+.env
+*.secret
+.secret
+
+# Not part of the product.
+.git/
+.github/
+.claude/
+.pytest_cache/
+docs/
+.DS_Store
