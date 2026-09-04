@@ -1496,7 +1496,7 @@ there is no history, so a follow-up is a new question that re-reads and re-pays.
 Markdown subset is drawn by hand and anything outside it renders literally. And nothing
 stores an answer: it lives on the screen until the filters move.
 
-### S-30 — PDF downloads: dashboard, per pattern, call list ☐
+### S-30 — PDF downloads: dashboard, per pattern, call list ☑ (PR #31, 32fa48f)
 **PR:** one. **Depends on:** S-27, S-18.
 **Files:** `ui/src/pdf/*.ts`, `ui/package.json` (`jspdf`, `html-to-image`).
 **Today:** none.
@@ -1506,6 +1506,60 @@ count, 20 matched calls with evidence. Call-list PDF = the current table.
 **Acceptance:** WHEN "Download dashboard PDF" is clicked THEN a PDF SHALL download containing one image per enabled chart.
 **Verify:** `pnpm build`; open the file.
 **Must not:** need a server dependency.
+
+**Learned:** jsPDF draws and does not lay out. Every `text` call is an absolute
+coordinate, so without one file owning the arithmetic each of the three reports would be
+doing its own and getting a different answer — one wrapping at a different width, another
+running off the bottom because nothing counted the lines. `ui/src/pdf/doc.ts` is that file:
+a cursor, a margin, and the half-dozen marks a report is made of, with `need` called before
+every one of them so a table row is never half on one page and a table repeats its header
+when it runs on.
+
+Nothing in the PDF layer formats a value. The numbers in a file are the numbers that were
+on screen, through `format.ts` — dash included. `yesNo` and `tools` moved out of
+`CallTable.tsx` into `format.ts` for that reason: a downloaded call list *is* the table,
+and two spellings of "3 · 1 failed" would be two documents disagreeing about one call.
+
+A capture is whatever theme the reader had. On a dark screen that is white ink on
+near-black, which prints as a slab. `capture.ts` pins `data-theme` to light for the length
+of the capture and restores it in a `finally` — the stylesheet already declares its dark
+steps twice, once for the OS setting and once for an explicit `data-theme`, precisely so an
+explicit choice wins in both directions, and this is that choice held for two frames.
+Verified from a dark-mode browser: the file came out light and the page was still dark
+afterwards.
+
+The layout mistake worth remembering is scaling every picture to the page width. A
+half-width card captured at 670px and stretched to 180mm renders its 15px heading at the
+size of the document's title — the same picture, and a lie about how much of the dashboard
+it is. Drawing each card at the share of the width it had on screen keeps one scale across
+the file and puts two narrow cards on a row the way the pack does; twelve charts went from
+eleven pages to three.
+
+Images are deflated rather than stored (`addImage(..., 'FAST')`). A twelve-chart dashboard
+is 20 MB without it and 477 KB with it. Charts are flat colour and straight lines, which is
+the case PNG's own filter was built for.
+
+`jspdf` and `html-to-image` weigh about 350 kB — a third again on top of the page — for a
+button most readers never press, so `ui/src/pdf/index.ts` is a dynamic-import seam and the
+main chunk is unchanged. `import type` across it is erased, so the shapes are still checked
+at build time.
+
+`pattern_labels.evidence` had been stored since the first migration and never read by
+anything. `/api/calls` returns it now when the request names a pattern. A reason belongs to
+the (pattern, call) pair — the same call carries a different one under a different pattern
+— so without a pattern there is nothing to join on and the column is NULL, asserted both
+ways.
+
+Two small things the environment taught: `pnpm` exits 1 on `ERR_PNPM_IGNORED_BUILDS`, which
+would have failed CI, and the answer is `allowBuilds` in `ui/pnpm-workspace.yaml` rather
+than a `pnpm` field in `package.json`. And `new Date().toISOString()` for a filename names
+the UTC day while the footer stamps the local one, so a file downloaded in the evening is
+named for yesterday.
+
+**Not done:** the captures are raster, so text inside a chart does not select or search.
+Twenty is a fixed cut on the pattern's call list. The header is the filter bar as it stood
+at the click, and nothing re-checks it against the numbers if the two drift. Nothing
+watermarks a file or records that one was taken.
 
 ### S-31 — `graphify schedule --print` + README daily section ☐
 **PR:** one. **Depends on:** S-28.
