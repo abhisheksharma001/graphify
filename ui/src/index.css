@@ -1245,3 +1245,120 @@ thead th {
 .back {
   margin-bottom: 14px;
 }
+
+/* The ask box. One column, capped at a reading measure: an answer is prose, and prose
+ * across a 1600px window is prose nobody finishes a line of. */
+.ask {
+  display: grid;
+  gap: 16px;
+  max-width: 760px;
+}
+
+.ask .field {
+  margin-bottom: 12px;
+}
+
+.ask textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  padding: 6px 8px;
+  width: 100%;
+  resize: vertical;
+}
+
+.ask textarea:focus-visible {
+  outline: 2px solid var(--g-assistant);
+  outline-offset: 1px;
+}
+
+.ask .row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.ask .row .field {
+  margin-bottom: 0;
+}
+
+/* The price, and the two buttons under it. Boxed off from the question above so that what
+ * the next click costs is the thing being read, not a line in a paragraph. */
+.ask .quote {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  background: var(--wash);
+}
+
+.ask .quote p {
+  margin: 0 0 8px;
+}
+
+.ask .quote .sub {
+  color: var(--ink-2);
+}
+
+.ask .quote .row {
+  margin-top: 12px;
+}
+
+.ask button.go {
+  font-weight: 600;
+  padding: 7px 12px;
+}
+
+.ask button:disabled {
+  color: var(--ink-muted);
+  border-color: var(--grid);
+  cursor: not-allowed;
+}
+
+.ask .failed {
+  margin-top: 14px;
+}
+
+.ask .failed summary {
+  font-size: 11px;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+/* The answer itself. Wider line height than the rest of the page, because this is the one
+ * place in graphify somebody reads paragraphs rather than scanning numbers. */
+.answer {
+  line-height: 1.6;
+}
+
+.answer h3 {
+  margin: 18px 0 8px;
+  font-size: 13px;
+}
+
+.answer h3:first-child {
+  margin-top: 0;
+}
+
+.answer p {
+  margin: 0 0 10px;
+}
+
+.answer ul {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.answer li {
+  margin-bottom: 4px;
+}
+
+.answer code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: var(--wash);
+  border-radius: 3px;
+  padding: 1px 4px;
+}

@@ -397,10 +397,58 @@ export const assistantPrompt = (org: number, id: string) =>
     forOrg(org),
   )
 
+// --- the ask box --------------------------------------------------------------------------
+
+/** What a question would cost, and what it would be answered from.
+ *
+ * Asking for one of these starts nothing. Everywhere else in graphify a price comes from
+ * the brain, which means a job row and a parked interpreter before anyone has seen a
+ * figure; here the engine works it out on the request, so reading a price and walking away
+ * leaves nothing behind. That is what makes `Cancel` below a button that sends nothing. */
+export type AskQuote = {
+  question: string
+  model: string
+  /** The calls whose transcripts would go in, shortest first. */
+  call_ids: string[]
+  /** How many the sample held before the token cap trimmed it. `call_ids.length` short of
+   * this means the context filled up and the answer rests on fewer calls. */
+  readable: number
+  tokens_in: number
+  usd: number
+}
+
+/** What `ask` answers with. `answer` is Markdown, in the small subset `Answer.tsx` draws —
+ * null when the run was stopped, which is the only time `stopped` is set. */
+export type Answered = {
+  answer: string | null
+  calls: string[]
+  no_transcript: string[]
+  usd: number
+  model: string
+  stopped: string | null
+}
+
+/** Price a question over the current selection. Creates nothing. */
+export const askQuote = (params: URLSearchParams, body: { question: string; model: string }) =>
+  send<AskQuote>('POST', `/api/ask/quote?${params}`, body)
+
+/** Ask it. `max_usd` is the figure that was quoted and approved; the engine prices the
+ * question again and refuses rather than going over it. */
+export const startAsk = (
+  params: URLSearchParams,
+  body: { question: string; model: string; max_usd: number },
+) => send<Started>('POST', `/api/ask?${params}`, body)
+
 // --- patterns: the ones already saved ----------------------------------------------------
 //
 // Nothing below spends. A rule is the free half of a pattern — the engine runs it over the
 // stored calls and that is arithmetic — so re-applying one costs nothing in any mode.
+
+/** The models the brain accepts, spelled the way it spells them — `CLIENTS` in
+ * `graphify_brain/label.py`. Sonnet first: it is the one the walkthrough uses. */
+export const MODELS = ['sonnet', 'opus', 'gpt'] as const
+
+export type Model = (typeof MODELS)[number]
 
 /** D-8's three. `free` puts no model in the loop at all; the other two do, which is why
  * the cap beside them is required rather than optional. */
