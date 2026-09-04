@@ -605,6 +605,7 @@ dependencies = [
  "chrono",
  "clap",
  "form_urlencoded",
+ "regex",
  "reqwest",
  "rusqlite",
  "rusqlite_migration",

@@ -1,8 +1,9 @@
 //! Argument parsing and dispatch. Every subcommand the engine grows lands here.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use graphify::{assistants, auth, db, secrets, server, sync, vapi};
+use graphify::{assistants, auth, db, rules, secrets, server, sync, vapi};
+use std::path::{Path, PathBuf};
 
 /// The graphify engine: pulls Vapi calls, stores them, serves the dashboard.
 #[derive(Parser)]
@@ -41,6 +42,23 @@ pub enum Command {
         /// Stay in the terminal instead of opening the dashboard in a browser.
         #[arg(long)]
         no_open: bool,
+    },
+    /// Re-run every free-mode pattern's rule over its org's calls. Costs nothing: a free
+    /// pattern is decided by its rule alone, with no model in the loop.
+    Apply,
+    /// Run one rule over a file of calls and print the ids it matches, one per line.
+    ///
+    /// Reads no database and writes none. This is how the brain checks a rule it has just
+    /// synthesised against the calls a model labelled, and the engine is the only thing
+    /// that gets to say what a rule means.
+    RuleCheck {
+        /// A JSON rule, as `SynthesizeRule` returns it.
+        #[arg(long)]
+        rule: PathBuf,
+        /// A JSON array of calls: `{id, transcript, ended_reason, ended_group,
+        /// transferred, duration_s, tool_calls: [{name, failed}]}`. Only `id` is required.
+        #[arg(long)]
+        calls: PathBuf,
     },
 }
 
@@ -81,6 +99,26 @@ impl Cli {
                 println!("{report}");
                 Ok(())
             }
+            Command::Apply => {
+                let mut db = db::Db::open(db::default_path())?;
+                let report = rules::apply(&mut db)?;
+                if report.is_empty() {
+                    println!("no free-mode pattern has a rule yet");
+                }
+                for row in &report {
+                    println!("{}: {} of {} calls", row.name, row.matched, row.of);
+                }
+                Ok(())
+            }
+            Command::RuleCheck { rule, calls } => {
+                let checked = rules::validate(&read(&rule)?, &rule.display().to_string())?;
+                let calls: Vec<rules::Subject> = serde_json::from_str(&read(&calls)?)
+                    .with_context(|| format!("{} is not a JSON array of calls", calls.display()))?;
+                for call in calls.iter().filter(|c| rules::matches(&checked, c)) {
+                    println!("{}", call.id);
+                }
+                Ok(())
+            }
             Command::Serve { no_open } => {
                 let db = db::Db::open(db::default_path())?;
                 let store = secrets::Secrets::open(secrets::default_key_path())?;
@@ -108,4 +146,8 @@ fn vapi_key(db: &db::Db, org: &str) -> Result<String> {
         Some(key) => Ok(key.expose().to_string()),
         None => bail!("no Vapi key for org {org}: set VAPI_API_KEY or store one via the API"),
     }
+}
+
+fn read(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
