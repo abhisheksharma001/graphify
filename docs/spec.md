@@ -651,7 +651,7 @@ empty surface under the short ones, which reads as a chart that failed to draw.
 Not done: recharts marks are still not focusable, so the pack inherits S-14's missing keyboard
 equivalent for hover. Every chart's table twin carries the same numbers and is reachable.
 
-### S-16 — Chart pack B: Vapi analysis fields ☑ (PR #16, PLACEHOLDER)
+### S-16 — Chart pack B: Vapi analysis fields ☑ (PR #16, 22396d5)
 **PR:** one. **Depends on:** S-15.
 **Files:** `ui/src/charts/analysis.tsx`, `engine/src/queries.rs` (structured key counts).
 **Today:** successEvaluation and structuredData stored, not shown.
