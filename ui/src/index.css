@@ -905,3 +905,181 @@ thead th {
   flex-direction: column;
   gap: 10px;
 }
+
+/* The pattern wizard. The conversation on the left, the plan it produced on the right,
+ * because the plan is what the analyst is arguing with and it has to stay on screen while
+ * they type the answer that changes it. One column where there is no room for two: on a
+ * narrow window the plan reads under the questions, which is the order it is written in. */
+
+.wizard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+@media (max-width: 800px) {
+  .wizard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.wizard h3,
+.wizard h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.wizard h4 {
+  margin-top: 18px;
+  color: var(--ink-2);
+}
+
+.wizard .field {
+  margin-bottom: 14px;
+}
+
+.wizard textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  padding: 5px 8px;
+  resize: vertical;
+}
+
+.wizard textarea:focus-visible {
+  outline: 2px solid var(--g-assistant);
+  outline-offset: 1px;
+}
+
+.wizard fieldset {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wizard fieldset legend {
+  padding: 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+/* A checkbox or radio and the words beside it are one control, so they sit on one line and
+   the words are part of the hit target. */
+.wizard fieldset label,
+.wizard .field > label:has(input) {
+  font-size: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.wizard .row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+/* The one button that spends. Weighted, so it does not read as one more control in a
+ * column of them — and greyed rather than hidden below the gate, because a button that
+ * disappears teaches nobody why they cannot press it. */
+.wizard button.go {
+  font-weight: 600;
+  padding: 7px 12px;
+}
+
+.wizard button:disabled {
+  color: var(--ink-muted);
+  border-color: var(--grid);
+  cursor: not-allowed;
+}
+
+.wizard .spend,
+.wizard .labelled,
+.wizard .saved {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+.wizard progress {
+  vertical-align: middle;
+  width: 160px;
+}
+
+.wizard .rule {
+  max-height: 260px;
+  overflow: auto;
+  background: var(--wash);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 11px;
+}
+
+/* The plan table is prose, not measurements: left-aligned, against the right-aligned
+ * numbers everywhere else on the page. */
+
+.plan th,
+.plan td {
+  text-align: left;
+  vertical-align: top;
+}
+
+.plan td:first-child {
+  width: 45%;
+}
+
+.verdicts {
+  display: flex;
+  gap: 24px;
+  margin: 14px 0 0;
+}
+
+.verdicts div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.verdicts dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+.verdicts dd {
+  margin: 0;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Not colour alone: a verdict that falls short is also the reason a paragraph appears
+ * under the table saying what to do about it. */
+.verdicts dd.short {
+  color: var(--g-llm-error);
+}
+
+/* A failure and the log behind it. The headline is a guess at which line mattered, so the
+   rest is one disclosure away rather than gone. */
+
+.wizard .failed {
+  margin-top: 14px;
+}
+
+.wizard .failed summary {
+  font-size: 11px;
+  color: var(--ink-muted);
+  cursor: pointer;
+}

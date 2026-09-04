@@ -459,6 +459,23 @@ impl Db {
             .optional()?)
     }
 
+    /// One assistant's system prompt, for the org that owns it. `None` means no such
+    /// assistant under that org; a stored assistant with no prompt is `Some(None)`.
+    ///
+    /// Its own helper rather than a column on `queries::assistants`, because that list is
+    /// a picker and these prompts run to tens of kilobytes each. The pattern wizard asks
+    /// for exactly the one it is about to plan against, and only when told to.
+    pub fn assistant_prompt(&self, org_id: i64, id: &str) -> Result<Option<Option<String>>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT system_prompt FROM assistants WHERE id = ?1 AND org_id = ?2",
+                params![id, org_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Store a secret's ciphertext. `last4` is the only part of the value that lands in
     /// clear, and it is `None` for a value too short to give a tail away safely.
     /// `org_id` is `None` for a key that belongs to the whole install rather than to one

@@ -262,3 +262,137 @@ export async function login(password: string): Promise<void> {
   })
   if (!res.ok) throw new Error(await reason(res))
 }
+
+// --- patterns: the wizard's half of the engine ------------------------------------------
+//
+// Everything below starts a brain job and then watches it. The engine answers a start with
+// an id and nothing else; where the job got to, what it quoted and what it cost are all
+// read back through `job`. Nothing here spends: `go` is the one call in this file that lets
+// a model read a call, and it is sent by one click on a button that already shows a price.
+
+/** One row of a plan: a condition, and what it does to the count.
+ *
+ * `if_`, not `if`. The name is the same in BAML, the brain, the engine and here, because
+ * a rename that only one hop can see is a rename that goes wrong once, quietly. */
+export type PlanRow = { if_: string; then: string }
+
+/** What the model understood, in a form the analyst can disagree with. */
+export type Plan = {
+  rows: PlanRow[]
+  /** What it would have to ask to be sure. Empty when it is. Never more than three. */
+  questions: string[]
+  /** 0 to 1. The wizard's gate: under it, nothing may be read. */
+  confidence: number
+  /** False when a row cannot be checked by the rule DSL — which is fatal whatever the
+   * confidence, because the rule is what counts the calls for free afterwards. */
+  expressible: boolean
+  reason: string
+}
+
+/** Where a job has got to.
+ *
+ * `waiting` is the interesting one: the brain has printed its price and is parked with
+ * its stdin open, having read nothing and spent nothing, until it is told to go. */
+export type JobStatus = 'running' | 'waiting' | 'done' | 'failed' | 'expired'
+
+export type Job = {
+  id: number
+  kind: string
+  status: JobStatus
+  /** Null until the job has reported any. A job that has said nothing has no progress —
+   * it does not have a progress of zero. */
+  progress: { done: number; of: number } | null
+  /** What the brain quoted, in dollars. A ceiling, not a forecast: output is priced at
+   * the ceiling a batch cannot exceed, so short calls quote several times their cost. */
+  estimate_usd: number | null
+  /** What it actually cost. Null until the job is over. */
+  cost_usd: number | null
+  /** The brain's last line, parsed. `null` while the job is still running. */
+  output: unknown
+  /** Everything the brain wrote to stderr, keys already scrubbed by the engine. */
+  log: string
+  created_at: string
+  finished_at: string | null
+}
+
+/** What `label` answers with. Every id asked about is in exactly one of the four lists,
+ * and each list has exactly one cause. */
+export type Labelled = {
+  labels: { call_id: string; match: boolean; evidence?: string }[]
+  no_transcript: string[]
+  no_label: string[]
+  not_reached: string[]
+  /** What the run actually cost — the real figure, against the estimate's ceiling. */
+  usd: number
+  batches: number
+  model: string
+  /** `"declined"` when nobody said go, `"cap"` when the cap stopped it. Null when it ran
+   * to the end. */
+  stopped: string | null
+}
+
+/** What `synthesize` answers with. It has already written the `patterns` row by the time
+ * this arrives — `pattern_id` is that row. */
+export type Synthesized = {
+  pattern_id: number
+  rule: unknown
+  chart: { kind: string; title: string }
+  /** 0 to 1: how much of the sample the rule and the model agree about. */
+  agreement: number
+  agreed: number
+  of: number
+  matched_by_rule: number
+  matched_by_model: number
+  refined: boolean
+  reason: string | null
+  usd: number
+  model: string
+}
+
+/** The engine's answer to a start: the row exists and the child is coming up. */
+type Started = { id: number; status: JobStatus }
+
+const startJob = (fn: string, org: number, body: unknown) =>
+  send<Started>('POST', `/api/patterns/${fn}?${forOrg(org)}`, body)
+
+export const startPlan = (org: number, body: { criterion: string; system_prompt?: string }) =>
+  startJob('plan', org, body)
+
+export const startClarify = (
+  org: number,
+  body: { criterion: string; plan: Plan; answers: { question: string; answer: string }[] },
+) => startJob('clarify', org, body)
+
+export const startLabel = (
+  org: number,
+  body: { criterion: string; plan: Plan; call_ids: string[]; model: string; max_usd: number },
+) => startJob('label', org, body)
+
+export const startSynthesize = (
+  org: number,
+  body: {
+    criterion: string
+    plan: Plan
+    labels: Labelled['labels']
+    model: string
+    max_usd: number
+    org_id: number
+    name: string
+    assistant_ids?: string[]
+  },
+) => startJob('synthesize', org, body)
+
+export const job = (id: number) => get<Job>(`/api/jobs/${id}`)
+
+/** The go. This is the only call in this file that lets a model read a call, and the
+ * button that sends it carries the price the brain quoted. */
+export const go = (id: number) => send<Started>('POST', `/api/jobs/${id}/go`, null)
+
+/** One assistant's system prompt. Not in `assistants` above, which is a picker: these run
+ * to tens of kilobytes each, and the wizard asks for the one it is planning against only
+ * when the analyst has ticked the box. */
+export const assistantPrompt = (org: number, id: string) =>
+  get<{ id: string; system_prompt: string | null }>(
+    `/api/assistants/${encodeURIComponent(id)}/prompt`,
+    forOrg(org),
+  )

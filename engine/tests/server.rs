@@ -873,6 +873,66 @@ async fn assistants_list_for_the_org_and_leave_the_prompt_behind() {
     assert_eq!(listed[0]["structured_schema"]["type"], "object");
 }
 
+/// The other half of the rule above: the prompt is not in the picker, so there has to be
+/// somewhere to go and read one. The wizard reads exactly the assistant it names.
+#[tokio::test]
+async fn one_assistants_prompt_is_readable_by_name() {
+    let s = plain(with_prompt).await;
+
+    let (status, body) = get(&s.url("/api/assistants/a-1/prompt?org=1")).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(body["id"], "a-1");
+    assert_eq!(body["system_prompt"], "You are a service-desk agent");
+}
+
+/// An assistant with no prompt at Vapi has no prompt here, and that is an answer. Reading
+/// it as an empty string would send the model a heading with nothing under it.
+#[tokio::test]
+async fn an_assistant_without_a_prompt_answers_null_rather_than_empty() {
+    let s = plain(|db, org| {
+        db.upsert_assistant(&graphify::db::Assistant {
+            id: "a-2".into(),
+            org_id: org,
+            ..graphify::db::Assistant::default()
+        })
+        .unwrap();
+    })
+    .await;
+
+    let (status, body) = get(&s.url("/api/assistants/a-2/prompt?org=1")).await;
+
+    assert_eq!(status, 200);
+    assert!(body["system_prompt"].is_null(), "was: {body}");
+}
+
+/// The org is part of the lookup, not a filter applied to the answer. One client's
+/// assistant id must never read another client's prompt.
+#[tokio::test]
+async fn a_prompt_is_not_readable_through_another_orgs_id() {
+    let s = plain(|db, org| {
+        with_prompt(db, org);
+        db.create_org("other").unwrap();
+    })
+    .await;
+
+    let (status, body) = get(&s.url("/api/assistants/a-1/prompt?org=2")).await;
+
+    assert_eq!(status, 404);
+    assert!(body["error"].as_str().unwrap().contains("a-1"));
+}
+
+fn with_prompt(db: &mut Db, org: i64) {
+    db.upsert_assistant(&graphify::db::Assistant {
+        id: "a-1".into(),
+        org_id: org,
+        name: Some("Service Desk".into()),
+        system_prompt: Some("You are a service-desk agent".into()),
+        ..graphify::db::Assistant::default()
+    })
+    .unwrap();
+}
+
 #[tokio::test]
 async fn an_org_filter_that_matches_nothing_returns_nothing() {
     let s = plain(ten_calls).await;
