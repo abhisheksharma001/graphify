@@ -43,7 +43,10 @@ export type Chart = {
   buckets: { ms: number; cost: number | null }[]
   bucketSize: string
   series: Series[]
-  calls: number
+  /** The selection itself, row by row. The charts above are summaries of exactly these
+   * calls, and the table below is these calls; loading them once is what stops the two
+   * from ever describing different sets. */
+  rows: api.Call[]
   /** Calls with no `createdAt`. They count, but they cannot go on a time axis. */
   undated: number
   /** True when `last` is what ended the selection, so the chart is a page and says so. */
@@ -94,7 +97,7 @@ export async function load(params: URLSearchParams): Promise<Chart> {
     bucketSize: stats.bucket_size,
     // Fixed order, so a filter that removes a group never repaints the ones that stay.
     series: STACK.map((g) => byGroup.get(g)).filter((s) => s !== undefined),
-    calls: calls.length,
+    rows: calls,
     undated,
     capped: calls.length > 0 && calls.length === Number(params.get('last')),
   }
