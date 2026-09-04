@@ -1307,7 +1307,7 @@ does not wait for a go. The wizard cannot change org: that is the filter bar's, 
 dashboard. And there is still no UI test runner, so the two acceptances are held by the
 shape of the code and a manual walkthrough, not by a test.
 
-### S-27 — Patterns list, pattern chart, edit rule, mode + cap, re-apply ☐
+### S-27 — Patterns list, pattern chart, edit rule, mode + cap, re-apply ☑ (PR #28, 9c59f49)
 **PR:** one. **Depends on:** S-26.
 **Files:** `ui/src/patterns/List.tsx`, `ui/src/charts/pattern.tsx`.
 **Today:** patterns created but not browsable.
@@ -1317,6 +1317,60 @@ with validate; mode select free / hybrid / full with `daily_cap_usd`; "Re-apply"
 **Acceptance:** WHEN a rule is edited to match nothing and re-applied THEN its count SHALL read 0 and the chart SHALL be empty.
 **Verify:** `pnpm build`; manual.
 **Must not:** spend on re-apply in `free` mode.
+
+**Learned:** *the count has to be a count of the calls on screen, and that decides where the
+filter goes.* `pattern=` is a new filter, and the tempting place for it is `conditions()`
+with all the others — one line, no new SQL. It is the wrong place. `selection()` cuts the
+newest `last` calls out of the range, and a pattern folded into that `WHERE` pages the
+*matches* instead: 250 matched calls drawn from a span the count beside them was never taken
+over. So the CTE grew a second half — `page` is the cut, `sel` is the page narrowed to the
+pattern — and every read downstream inherits it for nothing, `/api/stats` included. The
+sharp test is `last=1`: the only matched call is the oldest, so both the list and the count
+say none, which is what folding it inwards would have got wrong.
+
+**The chart needed no new engine code at all.** `Totals.calls` per bucket, counted with
+`pattern=` on the request, *is* the number the chart draws — so `charts/pattern.tsx` is
+fifty lines that hand `stats.per_bucket` to the `Bucketed` the dashboard already had, `Bar`
+to its stack and `Line` to its lines. The one change was widening `Field` from
+`keyof Omit<Totals, 'calls'>` to `keyof Totals`; `calls` had been left out only because
+nothing had wanted it yet. A bucket with no match draws a real 0 here rather than a gap,
+which is the one place on this dashboard where zero is the right mark: the calls were read
+and none of them matched.
+
+**`GET /api/patterns` takes the whole filter set now, and `matched` is null where there is
+no selection.** One statement counts every pattern — a list whose counts arrive one at a
+time is a list that fills in. `DISTINCT call_id`, because a hybrid pattern can have matched
+the same call by its rule and by the model, and that is one call. The list itself is never
+filtered: a pattern this window holds nothing for reads 0 rather than vanishing, because a
+pattern that disappears when you narrow the range looks deleted. And `update_pattern`'s
+response carries `matched: null` rather than 0 — it was not counted against anything, and 0
+there is a number the analyst could believe.
+
+**Two checks, in two places, for two different mistakes.** A missing brace is caught in the
+browser as it is typed, because that answer needs no server. Whether the JSON is a *rule* is
+the engine's, and `PUT` already refused an unknown key naming it — so "validate" is the save
+button, and a rule that saves is one that will still run at three in the morning with nobody
+watching. Nothing on the panel spends: `apply_one` is the rule half in every mode, which the
+copy says out loud and a live check confirmed — no `spend` rows, no `jobs` rows, no brain
+process, on a `hybrid` pattern.
+
+**A stale query and a stale pattern are not the same staleness.** The house idiom is to
+leave the last render on screen, dimmed, while the next loads. That is right for a filter
+that moved — the same pattern a moment ago — and wrong for a pattern that changed, where it
+would put one pattern's chart and one pattern's table under another's name. So the detail is
+tagged twice: with the query it came from and with the pattern it is about. Same pattern,
+stale query → dimmed. Different pattern → gone, and "Loading…". Proved with a throttled
+route rather than asserted.
+
+**The filter bar is handed to the screen, not drawn above it.** The wizard picks its own
+calls, so a window and a `last` over the top of it are controls it ignores. `Patterns` takes
+the bar as a prop and puts it above the list only; the filters still belong to the page.
+
+**Not done:** no delete and no rename. The call table under a pattern still does not sort and
+does not page. `daily_cap_usd` is stored and read by nobody until S-28. `pattern_counts` with
+`pattern=` also set answers a coherent but useless question, and nothing guards it — the UI
+never sends both. And there is still no UI test runner, so the screen is held by a browser
+walkthrough and by the engine's tests, not by a test of its own.
 
 ### S-28 — Daily hybrid/full modes with spend cap ☐
 **PR:** one. **Depends on:** S-27, S-23.
