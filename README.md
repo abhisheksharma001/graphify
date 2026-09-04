@@ -36,3 +36,37 @@ never printed. If you keep yours in the environment, put it into the scheduled
 job's environment yourself — otherwise the run falls back to the `.secret` file
 beside the database, which is a different key, and every stored Vapi key fails
 to decrypt under it. `schedule` says so when it finds one set.
+
+## In a container
+
+One image holds the whole product: the dashboard compiled into the engine binary, the
+Python brain beside it, and a cron for the daily sync. It needs a password, because
+unlike a local run it is listening on a published port.
+
+    GRAPHIFY_PASSWORD='something long' docker compose up --build
+
+Then open `http://localhost:3737` and type the password. Put the line in a `.env` file
+beside `docker-compose.yml` to stop typing it; git already ignores that file. Compose
+refuses to start without a password rather than serving your calls to whoever asks.
+
+The database and the key file live in a Docker volume mounted at `/data`, so they survive
+`docker compose down`. `docker compose down -v` deletes them both.
+
+**Keys are never in the image.** `docker history` prints every environment variable of
+every layer, so anything baked in is readable by anyone who can pull it — and stays
+readable after it is rotated. Add your Vapi and model keys through the settings page,
+which encrypts them into the database, or pass them in the environment. Compose passes
+`VAPI_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` through only when your shell
+has them set.
+
+`GRAPHIFY_SECRET` is what those stored keys are encrypted under. Leave it unset and one
+is generated into `/data/.secret` on first run: fine, until the volume is deleted, after
+which a backup of the database alone decrypts to nothing. Set it to keep the key
+somewhere the volume is not.
+
+The sync runs at 06:00 in the container's timezone, which is UTC unless you pass `TZ`.
+`GRAPHIFY_CRON` takes a crontab expression, or `off` for an image that only serves.
+
+The port is published on `127.0.0.1` only. There is no TLS in the image, so the password
+crosses the connection in clear: reaching this from another machine means a reverse proxy
+with a certificate in front of it, not a wider `ports:` line.

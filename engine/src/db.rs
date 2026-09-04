@@ -6,9 +6,15 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use rusqlite_migration::{Migrations, M};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const INIT: &str = include_str!("../migrations/0001_init.sql");
 const GLOBAL_SECRETS: &str = include_str!("../migrations/0002_global_secrets.sql");
+
+/// How long an open connection waits for another one to let go before giving up. Long
+/// enough to cover any statement this file runs; short enough that a genuinely stuck
+/// writer is reported as an error rather than as a request that never returns.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the DB lives when the caller does not say: `$GRAPHIFY_DB`, else `data/graphify.db`.
 pub fn default_path() -> PathBuf {
@@ -217,6 +223,13 @@ impl Db {
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // Two processes share this file the moment anything schedules a sync: the server
+        // holds it open all day, and at six the sync opens it again. SQLite's default for
+        // a caller that finds the file locked is to fail it immediately with "database is
+        // locked" rather than wait, and every write here is one short statement or one
+        // short transaction — so waiting is the whole fix.
+        conn.busy_timeout(BUSY_TIMEOUT)
+            .context("setting the busy timeout")?;
         Migrations::new(vec![M::up(INIT), M::up(GLOBAL_SECRETS)])
             .to_latest(&mut conn)
             .context("running migrations")?;

@@ -1,0 +1,52 @@
+# One command, once a password exists:
+#
+#     GRAPHIFY_PASSWORD='something long' docker compose up --build
+#
+# or put that line in a `.env` file beside this one, which Compose reads and `.gitignore`
+# already ignores.
+
+services:
+  graphify:
+    build: .
+    image: graphify:local
+    restart: unless-stopped
+
+    # Published on the host's loopback, not on every interface it has. The password
+    # crosses this connection in clear — there is no TLS in the image and adding one
+    # would be a second product — so reaching this from another machine means putting a
+    # reverse proxy with a certificate in front of it, not widening this line.
+    ports:
+      - "127.0.0.1:3737:3737"
+
+    environment:
+      # The one that has to be set. A dashboard on a published port with no password is
+      # not a smaller version of this; it is a different thing.
+      - GRAPHIFY_PASSWORD=${GRAPHIFY_PASSWORD:?set it in your shell, or in a .env file beside this one}
+
+      # Everything below is named and not assigned, which passes it through only when the
+      # shell actually has it. That matters for more than tidiness:
+      # `GRAPHIFY_DAILY_CAP_USD=` is not "no cap", it is a value that will not parse, and
+      # the sync that reads it stops rather than guessing a number of dollars.
+      #
+      # GRAPHIFY_SECRET is the key every stored API key is encrypted under. Leave it
+      # unset and one is generated into `/data/.secret` on first run and lives in the
+      # volume beside the database, which is fine until the volume is deleted — after
+      # which nothing can decrypt the keys in a backup of the database alone. Set it to
+      # keep the key somewhere the volume is not.
+      - GRAPHIFY_SECRET
+      - GRAPHIFY_DAILY_CAP_USD
+      # A crontab expression for the daily sync, or `off`. Default `0 6 * * *`, in the
+      # container's timezone, which is UTC unless TZ says otherwise.
+      - GRAPHIFY_CRON
+      - TZ
+      # Optional overrides for the keys the settings page otherwise stores encrypted.
+      # An empty one is ignored rather than treated as a key that is the empty string.
+      - VAPI_API_KEY
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+
+    volumes:
+      - data:/data
+
+volumes:
+  data:

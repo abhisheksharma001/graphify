@@ -114,3 +114,18 @@ fn replace_tool_calls_swaps_rather_than_appends() {
         .unwrap();
     assert_eq!(names, vec!["lookup".to_string()]);
 }
+
+/// The container runs a server and a six o'clock sync against one file, so two processes
+/// hold it open. Without this SQLite fails the second one on the spot with "database is
+/// locked" — a morning that does not happen and says nothing about why.
+#[test]
+fn an_open_database_waits_for_a_lock_rather_than_failing_on_it() {
+    let dir = tempdir().unwrap();
+    let db = Db::open(dir.path().join("graphify.db")).unwrap();
+
+    let ms: i64 = db
+        .conn()
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .unwrap();
+    assert!(ms >= 1000, "busy timeout is {ms}ms, which is not a wait");
+}
