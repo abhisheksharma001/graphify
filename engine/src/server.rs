@@ -151,6 +151,7 @@ pub fn router(app: App) -> Router {
         .route("/api/secrets", get(list_global_secrets))
         .route("/api/secrets/{name}", put(set_global_secret))
         .route("/api/assistants", get(list_assistants))
+        .route("/api/assistants/{id}/prompt", get(get_assistant_prompt))
         .route("/api/calls", get(list_calls))
         .route("/api/calls/{id}", get(get_call))
         .route("/api/stats", get(get_stats))
@@ -383,6 +384,32 @@ async fn list_assistants(
 ) -> Result<Response, ApiError> {
     let filters = filters(query.as_deref())?;
     Ok(Json(queries::assistants(&app.db(), filters.org)?).into_response())
+}
+
+/// One assistant's system prompt, asked for by name.
+///
+/// Not a field of the list above: the list is a picker and these prompts run to tens of
+/// kilobytes each. The pattern wizard reads one, once, and only when the analyst has
+/// ticked "read the agent's prompt" — so the prompt reaches the browser on a request that
+/// says out loud that it wants it.
+///
+/// `org` is required and is part of the lookup, not a filter applied afterwards: an
+/// assistant id from one client must not read a prompt out of another's.
+async fn get_assistant_prompt(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let org = org_param(query.as_deref())?;
+    let db = app.db();
+    known_org(&db, org)?;
+    match db.assistant_prompt(org, &id)? {
+        Some(prompt) => Ok(Json(json!({ "id": id, "system_prompt": prompt })).into_response()),
+        None => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no assistant {id}"),
+        )),
+    }
 }
 
 async fn list_calls(

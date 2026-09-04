@@ -17,6 +17,7 @@ import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
 import Login from './Login'
 import Settings from './Settings'
+import Wizard from './patterns/Wizard'
 import { initial, toParams } from './filters'
 import type { Filters } from './filters'
 import { load } from './series'
@@ -27,9 +28,15 @@ const SETTLE_MS = 250
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-/** Which of the two screens is showing. Not a route: graphify is one page served from
+/** Which of the three screens is showing. Not a route: graphify is one page served from
  * one binary, and a URL to a settings screen is not a thing anyone needs to share. */
-type View = 'dashboard' | 'settings'
+type View = 'dashboard' | 'patterns' | 'settings'
+
+const TABS: Record<View, string> = {
+  dashboard: 'Dashboard',
+  patterns: 'Patterns',
+  settings: 'Settings',
+}
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard')
@@ -104,7 +111,7 @@ export default function App() {
       <header className="top">
         <h1 className="wordmark">graphify</h1>
         <nav>
-          {(['dashboard', 'settings'] as View[]).map((v) => (
+          {(Object.keys(TABS) as View[]).map((v) => (
             // `aria-current`, not a class alone: which screen you are on is a fact about
             // the page, and a reader who cannot see the underline still gets told.
             <button
@@ -114,7 +121,7 @@ export default function App() {
               aria-current={view === v ? 'page' : undefined}
               onClick={() => setView(v)}
             >
-              {v === 'dashboard' ? 'Dashboard' : 'Settings'}
+              {TABS[v]}
             </button>
           ))}
         </nav>
@@ -133,6 +140,16 @@ export default function App() {
           No orgs yet, so there is nothing to chart. Add one on the settings screen: a
           name and a Vapi key, then sync.
         </p>
+      ) : view === 'patterns' ? (
+        filters.org == null ? (
+          <p className="notice">Loading…</p>
+        ) : (
+          /* The org is the filter bar's, picked on the dashboard: a wizard is about one
+             client's calls, and there is no second place to say which client. Keyed by it
+             for the same reason the dashboard is — a half-filled wizard must not carry
+             over to somebody else's calls. */
+          <Wizard key={filters.org} org={filters.org} assistants={assistants} onError={fail} />
+        )
       ) : (
         <>
           <FilterBar
