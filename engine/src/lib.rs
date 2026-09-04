@@ -7,6 +7,7 @@ pub mod db;
 pub mod ended_reason;
 pub mod extract;
 pub mod queries;
+pub mod rules;
 pub mod secrets;
 pub mod server;
 pub mod sync;

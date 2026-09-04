@@ -503,4 +503,28 @@ impl Db {
         tx.commit()?;
         Ok(gone)
     }
+
+    /// Replace one pattern's rule-sourced matches.
+    ///
+    /// `source='rule'` rows are derived: they are whatever the rule says today, so a
+    /// re-run replaces them outright rather than merging. `source='llm'` rows are a
+    /// model's answers, paid for once, and this never touches them.
+    pub fn replace_rule_matches(&mut self, pattern_id: i64, call_ids: &[String]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM pattern_matches WHERE pattern_id = ?1 AND source = 'rule'",
+            params![pattern_id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO pattern_matches (pattern_id, call_id, source)
+                 VALUES (?1, ?2, 'rule')",
+            )?;
+            for id in call_ids {
+                stmt.execute(params![pattern_id, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
