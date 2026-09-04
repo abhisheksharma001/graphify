@@ -800,7 +800,7 @@ external link under a line saying graphify stores the link and never the audio.
 filter bar asked for, and `last` is what bounds it. Recharts marks are still not focusable,
 unchanged from S-14/S-15/S-16/S-17.
 
-### S-19 — Settings page: "+" add org and keys, test connection ☐
+### S-19 — Settings page: "+" add org and keys, test connection ☑ (PR #19, 318a449)
 **PR:** one. **Depends on:** S-12, S-14.
 **Files:** `ui/src/Settings.tsx`.
 **Today:** keys only via env / CLI.
@@ -810,6 +810,45 @@ only. `keep_days` (≤14) and `max_calls` editable.
 **Acceptance:** WHEN a Vapi key is saved THEN the page SHALL show `set` with its last 4 chars and never the full key in any response or DOM.
 **Verify:** `pnpm build`; devtools network tab shows no key in any GET.
 **Must not:** keep the key in React state after submit.
+
+**Learned:** the step was written as one UI file, and two of the four things it promised
+had no engine behind them. The screen was built against what the engine could do plus
+what it had to grow, not against what the Files line guessed.
+
+*The key never comes back.* A key goes up and a `Status` comes back — name, flag, four
+characters — so there is no response on this page whose *shape* could carry a value. The
+field is uncontrolled and is cleared **before** the request leaves, not after it returns,
+so the value is in one local variable for the length of one `await` and in neither React
+state nor the DOM afterwards. A failed save costs a retype; that is the cheaper half.
+
+*Global secrets, and the two NULL traps.* The model keys are billed to one account and
+spent on every org's calls, so they belong to the install: `org_id NULL`, behind
+`GET /api/secrets` and `PUT /api/secrets/{name}`. SQLite counts NULLs in a `PRIMARY KEY`
+as **distinct**, so `PRIMARY KEY (org_id, name)` does not constrain those rows at all —
+`0002_global_secrets.sql` adds `CREATE UNIQUE INDEX … ON secrets (name) WHERE org_id IS
+NULL`, without which replacing a global key leaves its predecessor behind and `get` may
+return either. And the lookup is `org_id IS ?1`: `= NULL` is NULL, so the query could
+never find the row the same code had just written. The AAD keeps spelling an org's
+binding exactly as before (`{id}:{name}`, and `global:{name}` for the new scope), so
+every key already in a store keeps decrypting.
+
+*Each name has one scope.* `ORG_NAMES` and `GLOBAL_NAMES` replaced the single `NAMES`
+list; `status` reports the names of the scope it was asked about, and a name put at the
+wrong scope is a 400 rather than a row nothing will look for.
+
+*Retention.* `PUT /api/orgs/{id}` writes both `keep_days` and `max_calls` every time —
+both are nullable, so a request carrying one could not tell "leave it" from "clear it".
+D-5 is a cap: above 14 is refused by the field's own `max` before anything is sent, and
+by the engine again if it were.
+
+Verified in Chrome against a live server on a fresh database: `stored reads: "set ·
+••••1234"`, `key in DOM: false`, `password input values: ["","",""]`, `responses that
+carried a key: 0` over eight API responses, `console errors: []`. The plaintext keys are
+absent from the database file.
+
+**Not done:** no delete and no rename — a name is what an org is known by everywhere
+else. The "+" flow leaves an org created even when its key fails the test, which is
+right, but there is no second chance at the key inside that form.
 
 ### S-20 — Brain scaffold with BAML clients and cost table ☐
 **PR:** one. **Depends on:** S-2.
