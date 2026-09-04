@@ -850,7 +850,7 @@ absent from the database file.
 else. The "+" flow leaves an org created even when its key fails the test, which is
 right, but there is no second chance at the key inside that form.
 
-### S-20 — Brain scaffold with BAML clients and cost table ☑ (PR #20, c3f74ae)
+### S-20 — Brain scaffold with BAML clients and cost table ☑ (PR #20, c3f74ae; PR #21, 5a197c3)
 **PR:** one. **Depends on:** S-2.
 **Files:** `brain/baml_src/clients.baml`, `brain/baml_src/generators.baml`,
 `brain/src/graphify_brain/cost.py`, `brain/src/graphify_brain/db.py`, `brain/tests/test_cost.py`.
@@ -894,10 +894,22 @@ while a job reads is a normal collision.
 **Beyond the file list:** `tests/test_db.py` (the module guaranteeing the brain cannot
 edit a client's call history needs a test that tries) and the CI step above.
 
+**Follow-up (PR #21, 5a197c3):** prices cannot be auto-updated — neither provider
+publishes rates through an API. `GET /v1/models` returns ids, capabilities, context
+windows and a release date, and no price at either. So `graphify-brain models` prints the
+table and its age, and `--check` reads both providers' model lists with the key already in
+the environment (no model call, no cost) to report a **retired** configured model (exit 1,
+it breaks the brain) and any model released **after** the one a client points at (exit 0 —
+news, not a failure). A provider with no key is named, never counted as a pass.
+`STALE_AFTER_DAYS = 90` warns and never fails: a build that breaks on a calendar date with
+no change to the code teaches everyone to skip the check. `Price` gained `provider`, which
+let the drift guard tighten from loose `provider`/`model` lines to whole `client<llm> {}`
+blocks matched against client name, provider and model id together.
+
 **Not done:** no `Haiku` client — D-8's "cheap model confirms" will need one, and the step
 named three. Cache-read and batch rates are not priced; the ceiling covers the caps but
-over-states a cached run. Nothing imports `baml_client` yet: the first function arrives
-in S-22.
+over-states a cached run. `models --check` is not a CI step: it needs keys and CI holds
+none. Nothing imports `baml_client` yet: the first function arrives in S-22.
 
 ### S-21 — Rule engine + `graphify apply` + `graphify rule-check` `[Rust]` ☐
 **PR:** one. **Depends on:** S-8.
