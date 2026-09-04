@@ -1,5 +1,8 @@
 // The rest of the dashboard: everything `/api/stats` answers directly.
 //
+// A list of cards rather than one component, because the reader chooses which of them are
+// drawn and in what order. What each card *is* stays here; where it goes is `Dashboard`'s.
+//
 // Unlike the ended-group stack, none of these needs the call list. Each is a field the
 // engine already aggregates over the selection the filter bar chose, so the whole pack is
 // drawn from the one `/api/stats` response the loader already has.
@@ -12,6 +15,8 @@
 import type { Stats } from '../api'
 import Bucketed from './Bucketed'
 import type { Measure } from './Bucketed'
+import { card } from './entry'
+import type { Entry } from './entry'
 import Ranked from './Ranked'
 import type { Item } from './Ranked'
 import { count, millis, money, seconds, tokens } from '../format'
@@ -49,7 +54,7 @@ const PERCENTILES: Measure[] = [
   { field: 'latency_p95', label: 'p95', colour: 'var(--s-7)' },
 ]
 
-export default function Pack({ stats, stale }: { stats: Stats; stale: boolean }) {
+export default function packEntries(stats: Stats, stale: boolean): Entry[] {
   const buckets = stats.per_bucket
   const size = stats.bucket_size
 
@@ -64,45 +69,53 @@ export default function Pack({ stats, stale }: { stats: Stats; stale: boolean })
     value: a.calls,
   }))
 
-  return (
-    <div className="pack">
+  return [
+    card('tool_failures', 'Tool failures by tool', (title) => (
       <Ranked
-        title="Tool failures by tool"
+        title={title}
         sub="Failed tool calls across the selection."
         items={failures}
         unit="failures"
         stale={stale}
         empty="No tool call failed in this range."
       />
+    )),
 
+    card('assistants', 'Calls per assistant', (title) => (
       <Ranked
-        title="Calls per assistant"
+        title={title}
         items={assistants}
         unit="calls"
         stale={stale}
         empty="No calls in this range."
       />
+    )),
 
+    card('tool_failures_over_time', 'Tool failures over time', (title) => (
       <Bucketed
-        title="Tool failures over time"
+        title={title}
         buckets={buckets}
         bucketSize={size}
         stale={stale}
         lines={[{ field: 'tool_failures', label: 'failures', colour: 'var(--s-1)' }]}
         format={count}
       />
+    )),
 
+    card('transfers', 'Transfers over time', (title) => (
       <Bucketed
-        title="Transfers over time"
+        title={title}
         buckets={buckets}
         bucketSize={size}
         stale={stale}
         lines={[{ field: 'transfers', label: 'transfers', colour: 'var(--s-2)' }]}
         format={count}
       />
+    )),
 
+    card('cost', 'Cost', (title) => (
       <Bucketed
-        title="Cost"
+        title={title}
         sub="What each bucket was billed for. The slices add up to its cost."
         buckets={buckets}
         bucketSize={size}
@@ -113,11 +126,12 @@ export default function Pack({ stats, stale }: { stats: Stats; stale: boolean })
          * the slices are six others. Saying so is the difference between "this cost
          * nothing" and "Vapi did not say what this was spent on". */
         empty="Vapi reported no cost breakdown for these calls."
-
       />
+    )),
 
+    card('latency', 'Turn latency', (title) => (
       <Bucketed
-        title="Turn latency"
+        title={title}
         sub="Bars are the average turn, split by what it waited on; the lines are the p50 and p95 of the turn itself."
         buckets={buckets}
         bucketSize={size}
@@ -126,9 +140,11 @@ export default function Pack({ stats, stale }: { stats: Stats; stale: boolean })
         lines={PERCENTILES}
         format={millis}
       />
+    )),
 
+    card('tokens', 'Tokens', (title) => (
       <Bucketed
-        title="Tokens"
+        title={title}
         sub="Summed over the calls in each bucket."
         buckets={buckets}
         bucketSize={size}
@@ -136,9 +152,11 @@ export default function Pack({ stats, stale }: { stats: Stats; stale: boolean })
         stack={TOKENS}
         format={tokens}
       />
+    )),
 
+    card('duration', 'Call duration', (title) => (
       <Bucketed
-        title="Call duration"
+        title={title}
         sub="Averaged over the calls that ended. One still running has no duration to average in."
         buckets={buckets}
         bucketSize={size}
@@ -146,6 +164,6 @@ export default function Pack({ stats, stale }: { stats: Stats; stale: boolean })
         lines={[{ field: 'duration_avg', label: 'average', colour: 'var(--s-4)' }]}
         format={seconds}
       />
-    </div>
-  )
+    )),
+  ]
 }

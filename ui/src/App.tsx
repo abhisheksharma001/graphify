@@ -1,17 +1,17 @@
-// The dashboard: one filter row, one chart, and the two states that come before them.
+// The page: one filter row, the charts, and the two states that come before them.
 //
 // The filters own the slice. Every request below them is built from the same `Filters`, so
-// the chart, its table, and its subtitle can never describe different sets of calls.
+// the chart, its table, and its subtitle can never describe different sets of calls. Which
+// of the charts are drawn, and in what order, is `Dashboard`'s — a preference, saved per
+// org, and no business of the filters.
 
 import { useCallback, useEffect, useState } from 'react'
 import * as api from './api'
 import { Unauthorized } from './api'
 import type { Assistant, Org } from './api'
+import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
 import Login from './Login'
-import Analysis from './charts/Analysis'
-import EndedGroups from './charts/EndedGroups'
-import Pack from './charts/Pack'
 import { initial, toParams } from './filters'
 import type { Filters } from './filters'
 import { load } from './series'
@@ -117,12 +117,17 @@ export default function App() {
           />
           {/* The previous render stays on screen while the next one loads: no skeleton,
               no layout jump, and nothing on screen that is not a real number. */}
-          {chart ? (
-            <>
-              <EndedGroups chart={chart.data} stale={stale} />
-              <Pack stats={chart.data.stats} stale={stale} />
-              <Analysis stats={chart.data.stats} stale={stale} />
-            </>
+          {chart && filters.org != null ? (
+            /* Keyed by org: a different org is a different dashboard, and remounting is
+               what guarantees none of the previous one's layout is still on screen while
+               this one's is being fetched. */
+            <Dashboard
+              key={filters.org}
+              org={filters.org}
+              chart={chart.data}
+              stale={stale}
+              onError={fail}
+            />
           ) : (
             <p className="notice">Loading…</p>
           )}

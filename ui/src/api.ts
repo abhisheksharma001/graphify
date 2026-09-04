@@ -98,6 +98,17 @@ export type StructuredField = {
   per_bucket: NumberBucket[]
 }
 
+/** One chart of the dashboard, and whether it is drawn. The order of the list is the
+ * order the charts appear in.
+ *
+ * Ids, not titles: rewording a chart must not turn it back on for a reader who had turned
+ * it off. */
+export type ChartPref = { id: string; on: boolean }
+
+/** An empty list means nothing has been saved yet, and is read as "draw everything the
+ * dashboard has" — never as "draw nothing". */
+export type Layout = { charts: ChartPref[] }
+
 async function reason(res: Response): Promise<string> {
   // The engine puts its message in `{"error": ...}`. Anything else — a proxy, a crash
   // page — gets reported by status, which is at least true.
@@ -120,6 +131,17 @@ async function get<T>(path: string, params?: URLSearchParams): Promise<T> {
   return (await res.json()) as T
 }
 
+async function put<T>(path: string, params: URLSearchParams, body: unknown): Promise<T> {
+  const res = await fetch(`${path}?${params}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) throw new Unauthorized(await reason(res))
+  if (!res.ok) throw new Error(await reason(res))
+  return (await res.json()) as T
+}
+
 export const orgs = () => get<Org[]>('/api/orgs')
 
 export const assistants = (org: number | null) =>
@@ -136,6 +158,14 @@ export type Call = {
 export const stats = (params: URLSearchParams) => get<Stats>('/api/stats', params)
 
 export const calls = (params: URLSearchParams) => get<Call[]>('/api/calls', params)
+
+const forOrg = (org: number) => new URLSearchParams({ org: String(org) })
+
+export const dashboard = (org: number) => get<Layout>('/api/dashboard', forOrg(org))
+
+/** The engine answers with what it stored, so the caller never has to assume it landed. */
+export const saveDashboard = (org: number, charts: ChartPref[]) =>
+  put<Layout>('/api/dashboard', forOrg(org), { charts })
 
 /** The session cookie comes back on the response and is `HttpOnly`; there is nothing to
  * store here, and deliberately nothing this code could read. */
