@@ -477,7 +477,7 @@ each end up at two versions because `chacha20poly1305 0.10` pins the older ones.
 `ended_group`, `call_id`, `tool_failed`, `transferred`. `/api/stats` returns
 `{by_ended_group, by_ended_reason, per_bucket:{calls, tool_failures, transfers,
 cost, duration_avg, latency_p50, latency_p95}, tool_failures_by_name,
-by_assistant, success_eval_counts, structured_keys, totals}`; bucket 1h ≤ 2d else 1d.
+by_assistant, success_eval_counts, structured_fields, totals}`; bucket 1h ≤ 2d else 1d.
 `GRAPHIFY_PASSWORD` set → `POST /api/login`, cookie session, all `/api/*` 401 without it.
 Bind `127.0.0.1:3737` unless `GRAPHIFY_BIND` set.
 **Acceptance:** WHEN 10 calls are seeded, 3 in `transfer-error`, THEN `/api/stats?window=1d` SHALL report `by_ended_group["transfer-error"] == 3`; WHEN `GRAPHIFY_PASSWORD` is set THEN `/api/stats` without a session SHALL return 401.
@@ -651,7 +651,7 @@ empty surface under the short ones, which reads as a chart that failed to draw.
 Not done: recharts marks are still not focusable, so the pack inherits S-14's missing keyboard
 equivalent for hover. Every chart's table twin carries the same numbers and is reachable.
 
-### S-16 — Chart pack B: Vapi analysis fields ☐
+### S-16 — Chart pack B: Vapi analysis fields ☑ (PR #16, PLACEHOLDER)
 **PR:** one. **Depends on:** S-15.
 **Files:** `ui/src/charts/analysis.tsx`, `engine/src/queries.rs` (structured key counts).
 **Today:** successEvaluation and structuredData stored, not shown.
@@ -660,6 +660,42 @@ whose values are strings/booleans, a small count chart; numeric keys get avg per
 **Acceptance:** WHEN 5 calls have `structured.intent` values THEN a chart titled `intent` SHALL show their counts.
 **Verify:** `pnpm build`; screenshot on seeded data.
 **Must not:** spend any model tokens.
+**Learned:** `structured_keys` counted calls per key and stopped there, which is enough to
+decide a key is worth offering and not enough to draw anything. It was **replaced** by
+`structured_fields`: one entry per key, carrying the classification and the one chart that
+key can honestly hold. Two fields saying the same thing would have been worse than one
+changed field, and nothing consumed the old one yet.
+**The engine classifies, the UI draws.** A key is `number` only when *every* value it
+carried was one, `text` when they were all scalars, `other` when any was an object or a
+list. Classification is over the whole selection, never per value: one string among the
+numbers and an average would cover only some of the calls, which is not the average of
+anything — so a mixed key is counted instead, which is still true. An `other` key is still
+reported, with its call count and words saying its values are not counts or numbers;
+dropping it would tell the user the data is not there when it is.
+**The tail is folded in the engine, at exactly what the chart shows.** `VALUES_SHOWN = 10`
+matches `Ranked`'s `TOP`, so the ten commonest plus one summed remainder arrive as eleven
+rows and `Ranked`'s own fold (`length <= TOP + 1`) leaves them alone — no double fold. The
+remainder has to be summed here: a chart folding its own tail could only ever sum the
+values it was sent, so a key with 200 cities would draw an "other" bar that is wrong. Live:
+17 cities → 10 bars + `other (7 more) = 14`, and 22 + 14 = the 36 calls in the selection.
+**A numeric key rides the page's axis, not one of its own.** The structured pass runs
+*after* `per_bucket` is built and walks its bucket stamps, so alignment is structural
+rather than a rule someone has to keep. Buckets no call carried the key in stay NULL — a
+gap in the line and a "—" in the table, never a zero. A call with no `created_at` counts
+towards the key but sits in no bucket, which is the same rule the time axis already uses.
+**`Bucketed` took one new field name, not a generic.** A structured key has no compile-time
+name, so its series arrives under `avg` and `Field` gained that one member. Making the
+component generic over its field name would have bought nothing and cost the guarantee that
+a chart and its table read the same field.
+**Every chart here wears slot one.** They are one series each on a card that names them, so
+numbering them by list position would mean a key appearing or disappearing repainted its
+neighbours — colour following order, the one thing it must never do. `successEvaluation`
+gets no colour verdict either: the rubric is the assistant's, so "true", "8" or a sentence
+all arrive as strings and painting a guess at which is good would be the dashboard
+inventing an opinion. `.pack` moved from `auto-fit` to `auto-fill` so a pack with one card
+in it keeps a card's width instead of stretching across the page.
+**Not done:** the same keyboard gap as S-14 and S-15 — recharts marks are not focusable, so
+hover has no keyboard equivalent and the table twin is the reachable relief.
 
 ### S-17 — Chart toggles + saved dashboard layout ☐
 **PR:** one. **Depends on:** S-16.

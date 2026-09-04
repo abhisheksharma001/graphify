@@ -279,7 +279,9 @@ button {
  * another, so none of them may share a card. */
 .pack {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  /* auto-fill, not auto-fit: a pack with one card in it keeps the width of a card
+     instead of stretching across the page. With a full pack the two are identical. */
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   /* Each card is as tall as its own chart. Stretching them to match their neighbours
    * would put a field of empty surface under the short ones, which reads as a chart
    * that failed to draw. */

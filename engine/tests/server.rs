@@ -581,33 +581,163 @@ async fn a_latency_component_is_averaged_over_the_calls_that_reported_it() {
     assert_eq!(t["latency_endpointing"], Value::Null);
 }
 
-/// A structured key the assistant was asked for and left null is not a column to offer.
-#[tokio::test]
-async fn structured_keys_skip_the_ones_that_came_back_null() {
-    let s = plain(|db, org| {
-        for (i, structured) in [
-            r#"{"call_intent": "transfer_request", "part_number": null}"#,
-            r#"{"call_intent": "price_check"}"#,
-        ]
-        .iter()
-        .enumerate()
-        {
+/// Seed one call per structured blob, newest first, so every one of them lands in the
+/// selection with a `created_at` the buckets can place.
+async fn structured(blobs: &[&str]) -> Server {
+    let owned: Vec<String> = blobs.iter().map(|b| (*b).to_string()).collect();
+    plain(move |db, org| {
+        for (i, blob) in owned.iter().enumerate() {
             db.upsert_call(&Call {
                 id: format!("c-{i}"),
                 org_id: org,
                 created_at: Some(minutes_ago(i as i64 + 1)),
-                structured: Some((*structured).to_string()),
+                structured: Some(blob.clone()),
                 ..Call::default()
             })
             .unwrap();
         }
     })
+    .await
+}
+
+/// The one field, found by name. The list is in name order, not count order.
+fn field<'a>(body: &'a Value, key: &str) -> &'a Value {
+    body["structured_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == key)
+        .unwrap_or_else(|| panic!("no structured field {key} in {body}"))
+}
+
+/// A structured key the assistant was asked for and left null is not a column to offer.
+#[tokio::test]
+async fn structured_keys_skip_the_ones_that_came_back_null() {
+    let s = structured(&[
+        r#"{"call_intent": "transfer_request", "part_number": null}"#,
+        r#"{"call_intent": "price_check"}"#,
+    ])
     .await;
 
     let (_, body) = get(&s.url("/api/stats")).await;
 
-    assert_eq!(body["structured_keys"]["call_intent"], 2);
-    assert_eq!(body["structured_keys"]["part_number"], Value::Null);
+    assert_eq!(field(&body, "call_intent")["calls"], 2);
+    assert!(
+        body["structured_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["key"] != "part_number"),
+        "a key that came back null is not a key: {body}"
+    );
+}
+
+/// The acceptance: five calls carrying `intent` give a chart of what they said.
+#[tokio::test]
+async fn a_text_key_is_counted_by_value() {
+    let s = structured(&[
+        r#"{"intent": "refund"}"#,
+        r#"{"intent": "refund"}"#,
+        r#"{"intent": "price_check"}"#,
+        r#"{"intent": "refund"}"#,
+        r#"{"intent": "transfer"}"#,
+    ])
+    .await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let f = field(&body, "intent");
+
+    assert_eq!(f["kind"], "text");
+    assert_eq!(f["calls"], 5);
+    assert_eq!(f["counts"]["refund"], 3);
+    assert_eq!(f["counts"]["price_check"], 1);
+    assert_eq!(f["counts"]["transfer"], 1);
+    assert_eq!(f["tail"], Value::Null, "nothing was folded away");
+}
+
+/// A key of numbers is a series, not a set of one-call categories.
+#[tokio::test]
+async fn a_number_key_is_averaged_over_the_calls_that_carried_it() {
+    let s = structured(&[
+        r#"{"score": 4}"#,
+        r#"{"score": 6}"#,
+        // No `score` at all. It must not be averaged in as a zero.
+        r#"{"intent": "refund"}"#,
+    ])
+    .await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let f = field(&body, "score");
+
+    assert_eq!(f["kind"], "number");
+    assert_eq!(f["calls"], 2);
+    assert_eq!(f["counts"], serde_json::json!({}), "a number is not a count");
+    let buckets = f["per_bucket"].as_array().unwrap();
+    assert_eq!(
+        buckets.len(),
+        body["per_bucket"].as_array().unwrap().len(),
+        "a numeric key rides the same axis as everything else"
+    );
+    let averages: Vec<&Value> = buckets
+        .iter()
+        .map(|b| &b["avg"])
+        .filter(|a| !a.is_null())
+        .collect();
+    assert_eq!(averages, vec![&Value::from(5.0)]);
+}
+
+/// One string among the numbers and the average would be over some of the calls, which is
+/// not the average of anything. Counting them is still honest.
+#[tokio::test]
+async fn a_key_of_mixed_types_is_counted_rather_than_averaged() {
+    let s = structured(&[r#"{"score": 4}"#, r#"{"score": "high"}"#]).await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let f = field(&body, "score");
+
+    assert_eq!(f["kind"], "text");
+    assert_eq!(f["counts"]["4"], 1);
+    assert_eq!(f["counts"]["high"], 1);
+}
+
+/// Values past the cap are summed, not dropped: the rows still add up to the calls.
+#[tokio::test]
+async fn a_key_with_more_values_than_the_chart_shows_folds_the_rest() {
+    let blobs: Vec<String> = (0..15)
+        .map(|i| format!(r#"{{"caller": "person-{i:02}"}}"#))
+        .collect();
+    let refs: Vec<&str> = blobs.iter().map(String::as_str).collect();
+    let s = structured(&refs).await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let f = field(&body, "caller");
+
+    assert_eq!(f["calls"], 15);
+    let shown = f["counts"].as_object().unwrap();
+    assert_eq!(shown.len(), 10);
+    assert_eq!(f["tail"]["values"], 5);
+    assert_eq!(f["tail"]["calls"], 5);
+    let drawn: i64 = shown.values().map(|v| v.as_i64().unwrap()).sum();
+    assert_eq!(
+        drawn + f["tail"]["calls"].as_i64().unwrap(),
+        15,
+        "the fold is the remainder, not the part that fitted"
+    );
+}
+
+/// A key whose values are objects has no count and no average. It is still reported, so
+/// the dashboard can say the data is there rather than pretend the key does not exist.
+#[tokio::test]
+async fn a_key_of_objects_is_reported_as_neither() {
+    let s = structured(&[r#"{"items": [{"sku": "a"}]}"#]).await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let f = field(&body, "items");
+
+    assert_eq!(f["kind"], "other");
+    assert_eq!(f["calls"], 1);
+    assert_eq!(f["counts"], serde_json::json!({}));
+    assert_eq!(f["per_bucket"], serde_json::json!([]));
 }
 
 #[tokio::test]

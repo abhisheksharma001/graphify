@@ -71,7 +71,31 @@ export type Stats = {
   /** Failed tool calls by tool name, over the whole selection. */
   tool_failures_by_name: Record<string, number>
   by_assistant: ByAssistant[]
+  /** Vapi's `successEvaluation`, counted. A call it did not evaluate is not in here at
+   * all — "no verdict" is not a verdict, and must not stand beside the real ones. */
+  success_eval_counts: Record<string, number>
+  structured_fields: StructuredField[]
   totals: Totals
+}
+
+/** One bucket of a numeric structured key, on the same axis as `per_bucket`. */
+export type NumberBucket = { bucket: string; avg: number | null }
+
+/** One top-level key of `analysis.structuredData`, with the one chart it can honestly
+ * carry. The engine decides which: a key is a `number` only when every value it carried
+ * was one, `text` when they were all scalars, and `other` when any was an object or a
+ * list — which is neither a count nor an average. */
+export type StructuredField = {
+  key: string
+  kind: 'text' | 'number' | 'other'
+  /** Calls that carried a non-null value for this key. */
+  calls: number
+  /** `text` only: value → calls, already folded to what a chart shows. */
+  counts: Record<string, number>
+  /** `text` only: the values the fold left out, summed by the engine over all of them. */
+  tail: { values: number; calls: number } | null
+  /** `number` only. */
+  per_bucket: NumberBucket[]
 }
 
 async function reason(res: Response): Promise<string> {

@@ -39,3 +39,9 @@ export function tokens(v: number | null): string {
   if (v === null) return DASH
   return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)
 }
+
+/** An average of a number the dashboard knows nothing else about — no unit, no scale. Two
+ * decimals at most, and no trailing zeroes, so 4 reads as 4 and 4.5 as 4.5. */
+export function mean(v: number | null): string {
+  return v === null ? DASH : String(Math.round(v * 100) / 100)
+}
