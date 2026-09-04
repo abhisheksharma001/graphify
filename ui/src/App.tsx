@@ -10,6 +10,7 @@ import type { Assistant, Org } from './api'
 import FilterBar from './FilterBar'
 import Login from './Login'
 import EndedGroups from './charts/EndedGroups'
+import Pack from './charts/Pack'
 import { initial, toParams } from './filters'
 import type { Filters } from './filters'
 import { load } from './series'
@@ -116,7 +117,10 @@ export default function App() {
           {/* The previous render stays on screen while the next one loads: no skeleton,
               no layout jump, and nothing on screen that is not a real number. */}
           {chart ? (
-            <EndedGroups chart={chart.data} stale={stale} />
+            <>
+              <EndedGroups chart={chart.data} stale={stale} />
+              <Pack stats={chart.data.stats} stale={stale} />
+            </>
           ) : (
             <p className="notice">Loading…</p>
           )}

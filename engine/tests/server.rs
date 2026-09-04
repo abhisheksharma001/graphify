@@ -497,6 +497,90 @@ async fn tool_failures_are_counted_by_name_and_only_when_they_failed() {
     assert_eq!(body["tool_failures_by_name"]["book"], Value::Null);
 }
 
+/// The cost stack has to add up to the cost bar above it, and tokens are counts, so they
+/// sum. Both are what the cost and token charts are drawn from.
+#[tokio::test]
+async fn the_cost_breakdown_and_the_tokens_sum_across_the_selection() {
+    let s = plain(|db, org| {
+        for i in 0..2 {
+            db.upsert_call(&Call {
+                id: format!("c-{i}"),
+                org_id: org,
+                created_at: Some(minutes_ago(5)),
+                cost: Some(0.30),
+                cost_stt: Some(0.01),
+                cost_llm: Some(0.02),
+                cost_tts: Some(0.03),
+                cost_vapi: Some(0.04),
+                cost_transport: Some(0.05),
+                cost_analysis: Some(0.15),
+                llm_prompt_tokens: Some(1000),
+                llm_completion_tokens: Some(200),
+                llm_cached_tokens: Some(50),
+                ..Call::default()
+            })
+            .unwrap();
+        }
+    })
+    .await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let t = &body["totals"];
+
+    assert_eq!(t["prompt_tokens"], 2000);
+    assert_eq!(t["completion_tokens"], 400);
+    assert_eq!(t["cached_tokens"], 100);
+    let part = |k: &str| t[k].as_f64().unwrap();
+    let stack = part("cost_stt")
+        + part("cost_llm")
+        + part("cost_tts")
+        + part("cost_vapi")
+        + part("cost_transport")
+        + part("cost_analysis");
+    assert!(
+        (stack - t["cost"].as_f64().unwrap()).abs() < 1e-9,
+        "the stack was {stack} against a cost of {}",
+        t["cost"]
+    );
+}
+
+/// A latency Vapi did not report is not a latency of zero. Averaging it in as one would
+/// drag every component towards a number nothing measured, and the component charts would
+/// read low for exactly the calls that went wrong.
+#[tokio::test]
+async fn a_latency_component_is_averaged_over_the_calls_that_reported_it() {
+    let s = plain(|db, org| {
+        db.upsert_call(&Call {
+            id: "measured".into(),
+            org_id: org,
+            created_at: Some(minutes_ago(5)),
+            lat_turn_avg_ms: Some(800.0),
+            lat_model_avg_ms: Some(400.0),
+            ..Call::default()
+        })
+        .unwrap();
+        db.upsert_call(&Call {
+            id: "silent".into(),
+            org_id: org,
+            created_at: Some(minutes_ago(5)),
+            ..Call::default()
+        })
+        .unwrap();
+    })
+    .await;
+
+    let (_, body) = get(&s.url("/api/stats")).await;
+    let t = &body["totals"];
+
+    assert_eq!(t["calls"], 2);
+    assert_eq!(t["latency_avg"], 800.0, "one call reported 800, not two");
+    assert_eq!(t["latency_model"], 400.0);
+    // Nothing reported these at all, so there is no average to report.
+    assert_eq!(t["latency_voice"], Value::Null);
+    assert_eq!(t["latency_transcriber"], Value::Null);
+    assert_eq!(t["latency_endpointing"], Value::Null);
+}
+
 /// A structured key the assistant was asked for and left null is not a column to offer.
 #[tokio::test]
 async fn structured_keys_skip_the_ones_that_came_back_null() {
