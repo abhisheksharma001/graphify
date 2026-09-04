@@ -288,6 +288,47 @@ pub fn pattern_counts(db: &Db, f: &Filters) -> Result<BTreeMap<i64, i64>> {
     Ok(rows.collect::<rusqlite::Result<BTreeMap<_, _>>>()?)
 }
 
+/// One call of a selection that has something to read, and how long it is.
+#[derive(Debug, Serialize)]
+pub struct Sample {
+    pub id: String,
+    /// Characters of transcript. SQLite's `length()` counts characters on text, which is
+    /// what the brain's `len()` counts too, so the two sides agree about the size of the
+    /// same call without either of them sending the text to find out.
+    pub chars: usize,
+}
+
+/// The selection's calls that have a transcript, shortest first.
+///
+/// Shortest first is the ask box's rule, and it is a trade made with its eyes open. It
+/// fits the most calls it can under one token cap, which is what a question like "what do
+/// people ask about" needs; it also makes the sample skewed in the one dimension people
+/// most want to generalise along, which is why `ask.baml` tells the model how these were
+/// picked. Ties break on id so the same selection always yields the same sample.
+///
+/// Over the same set the statistics describe — `last` pages the selection, not this — so
+/// an answer's numbers and its quotes are about one set of calls.
+pub fn transcripts(db: &Db, f: &Filters, limit: usize) -> Result<Vec<Sample>> {
+    let floor = f.floor(Utc::now())?;
+    let page = f.last.map_or(-1, |n| n as i64);
+    let (cte, mut params) = selection(f, floor.as_deref(), page);
+    params.push(Sql::Integer(limit as i64));
+    let sql = format!(
+        "{cte} SELECT id, length(transcript) FROM sel
+          WHERE transcript IS NOT NULL AND trim(transcript) != ''
+          ORDER BY length(transcript) ASC, id ASC LIMIT ?"
+    );
+    let conn = db.conn();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |r| {
+        Ok(Sample {
+            id: r.get(0)?,
+            chars: r.get::<_, i64>(1)?.max(0) as usize,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// One tool invocation on a call, for the drawer.
 #[derive(Debug, Serialize)]
 pub struct ToolCallRow {

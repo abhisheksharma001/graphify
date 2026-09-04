@@ -483,10 +483,12 @@ def _tools(counted: Any, names: Sequence[str]) -> str:
 # --- checking the request -------------------------------------------------------------
 
 
-def _model(value: Any) -> str:
+def _model(value: Any, name: str = "label") -> str:
+    """`name` is the command asking, so that `ask`'s refusal does not say `label`. These
+    two checks are shared with `ask.py` — one list of models, one rule about the cap."""
     known = ", ".join(sorted(CLIENTS))
     if not isinstance(value, str) or value.strip().lower() not in CLIENTS:
-        raise ValueError(f"label: model must be one of {known}, not {value!r}")
+        raise ValueError(f"{name}: model must be one of {known}, not {value!r}")
     return value.strip().lower()
 
 
@@ -496,11 +498,11 @@ def _batch_size(value: Any) -> int:
     return value
 
 
-def _max_usd(value: Any) -> float:
+def _max_usd(value: Any, name: str = "label") -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         # No default. A cap that a caller can leave out is a cap that gets left out, and
         # "must not exceed max_usd" means nothing when there is no max_usd.
-        raise ValueError(f"label: max_usd must be a positive number, not {value!r}")
+        raise ValueError(f"{name}: max_usd must be a positive number, not {value!r}")
     return float(value)
 
 

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import * as api from './api'
 import { Unauthorized } from './api'
 import type { Assistant, Org } from './api'
+import Ask from './Ask'
 import CallTable from './CallTable'
 import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
@@ -27,11 +28,12 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 /** Which of the three screens is showing. Not a route: graphify is one page served from
  * one binary, and a URL to a settings screen is not a thing anyone needs to share. */
-type View = 'dashboard' | 'patterns' | 'settings'
+type View = 'dashboard' | 'patterns' | 'ask' | 'settings'
 
 const TABS: Record<View, string> = {
   dashboard: 'Dashboard',
   patterns: 'Patterns',
+  ask: 'Ask',
   settings: 'Settings',
 }
 
@@ -137,6 +139,27 @@ export default function App() {
           No orgs yet, so there is nothing to chart. Add one on the settings screen: a
           name and a Vapi key, then sync.
         </p>
+      ) : view === 'ask' ? (
+        query == null ? (
+          <p className="notice">Loading…</p>
+        ) : (
+          /* The same bar again, and for the same reason the patterns screen gets one: a
+             question is about a selection, and the only way to say which one is the
+             controls that made it. */
+          <Ask
+            key={filters.org}
+            query={query}
+            bar={
+              <FilterBar
+                filters={filters}
+                orgs={orgs}
+                assistants={assistants}
+                onChange={setFilters}
+              />
+            }
+            onError={fail}
+          />
+        )
       ) : view === 'patterns' ? (
         filters.org == null || query == null ? (
           <p className="notice">Loading…</p>

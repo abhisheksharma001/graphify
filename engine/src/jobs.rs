@@ -91,6 +91,10 @@ pub enum Kind {
     /// The one function nobody starts by clicking. `sync` runs it, and D-8's two caps
     /// stand where the click stands everywhere else.
     Daily,
+    /// One free-form question. Started by a click like the rest, but with the price
+    /// already agreed: `ask::quote` shows it without spawning anything, so the approval
+    /// happens before this row exists rather than against a parked child.
+    Ask,
 }
 
 impl Kind {
@@ -101,6 +105,7 @@ impl Kind {
             Kind::Label => "label",
             Kind::Synthesize => "synthesize",
             Kind::Daily => "daily",
+            Kind::Ask => "ask",
         }
     }
 

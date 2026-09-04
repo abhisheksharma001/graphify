@@ -9,6 +9,7 @@
 //! Bound to loopback unless told otherwise. A dashboard that reaches a Vapi key is not
 //! something to put on `0.0.0.0` because a default said so.
 
+use crate::ask;
 use crate::auth::{self, Auth};
 use crate::db::Db;
 use crate::jobs::{self, Jobs, Kind};
@@ -160,6 +161,12 @@ pub fn router(app: App) -> Router {
         .route("/api/patterns/clarify", post(start_clarify))
         .route("/api/patterns/label", post(start_label))
         .route("/api/patterns/synthesize", post(start_synthesize))
+        // The ask box is two routes because of one rule: a price somebody walks away from
+        // must leave nothing behind. `quote` starts no process and writes no row, so
+        // cancelling costs a round trip; `ask` is the click, and by then the figure has
+        // already been agreed.
+        .route("/api/ask/quote", post(quote_ask))
+        .route("/api/ask", post(start_ask))
         .route("/api/patterns", get(list_patterns))
         .route("/api/patterns/{id}", put(update_pattern))
         .route("/api/patterns/{id}/apply", post(apply_pattern))
@@ -570,6 +577,18 @@ fn filters(query: Option<&str>) -> Result<Filters, ApiError> {
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+impl From<ask::Error> for ApiError {
+    /// A refusal is something the caller can act on — an empty question, a model nobody
+    /// prices, a window whose statistics do not fit — so it goes back with its own words
+    /// and a 400. Anything else is the engine failing to read its own database.
+    fn from(e: ask::Error) -> Self {
+        match e {
+            ask::Error::Refused(why) => ApiError::new(StatusCode::BAD_REQUEST, why),
+            ask::Error::Failed(e) => ApiError::from(e),
+        }
+    }
+}
+
 /// Checked before a secret is written or read, so a typo'd org id is a 404 rather than a
 /// secret quietly filed under an org that does not exist.
 fn known_org(db: &Db, id: i64) -> Result<(), ApiError> {
@@ -634,6 +653,13 @@ fn start(
             "a brain request is a JSON object",
         ));
     }
+    spawn(&app, kind, org, &body)
+}
+
+/// Check there is room for another child, then start one. Split out of `start` because the
+/// ask box does not forward a body: the engine builds that request itself, out of the
+/// statistics and the sample it just priced.
+fn spawn(app: &App, kind: Kind, org: i64, body: &Value) -> Result<Response, ApiError> {
     {
         let db = app.db();
         known_org(&db, org)?;
@@ -647,18 +673,118 @@ fn start(
             ));
         }
     }
-    let id = jobs::start(
-        &app.jobs,
-        &app.db,
-        &app.secrets,
-        &app.brain,
-        kind,
-        org,
-        &body,
-    )?;
+    let id = jobs::start(&app.jobs, &app.db, &app.secrets, &app.brain, kind, org, body)?;
     // 202: the row exists and the child is starting. Everything after this is read through
     // `GET /api/jobs/{id}`.
     Ok((StatusCode::ACCEPTED, Json(json!({ "id": id, "status": jobs::RUNNING }))).into_response())
+}
+
+// --- the ask box ----------------------------------------------------------------------
+
+/// What a question would cost. Deliberately not enough to ask one: `max_usd` is missing,
+/// because a quote is a question about a price and not an approval of it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskQuote {
+    question: String,
+    model: String,
+}
+
+/// The same, plus the figure the person actually agreed to.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskRequest {
+    question: String,
+    model: String,
+    /// What the quote said when it was shown. Not what the engine thinks it costs now:
+    /// this is the number a person looked at, so it is the number the run may not exceed.
+    max_usd: f64,
+}
+
+/// Price a question. Starts nothing, writes nothing, and holds nothing afterwards.
+///
+/// This route is the step's acceptance. Everywhere else the price comes from the brain,
+/// which means a `jobs` row and a parked interpreter before anyone has seen a figure —
+/// and four abandoned quotes would be the engine's whole job budget held by questions
+/// nobody asked. Here, walking away costs one round trip and leaves no trace.
+async fn quote_ask(
+    State(app): State<App>,
+    RawQuery(query): RawQuery,
+    Json(body): Json<AskQuote>,
+) -> Result<Response, ApiError> {
+    let filters = filters(query.as_deref())?;
+    let db = app.db();
+    // A quote spends nothing, but a price for an org that does not exist is a price for
+    // nothing at all — and it would come back as a plausible-looking figure rather than as
+    // the typo it is.
+    known_org(&db, asking_org(&filters)?)?;
+    let quote = ask::quote(&db, &filters, &body.question, &body.model)?;
+    Ok(Json(quote).into_response())
+}
+
+/// Which org a question is about. Required even for a quote, which spends nothing: a
+/// question over every org at once is not something this dashboard shows, so a missing
+/// `?org=` is a mistake to name rather than a selection to price.
+fn asking_org(f: &Filters) -> Result<i64, ApiError> {
+    f.org.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "a question is about one org's calls, so ?org= is required",
+        )
+    })
+}
+
+/// Ask it. The click, and the only thing here that spends.
+///
+/// The question is priced again rather than trusting a set of ids that went to a browser
+/// and came back, so what the answer is built from is what the engine chose. If the
+/// selection moved in between — a sync landed, retention ran — the new price is compared
+/// against the one the person approved, and a higher one stops here instead of being
+/// quietly charged.
+async fn start_ask(
+    State(app): State<App>,
+    RawQuery(query): RawQuery,
+    Json(body): Json<AskRequest>,
+) -> Result<Response, ApiError> {
+    // The org comes out of the filter set rather than from `org_param`, which refuses any
+    // key but `org`. A question arrives with the whole filter bar on it — that is what
+    // says which calls it is about — so reading the org twice would mean refusing every
+    // question asked over a window.
+    let filters = filters(query.as_deref())?;
+    let org = asking_org(&filters)?;
+    // NaN fails this, which is why it is written out rather than as one comparison: a cap
+    // that nothing is greater than is not a cap.
+    if !body.max_usd.is_finite() || body.max_usd <= 0.0 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "max_usd is the price that was approved, so it has to be a positive number",
+        ));
+    }
+    let quote = {
+        let db = app.db();
+        known_org(&db, org)?;
+        ask::quote(&db, &filters, &body.question, &body.model)?
+    };
+    if quote.usd > body.max_usd {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "this question now prices at ${:.4}, over the ${:.4} that was quoted; \
+                 the calls it would read have changed, so ask for the price again",
+                quote.usd, body.max_usd
+            ),
+        ));
+    }
+    // The brain is handed the statistics as the string that was priced, not a re-serialised
+    // copy of them: the characters it is shown are the characters somebody paid for.
+    let request = json!({
+        "question": quote.question,
+        "stats": quote.stats,
+        "model": quote.model,
+        "call_ids": quote.call_ids,
+        "max_usd": body.max_usd,
+    });
+    spawn(&app, Kind::Ask, org, &request)
 }
 
 /// One job: where it has got to, what it quoted, and what it has cost.

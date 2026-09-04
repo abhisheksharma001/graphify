@@ -172,6 +172,32 @@ def daily(db: Path = LABEL_DB) -> None:
         raise typer.Exit(1) from e
 
 
+@app.command()
+def ask(db: Path = LABEL_DB) -> None:
+    """Answer one question about a selection of calls. Costs money; prints the price first.
+
+    Input on stdin: `{question, stats, model, call_ids, max_usd}`. The engine builds the
+    statistics and picks the calls — this reads their transcripts back and prices what it
+    holds. Output: the answer as Markdown, what it cost, and which calls it read.
+
+    No `--yes` and no `GO`. The price was quoted and approved over a route that started no
+    job, so the approval is already behind this command rather than ahead of it.
+
+    Read-only, and the only brain command that is: an answer is prose that goes back up the
+    pipe and nothing here writes a row. The connection enforces that rather than promising
+    it.
+    """
+    from graphify_brain import ask as asking
+    from graphify_brain import db as database
+
+    try:
+        with closing(database.read_only(db)) as conn:
+            asking.run(sys.stdin, sys.stdout, sys.stderr, conn)
+    except (ValueError, FileNotFoundError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+
+
 def _pipe(fn: Callable[[dict[str, Any]], dict[str, Any]], db: Optional[Path]) -> None:
     """The engine ↔ brain contract: JSON in, JSON out, exit 0 or 1, complaints on stderr.
 
