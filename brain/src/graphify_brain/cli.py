@@ -10,6 +10,7 @@ import typer
 from graphify_brain import __version__, cost
 from graphify_brain import label as labelling
 from graphify_brain import plan as planning
+from graphify_brain import synth as synthesis
 
 app = typer.Typer(help="graphify-brain — plan, clarify, label, synthesize, ask.", no_args_is_help=True)
 
@@ -125,6 +126,25 @@ def label(
     try:
         with closing(database.read_write(db)) as conn:
             labelling.run(sys.stdin, sys.stdout, sys.stderr, conn, yes)
+    except (ValueError, FileNotFoundError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def synthesize(db: Path = LABEL_DB) -> None:
+    """Turn labels into a rule the engine can run, and store the pattern.
+
+    Input on stdin: `{criterion, plan, labels, model, max_usd, org_id, name,
+    assistant_ids?}`. Then `ESTIMATE {usd}` on stdout and the result: the rule, the chart
+    to draw it with, how much of the sample the rule agrees with, and what it cost. No
+    `GO` — see `synth.run`.
+    """
+    from graphify_brain import db as database
+
+    try:
+        with closing(database.read_write(db)) as conn:
+            synthesis.run(sys.stdin, sys.stdout, sys.stderr, conn)
     except (ValueError, FileNotFoundError) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
