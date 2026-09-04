@@ -850,7 +850,7 @@ absent from the database file.
 else. The "+" flow leaves an org created even when its key fails the test, which is
 right, but there is no second chance at the key inside that form.
 
-### S-20 — Brain scaffold with BAML clients and cost table ☐
+### S-20 — Brain scaffold with BAML clients and cost table ☑ (PR #20, c3f74ae)
 **PR:** one. **Depends on:** S-2.
 **Files:** `brain/baml_src/clients.baml`, `brain/baml_src/generators.baml`,
 `brain/src/graphify_brain/cost.py`, `brain/src/graphify_brain/db.py`, `brain/tests/test_cost.py`.
@@ -862,6 +862,42 @@ read-only for calls, read-write for `jobs`/`patterns`. `baml-cli generate` in `u
 **Acceptance:** WHEN `estimate(100_000, 2_000, "sonnet")` runs THEN it SHALL return a positive USD matching the price table in the file.
 **Verify:** `cd brain && uv run baml-cli generate && uv run pytest -q` → pass.
 **Must not:** make a network call in tests.
+**Learned:** the `claude-api` skill's price table is cached and was four months stale,
+so the prices were read from the vendors' own pages instead and the module records the
+day it read them (`PRICES_CHECKED`) and the URLs — the one failure mode no test can
+catch. Clients are `Opus` → `claude-opus-5` ($5/$25 per MTok), `Sonnet` →
+`claude-sonnet-5` ($2/$10), `GPT` → `gpt-5.6-terra` ($2/$12).
+
+`clients.baml` and the price table are two files holding one fact, so `test_cost.py`
+reads the BAML file and fails if a model it names is unpriced. Proved by repointing `GPT`
+at `gpt-5.6-luna`: `Extra items in the right set: 'gpt-5.6-terra'`.
+
+The estimate is deliberately the **ceiling** — every input token at the base rate, prompt
+caching ignored — so a real call comes in under the approved number and never over it. A
+cap built on an under-estimate is not a cap. An unpriced model raises rather than costing
+zero, for the same reason a missing value renders "—" and not 0.
+
+`estimate` keys on the *client name* (`"sonnet"`), because a job records which client it
+ran on, not which model id that client was pointed at; the model id resolves too, since
+`patterns.model` may hold either.
+
+`baml_client/` is gitignored, so nothing under `src/` may import it and CI never
+generated it — a syntax error in `baml_src/` would have shipped green. CI's brain job
+gained `uv run baml-cli generate`; a malformed client file exits 4.
+
+`db.py` uses `mode=ro` / `mode=rw`, never `rwc`: read-only is enforced by SQLite rather
+than by convention, and a wrong `--db` path is an error at the point it is passed instead
+of an empty database whose every later query fails with "no such table". `busy_timeout`
+is set because the engine leaves SQLite in rollback-journal mode, where a `sync` writing
+while a job reads is a normal collision.
+
+**Beyond the file list:** `tests/test_db.py` (the module guaranteeing the brain cannot
+edit a client's call history needs a test that tries) and the CI step above.
+
+**Not done:** no `Haiku` client — D-8's "cheap model confirms" will need one, and the step
+named three. Cache-read and batch rates are not priced; the ceiling covers the caps but
+over-states a cached run. Nothing imports `baml_client` yet: the first function arrives
+in S-22.
 
 ### S-21 — Rule engine + `graphify apply` + `graphify rule-check` `[Rust]` ☐
 **PR:** one. **Depends on:** S-8.
