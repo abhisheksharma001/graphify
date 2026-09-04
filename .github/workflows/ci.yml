@@ -36,9 +36,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: brain/uv.lock
       - run: uv sync
-      # The generated client is gitignored, so nothing in `src/` may import it — but a
-      # syntax error in `baml_src/` would otherwise ship green, because pytest never
-      # reads those files.
+      # The generated client is gitignored, so it has to be built before the tests can
+      # import it — and a syntax error in `baml_src/` would otherwise ship green, because
+      # pytest never reads those files.
       - run: uv run baml-cli generate
       - run: uv run pytest -q
 

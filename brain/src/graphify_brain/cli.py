@@ -1,8 +1,13 @@
 """Command-line entry point. `graphify-brain --help` lists commands."""
 
+import sys
+from pathlib import Path
+from typing import Any, Callable, Optional
+
 import typer
 
 from graphify_brain import __version__, cost
+from graphify_brain import plan as planning
 
 app = typer.Typer(help="graphify-brain — plan, clarify, label, synthesize, ask.", no_args_is_help=True)
 
@@ -68,3 +73,48 @@ def models(
     if not report.ok:
         # The only failing case. A newer model is news; a retired one is broken.
         raise typer.Exit(1)
+
+
+#: The engine spawns every brain function the same way — `graphify-brain <fn> --db PATH`
+#: — so both commands below take `--db` even though neither reads a row. It is opened and
+#: closed, not ignored: a wrong path is then an error at the first step of the wizard,
+#: instead of surviving `plan` and `clarify` and failing at `label`, after the spend.
+DB = typer.Option(None, "--db", help="The engine's SQLite file. Checked, not read.")
+
+
+@app.command()
+def plan(db: Optional[Path] = DB) -> None:
+    """Turn one plain-English criterion into a plan. Reads JSON on stdin, writes JSON out.
+
+    Input `{criterion, system_prompt?}`; output the whole `Plan`, printed as it came back.
+    """
+    _pipe(planning.plan, db)
+
+
+@app.command()
+def clarify(db: Optional[Path] = DB) -> None:
+    """Revise a plan with the analyst's answers. Reads JSON on stdin, writes JSON out.
+
+    Input `{criterion, plan, answers: [{question, answer}]}`; output the whole `Plan`.
+    """
+    _pipe(planning.clarify, db)
+
+
+def _pipe(fn: Callable[[dict[str, Any]], dict[str, Any]], db: Optional[Path]) -> None:
+    """The engine ↔ brain contract: JSON in, JSON out, exit 0 or 1, complaints on stderr.
+
+    Two exceptions are caught, and they are the two the caller can fix: a bad input
+    (`ValueError`) and a `--db` that is not there. Anything else — no key, a provider
+    that is down, a model that answered with something unparseable — is this program
+    failing, and its traceback on stderr is worth more to whoever reads `jobs.log` than
+    one tidy line would be.
+    """
+    try:
+        if db is not None:
+            from graphify_brain import db as database
+
+            database.read_only(db).close()
+        typer.echo(planning.run(fn, sys.stdin.read()))
+    except (ValueError, FileNotFoundError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
