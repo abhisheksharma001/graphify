@@ -1167,7 +1167,7 @@ money already spent and nothing stored — the engine's complaint would make a f
 when a refinement happens. The chart is not re-suggested after a refinement. A pattern row
 is written before S-26's "Save", so a wizard the analyst abandons leaves one behind.
 
-### S-25 — Engine spawns brain jobs; `/api/patterns/*` with progress `[Rust]` ☐
+### S-25 — Engine spawns brain jobs; `/api/patterns/*` with progress `[Rust]` ☑ (PR #26, e216d03)
 **PR:** one. **Depends on:** S-24, S-12.
 **Files:** `engine/src/jobs.rs`, `engine/src/server.rs`, `engine/tests/jobs.rs`.
 **Today:** brain is CLI-only.
@@ -1181,6 +1181,61 @@ routes cannot be verified without the spawn.
 **Acceptance:** WHEN `/label` is called and `/go` never is THEN the job SHALL stay `waiting` and `spend` SHALL be unchanged.
 **Verify:** `cargo test -q --test jobs` with a fake brain script.
 **Must not:** pass keys as argv (env only).
+
+**Learned:** the go is a word, and it travels. `label` prints its price and blocks on `GO`;
+the engine parks the child there — alive, stdin still open, having read nothing — and the
+only thing that writes `GO` into it is `POST /api/jobs/{id}/go`. The alternative was to let
+the child exit at the price and re-spawn it with `--yes` on the click, which needs no parked
+process and no timeout, and was rejected: `--yes` is the brain's escape hatch for a person
+at a terminal, and an engine passing it becomes the thing approving the spend. As built, the
+word goes from the click to the child's stdin in one hop and can be followed by hand.
+
+Keys in the environment is half the rule; the other half is that they must not come back.
+A job's log is its brain's stderr, stored in a column and served to the browser, and a
+traceback out of an HTTP library is an ordinary way for an `Authorization` header to end up
+in one. The engine knows the exact strings it handed the child, so it replaces those with
+`***` on everything the child prints — stderr and result line both. Exact values rather
+than a pattern for what a key looks like: provider prefixes change, and a guess is a guess.
+
+The price and the progress are read back out of the log rather than kept in columns beside
+it. One account of what the job said, and no second copy to drift from the lines the brain
+actually printed. `PROGRESS` with nothing reported is `null`, not `0/0` — a bar drawn at
+nought per cent says the job has got nowhere, and it simply never said.
+
+Two things the register did not ask for, both of which the design needs. A job nobody
+approves is killed unspent after half an hour, as `expired` rather than `failed`: walking
+away from a quote is not a thing going wrong. And every `running` or `waiting` row is closed
+out at startup, because those children died with the process that spawned them — without the
+sweep, four abandoned `waiting` rows count against the live cap for ever and no job ever
+starts again. Both have tests; the go-wait is a field on `Jobs` so one of them can watch a
+job expire in a fifth of a second.
+
+`stderr` gets a thread of its own. A supervisor reading stdout while the child fills its
+stderr pipe is a deadlock with both sides waiting politely, and `PROGRESS` lines and
+tracebacks both come down stderr.
+
+The routes forward the request body to the brain byte for byte. The engine does not know
+what a plan looks like and has no business editing one — the brain names the key it did not
+expect, in its own words, and that message reaches the log. The org rides in `?org=` for the
+same reason: it is the engine's own bookkeeping, `jobs` has no org column and the spend it
+books is keyed by one, and putting it in the body would add a key the brain would refuse.
+
+`PUT /api/patterns/{id}` runs the rule through `rules::validate` before storing it, so a rule
+the engine will not run is refused while the analyst is looking at it rather than at the next
+unattended `apply`, naming a pattern nobody is in front of any more.
+
+Verified beyond the suite by a round trip against the real `graphify-brain`, with real call
+rows and no key in the environment: it quoted `ESTIMATE 0.0428`, parked at `waiting`, and was
+killed without a `GO`. `spend` empty, `pattern_labels` empty, and `ps` showing its argv as
+`label --db /tmp/gtrip/graphify.db` — no key, no `--yes`.
+
+**Not done:** `plan` and `clarify` are still unmetered, so their jobs finish at `cost_usd`
+0 whatever they cost. There is no resume and no cancel: a job cannot be stopped once its go
+is given, and an engine restarted mid-labelling marks the row `expired` while the batches it
+already bought stay bought. The daily cap in D-8 is stored per pattern and read by nobody
+yet — `spend` is written, and S-28 is what checks it. A job's log is capped at 64 KB by
+dropping later lines, which is the wrong end of a traceback to keep. And a job row is never
+deleted, so `jobs` grows for ever.
 
 ### S-26 — UI pattern wizard: config step, chat step, plan table, ≥95% gate, cost go ☐
 **PR:** one. **Depends on:** S-25, S-18.
