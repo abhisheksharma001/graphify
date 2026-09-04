@@ -1038,7 +1038,7 @@ around it does refuse them). `--db` is opened and closed by both commands but no
 read — it is checked so a wrong path fails at the first step of the wizard instead of
 after the labelling is paid for. No `Haiku` client yet.
 
-### S-23 — BAML `LabelBatch` with batched loop + cost gate ☐
+### S-23 — BAML `LabelBatch` with batched loop + cost gate ☑ (PR #24, c840feb)
 **PR:** one. **Depends on:** S-22.
 **Files:** `brain/baml_src/label.baml`, `brain/src/graphify_brain/label.py`, `brain/tests/test_label.py`.
 **Today:** nothing.
@@ -1049,6 +1049,62 @@ max_usd}`; estimates first (`ESTIMATE {usd}` on stdout then waits for `GO` on st
 **Acceptance:** WHEN 45 calls are given with batch 20 THEN exactly 3 model calls SHALL be made; WHEN stdin never says GO THEN zero model calls.
 **Verify:** `uv run pytest -q tests/test_label.py` (mocked client counts calls).
 **Must not:** exceed `max_usd`.
+
+**Learned:** most of this step is not about labelling. It is four rules standing between a
+criterion and a bill, and each one is a test. **The price is shown first** — `ESTIMATE
+{usd}` on stdout before anything is read, and `--yes` skips the wait, not the showing.
+**Nothing is spent without being told to** — `GO`, exactly, on its own line; EOF, silence,
+`y` and `yes` are all a no, and the output says `"stopped": "declined"` with every id in
+`not_reached`. Exit 0: a person declining to spend is not a failure. **The cap is checked
+before each batch, never after**, because checking afterwards is finding out that the cap
+was passed. `max_usd` is required and has no default — a cap a caller can leave out is a
+cap that gets left out. **What is paid for is kept**: labels are written to
+`pattern_labels` after every wave and after a wave that failed, using `as_completed`
+rather than `map` so one batch falling over does not throw away the two beside it that
+arrived and were charged for.
+
+**The output half of the estimate is a bound, not a guess.** BAML sends `max_tokens` with
+every call, so a batch cannot return more than that however much it wants to;
+`MAX_OUTPUT_TOKENS` is that number and a test reads it back out of a rendered request, so
+a change in BAML's default fails a test instead of quietly turning the cap into an
+approximation. Input is priced at three characters per token against speech nearer four —
+erring high, but an estimate and not a bound. The consequence is real and worth knowing
+before S-26 draws it on a button: for short calls the estimate is dominated by the output
+ceiling and reads several times what the run actually costs. Two calls estimate at
+$0.0428 and cost a fraction of a cent. The true figure comes back in `usd`.
+
+**Two deviations from the register's input table**, both so that the labels mean
+something. `pattern_id` is **optional**: in the wizard there is no pattern at labelling
+time — S-24 writes the `patterns` row out of these very labels — so a run without one
+returns its labels and stores nothing, and S-28's daily runs pass an id. And each
+transcript is introduced by **a line of what the system recorded** — duration, ended
+reason and group, transfer, tools run and tools failed. A plan row can be about something
+nobody says out loud ("calls where the booking tool failed", "calls under thirty
+seconds"), and those are exactly the calls S-24 measures its rule against. Every unknown
+is a dash, the prompt says a dash is not a zero, and `tool_calls = 0` reads as "none"
+where `NULL` reads as "—" — the count column, not the emptiness of the list, is what
+separates "no tool ran" from "nobody recorded whether one did".
+
+**The model answers by position, never by call id.** Twenty UUIDs copied back is tokens
+paid for nothing and one transposed character silently attaches a label to the wrong call.
+A number returned twice labels the call once (`pop`, not a lookup); a number that was not
+in the batch is dropped. Every call asked about lands in exactly one of four lists, each
+with one cause: `labels`, `no_transcript`, `no_label`, `not_reached`. A call id that is
+not in the database is **refused**, not skipped — S-24 divides by the number of labels,
+and labelling forty-four of the forty-five calls somebody asked about makes that figure
+quietly wrong about which calls it describes.
+
+`plan._envelope` and `plan._text` became `plan.envelope` and `plan.required_text`:
+`label.py` needs the same refusal of the same misspelled key, worded the same way, and a
+second copy is a second place for the wording to drift.
+
+**Not done:** the estimate is a ceiling and reads high, above. Cache-read and batch rates
+are still unpriced, so a run that hits the prompt cache is charged at the base rate it was
+never billed. A batch that fails after its wave-mates have been charged loses nothing
+already written but the run then dies — there is no resume, so a re-run pays for the
+batches it already bought. `PROGRESS` counts batches attempted, so the last line before a
+failure overstates by one. Nothing is written to `jobs`; that is the engine's, in S-25.
+`plan` and `clarify` are still unmetered (S-22).
 
 ### S-24 — BAML `SynthesizeRule` + `RefineRule` + agreement via `rule-check` ☐
 **PR:** one. **Depends on:** S-23, S-21.
