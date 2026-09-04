@@ -147,17 +147,58 @@ export const orgs = () => get<Org[]>('/api/orgs')
 export const assistants = (org: number | null) =>
   get<Assistant[]>('/api/assistants', new URLSearchParams(org == null ? {} : { org: String(org) }))
 
-/** One row of `/api/calls`, narrowed to what the ended-group chart reads. */
+/** One row of `/api/calls`. Every measure is nullable, because a call Vapi never
+ * priced has no cost — not a cost of zero — and the table has to be able to say so. */
 export type Call = {
   id: string
   created_at: string | null
+  assistant_id: string | null
+  assistant_name: string | null
+  duration_s: number | null
   ended_reason: string | null
   ended_group: string | null
+  cost: number | null
+  transferred: boolean | null
+  tool_calls: number | null
+  tool_failures: number | null
+  turns: number | null
+  lat_turn_p50_ms: number | null
+  lat_turn_p95_ms: number | null
+  success_eval: string | null
+  summary: string | null
+}
+
+/** One tool invocation on a call. `result_excerpt` is an excerpt: the engine stores a
+ * prefix, not the whole result, so nothing here is the full payload. */
+export type ToolCall = {
+  name: string | null
+  seconds_from_start: number | null
+  failed: boolean | null
+  arguments: string | null
+  result_excerpt: string | null
+}
+
+/** `/api/calls/{id}`: the row again, plus everything only the drawer reads.
+ *
+ * `recording_url` is a URL and nothing else. D-3: the audio is never downloaded and
+ * never stored, so the drawer links out to it and never plays it. */
+export type CallDetail = Call & {
+  status: string | null
+  call_type: string | null
+  started_at: string | null
+  ended_at: string | null
+  transfer_destination: string | null
+  lat_turn_avg_ms: number | null
+  transcript: string | null
+  recording_url: string | null
+  tool_call_rows: ToolCall[]
 }
 
 export const stats = (params: URLSearchParams) => get<Stats>('/api/stats', params)
 
 export const calls = (params: URLSearchParams) => get<Call[]>('/api/calls', params)
+
+export const call = (id: string) => get<CallDetail>(`/api/calls/${encodeURIComponent(id)}`)
 
 const forOrg = (org: number) => new URLSearchParams({ org: String(org) })
 

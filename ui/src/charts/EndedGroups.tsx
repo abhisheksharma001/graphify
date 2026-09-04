@@ -128,7 +128,8 @@ export default function EndedGroups({ chart, stale }: { chart: Chart; stale: boo
     <section className="card">
       <h2>Calls by ended group</h2>
       <p className="sub">
-        {chart.calls} call{chart.calls === 1 ? '' : 's'} · {hourly ? 'hourly' : 'daily'} buckets
+        {chart.rows.length} call{chart.rows.length === 1 ? '' : 's'} ·{' '}
+        {hourly ? 'hourly' : 'daily'} buckets
         {chart.undated > 0 && ` · ${chart.undated} with no start time, not on the axis`}
         {chart.capped && ' · capped by "last", raise it to see more'}
       </p>

@@ -4,11 +4,15 @@
 // the chart, its table, and its subtitle can never describe different sets of calls. Which
 // of the charts are drawn, and in what order, is `Dashboard`'s — a preference, saved per
 // org, and no business of the filters.
+//
+// The charts summarise the selection; the table under them is the selection. Both are drawn
+// from one load, so neither can be describing calls the other is not.
 
 import { useCallback, useEffect, useState } from 'react'
 import * as api from './api'
 import { Unauthorized } from './api'
 import type { Assistant, Org } from './api'
+import CallTable from './CallTable'
 import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
 import Login from './Login'
@@ -121,13 +125,16 @@ export default function App() {
             /* Keyed by org: a different org is a different dashboard, and remounting is
                what guarantees none of the previous one's layout is still on screen while
                this one's is being fetched. */
-            <Dashboard
-              key={filters.org}
-              org={filters.org}
-              chart={chart.data}
-              stale={stale}
-              onError={fail}
-            />
+            <>
+              <Dashboard
+                key={filters.org}
+                org={filters.org}
+                chart={chart.data}
+                stale={stale}
+                onError={fail}
+              />
+              <CallTable rows={chart.data.rows} stale={stale} onError={fail} />
+            </>
           ) : (
             <p className="notice">Loading…</p>
           )}
