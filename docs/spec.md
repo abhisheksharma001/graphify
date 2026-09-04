@@ -1561,7 +1561,7 @@ Twenty is a fixed cut on the pattern's call list. The header is the filter bar a
 at the click, and nothing re-checks it against the numbers if the two drift. Nothing
 watermarks a file or records that one was taken.
 
-### S-31 — `graphify schedule --print` + README daily section ☐
+### S-31 — `graphify schedule --print` + README daily section ☑ (PR #32, 19fa68e)
 **PR:** one. **Depends on:** S-28.
 **Files:** `engine/src/cli.rs`, `README.md`.
 **Today:** manual sync.
@@ -1570,6 +1570,58 @@ watermarks a file or records that one was taken.
 **Acceptance:** WHEN `--print` runs THEN the crontab line SHALL contain the absolute binary path.
 **Verify:** run it; install on Abhishek's machine; next-day log.
 **Must not:** install without confirm.
+
+**Learned.** A scheduled job starts with none of the environment a shell hands you, and
+each absence breaks the morning differently. There is no working directory: cron runs from
+`/`, and `data/graphify.db` is a relative path, so an unqualified line does not fail — it
+makes an empty database somewhere else and syncs into that, which is the worst kind of
+wrong because nothing says so. There is no PATH worth having: cron's is `/usr/bin:/bin`,
+and neither `graphify` nor the `graphify-brain` it spawns is in either. And there is no
+environment at all. So everything is resolved while a shell that knows the answers is
+still running, and the acceptance for this step — the absolute binary path — is really the
+smallest case of that rule.
+
+The one thing that cannot be resolved is `GRAPHIFY_SECRET`, because a key is never
+printed. Leaving it out silently would have been the trap: the run falls back to the
+`.secret` file beside the database, which is a different key, and every stored Vapi key
+fails to decrypt under it. The consequence is printed instead of the value. That is the
+shape to reuse — when a rule stops you from emitting something, emit what its absence will
+do.
+
+`engine/src/schedule.rs` splits at the line between text and the world: `Plan::crontab` and
+`Plan::plist` are pure, and `install` is the only part that writes. That split is what
+makes the step testable at all, because a scheduler cannot be checked by running it — the
+line does nothing until tomorrow, and the only thing to look at today is what was written.
+Both strings are quoted for the reader that gets them: single quotes for `/bin/sh`, with
+the one character they cannot hold closed, escaped and reopened, and `&`/`<`/`>` escaped
+for the plist's XML parser. A directory called `a b & c` breaks each of them differently.
+
+Two small shapes worth keeping. The crontab entry ends in `# graphify schedule`, which is
+nothing to `/bin/sh` and is the marker `--install` uses to replace its own previous line
+rather than double the morning — one line that is both the job and its own name. And the
+launchd job is a `StartCalendarInterval` rather than an interval, so a Mac asleep at six
+runs it on waking instead of skipping the day.
+
+`confirm` treats end of input as no. A `--install` in a pipe or a CI job reads a closed
+stdin, and "no answer" must never be an answer — that is what "must not install without
+confirm" actually costs in code.
+
+`sync --org all` is the line's argument, so it had to exist. One org without a key does not
+stop the ones after it, and the run still exits non-zero: a morning log full of zeroes that
+exits 0 reads as a quiet day. A single named org still returns its own error unwrapped, so
+nothing reading stderr had to change.
+
+Verified past the suite, because none of the suite proves the thing this step is for: the
+printed command was run from `/` under `env -i` against a scratch database and exited 0
+into the log it had named; `plutil -lint` accepted the plist; and the whole `--install`
+path was answered `y` against a throwaway `HOME`, at which launchd took the plist and
+registered the label, and `bootout` removed it again.
+
+**Not done:** `--install` knows macOS and Linux, and points anywhere else at `--print`. It
+writes the job and never checks the next day that it ran — the log beside the database is
+the only record, and nothing rotates it. An org literally named `all` is shadowed by the
+keyword. Nothing has been installed on Abhishek's machine yet; that is his `--install` to
+answer.
 
 ### S-32 — Dockerfile + docker-compose + password mode ☐
 **PR:** one. **Depends on:** S-13, S-20, S-31.
