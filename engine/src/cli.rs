@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use graphify::{assistants, auth, db, jobs, rules, secrets, server, sync, vapi};
+use graphify::{assistants, auth, db, jobs, rules, schedule, secrets, server, sync, vapi};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +21,9 @@ pub enum Command {
     /// Pull calls from Vapi, apply retention, re-run every rule, then let the patterns
     /// with a model in the loop read what is new — inside `GRAPHIFY_DAILY_CAP_USD`.
     Sync {
-        /// Org to sync, by name.
+        /// Org to sync, by name, or `all` for every org stored. `all` is what a
+        /// scheduled run uses: one org failing does not stop the others, and the
+        /// command still exits non-zero so the morning's log says so.
         #[arg(long)]
         org: String,
         /// How many calls this org should end up holding. Rows already stored count
@@ -62,6 +64,22 @@ pub enum Command {
         #[arg(long)]
         calls: PathBuf,
     },
+    /// Print the crontab line and the launchd job that run the morning sync.
+    Schedule {
+        /// Print both and write nothing. What happens anyway with no flags.
+        #[arg(long)]
+        print: bool,
+        /// Write the one this machine uses — launchd on macOS, cron on Linux — after
+        /// showing it and asking. Never writes anything unless the answer is yes.
+        #[arg(long)]
+        install: bool,
+        /// Which org the scheduled run syncs.
+        #[arg(long, default_value = "all")]
+        org: String,
+        /// Local time of day to run, as `HH:MM`.
+        #[arg(long, default_value = "06:00")]
+        at: String,
+    },
 }
 
 impl Cli {
@@ -72,34 +90,46 @@ impl Cli {
                 Ok(())
             }
             Command::Sync { org, last, since } => {
-                let mut db = db::Db::open(db::default_path())?;
-                let key = vapi_key(&db, &org)?;
-                let opts = sync::Opts {
-                    org: org.clone(),
-                    last,
-                    since,
-                    base: vapi::DEFAULT_BASE.to_string(),
-                    key,
+                let names = if org == ALL {
+                    db::Db::open(db::default_path())?
+                        .list_orgs()?
+                        .into_iter()
+                        .map(|o| o.name)
+                        .collect()
+                } else {
+                    vec![org]
                 };
-                let report = tokio::runtime::Runtime::new()?.block_on(sync::run(&mut db, &opts))?;
-                println!("{report}");
-
-                // Then what the new calls mean: every rule re-run, and after that the
-                // patterns with a model in the loop reading what those rules selected.
-                // The cap is read here rather than out there, so a `GRAPHIFY_DAILY_CAP_USD`
-                // nobody can parse stops the morning at a message instead of at a bill.
-                let store = secrets::Secrets::open(secrets::default_key_path())?;
-                let daily = sync::daily(
-                    &Arc::new(Mutex::new(db)),
-                    &store,
-                    &sync::DailyOpts {
-                        org,
-                        brain: jobs::binary_from_env(),
-                        cap_usd: sync::daily_cap_from_env()?,
-                    },
-                )?;
-                println!("{daily}");
-                Ok(())
+                match names.as_slice() {
+                    // One org named is the ordinary case, and its error is the command's
+                    // error — unchanged, and unwrapped by anything reading stderr.
+                    [one] => sync_org(one, last, since),
+                    [] => {
+                        println!("no orgs yet");
+                        Ok(())
+                    }
+                    many => {
+                        let mut failed = Vec::new();
+                        for name in many {
+                            println!("--- {name}");
+                            if let Err(e) = sync_org(name, last, since.clone()) {
+                                // Printed, not returned: a scheduled run that stops at the
+                                // first org without a key syncs none of the ones after it.
+                                eprintln!("{name}: {e:#}");
+                                failed.push(name.clone());
+                            }
+                        }
+                        if failed.is_empty() {
+                            Ok(())
+                        } else {
+                            bail!(
+                                "{} of {} orgs failed: {}",
+                                failed.len(),
+                                many.len(),
+                                failed.join(", ")
+                            )
+                        }
+                    }
+                }
             }
             Command::Assistants { org } => {
                 let db = db::Db::open(db::default_path())?;
@@ -147,8 +177,58 @@ impl Cli {
                     !no_open,
                 ))
             }
+            Command::Schedule {
+                print: _,
+                install,
+                org,
+                at,
+            } => {
+                let plan = schedule::Plan::here(org, &at)?;
+                if install {
+                    schedule::install(&plan)
+                } else {
+                    schedule::print(&plan);
+                    Ok(())
+                }
+            }
         }
     }
+}
+
+/// `--org all`: every org stored, rather than one named. A real org called `all` would
+/// be shadowed by it, which is the price of a keyword and is said in the flag's help.
+const ALL: &str = "all";
+
+/// One org's morning: pull what is new, then work out what it means. Rules re-run for
+/// nothing; the patterns with a model in the loop read what those rules selected, inside
+/// `GRAPHIFY_DAILY_CAP_USD`.
+fn sync_org(org: &str, last: usize, since: Option<String>) -> Result<()> {
+    let mut db = db::Db::open(db::default_path())?;
+    let key = vapi_key(&db, org)?;
+    let opts = sync::Opts {
+        org: org.to_string(),
+        last,
+        since,
+        base: vapi::DEFAULT_BASE.to_string(),
+        key,
+    };
+    let report = tokio::runtime::Runtime::new()?.block_on(sync::run(&mut db, &opts))?;
+    println!("{report}");
+
+    // The cap is read here rather than out there, so a `GRAPHIFY_DAILY_CAP_USD` nobody can
+    // parse stops the morning at a message instead of at a bill.
+    let store = secrets::Secrets::open(secrets::default_key_path())?;
+    let daily = sync::daily(
+        &Arc::new(Mutex::new(db)),
+        &store,
+        &sync::DailyOpts {
+            org: org.to_string(),
+            brain: jobs::binary_from_env(),
+            cap_usd: sync::daily_cap_from_env()?,
+        },
+    )?;
+    println!("{daily}");
+    Ok(())
 }
 
 /// The org's Vapi key: the environment first, then the encrypted store. This is what S-11
