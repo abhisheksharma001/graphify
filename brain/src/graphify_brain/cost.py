@@ -17,11 +17,17 @@ one place to change.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 #: The day the prices below were read from the vendors' own pricing pages:
 #: https://platform.claude.com/docs/en/about-claude/pricing and
 #: https://developers.openai.com/api/docs/pricing
 PRICES_CHECKED = "2026-09-04"
+
+#: How long a reading stays trustworthy. Nothing enforces this — no test fails on a
+#: calendar date, because a build that breaks with no change to the code is worse than a
+#: stale price. `graphify-brain models` says so out loud instead.
+STALE_AFTER_DAYS = 90
 
 #: A million. Rates are published per million tokens, and the arithmetic reads better
 #: with the unit named than with 1e6 sitting in the middle of it.
@@ -31,6 +37,10 @@ PER = 1_000_000
 @dataclass(frozen=True)
 class Price:
     """One model's published rate, in USD per million tokens."""
+
+    provider: str
+    """`anthropic` or `openai` — the same word `baml_src/clients.baml` uses. It says
+    whose model list `graphify_brain.models` should look this id up in."""
 
     model: str
     """The exact API model id — the string `baml_src/clients.baml` sends."""
@@ -47,9 +57,12 @@ class Price:
 #: the brain has in hand: a job records which client it ran on, not which model id that
 #: client happened to be pointed at.
 PRICES: dict[str, Price] = {
-    "opus": Price("claude-opus-5", 5.00, 25.00),
-    "sonnet": Price("claude-sonnet-5", 2.00, 10.00),
-    "gpt": Price("gpt-5.6-terra", 2.00, 12.00),
+    "opus": Price("anthropic", "claude-opus-5", 5.00, 25.00),
+    "sonnet": Price("anthropic", "claude-sonnet-5", 2.00, 10.00),
+    # The middle of OpenAI's 5.6 line, and deliberately Sonnet's opposite number: same
+    # tier, near enough the same rate ($2/$12 against $2/$10). `gpt-5.6-sol` is the big
+    # one at $4/$20 and `gpt-5.6-luna` the small one at $0.20/$1.20.
+    "gpt": Price("openai", "gpt-5.6-terra", 2.00, 12.00),
 }
 
 #: Client name *and* model id both resolve, so a `patterns.model` row that stored the id
@@ -87,3 +100,14 @@ def estimate(tokens_in: int, tokens_out: int, model: str) -> float:
         raise ValueError(f"token counts cannot be negative: {tokens_in=}, {tokens_out=}")
     rate = price(model)
     return (tokens_in * rate.usd_in + tokens_out * rate.usd_out) / PER
+
+
+def checked_days_ago(today: date | None = None) -> int:
+    """How old the price table is, in days. `today` is injectable so a test need not
+    depend on the calendar."""
+    then = date.fromisoformat(PRICES_CHECKED)
+    return ((today or date.today()) - then).days
+
+
+def is_stale(today: date | None = None) -> bool:
+    return checked_days_ago(today) > STALE_AFTER_DAYS
