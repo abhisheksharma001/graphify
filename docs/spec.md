@@ -751,7 +751,7 @@ since the start, so this step needed no migration.
 disclosure panel above the charts, not a modal. Recharts marks are still not focusable, the
 same gap as S-14/S-15/S-16, with the table twin as the reachable relief.
 
-### S-18 — Call table + call drawer ☐
+### S-18 — Call table + call drawer ☑ (PR #18, c03837b)
 **PR:** one. **Depends on:** S-14.
 **Files:** `ui/src/CallTable.tsx`, `ui/src/CallDrawer.tsx`.
 **Today:** charts only.
@@ -761,6 +761,44 @@ failed, transferred, cost. Row click → drawer with transcript by speaker, tool
 **Acceptance:** WHEN a row with `tool_failures=1` is clicked THEN the drawer SHALL show exactly one tool call marked failed.
 **Verify:** `pnpm build`; manual on live data.
 **Must not:** embed audio.
+
+**Learned:** every chart on the page was a summary of calls the reader could not see; this
+is the calls themselves.
+
+One selection, loaded once. `series.ts` already fetched `/api/calls` to bucket the ended
+groups, so `Chart` carries `rows` instead of a count of them and the table reads those.
+Two requests for one selection is two chances for the charts and the table to describe
+different calls.
+
+The drawer is a `<dialog>` opened with `showModal()`. Escape, the focus trap and the inert
+page behind it are all things the browser already implements correctly, and none of them
+was worth reimplementing. A backdrop click is tested as a point outside the panel's box,
+not as `e.target === dialog`: the backdrop and the panel's own padding report the same
+target, so the usual target comparison closes the drawer when the reader clicks its
+margin. Both were verified.
+
+The transcript arrives as one string of `Speaker: line` rows. A line whose head is a known
+speaker starts a turn and **anything else continues the previous one**, so a colon inside a
+sentence never invents a speaker and no line is ever dropped.
+
+A failed tool call is marked twice over — the word `failed` beside its name and a rule down
+its edge — never by colour alone. Same rule in the table: the ended-group swatch carries the
+colour, the reason carries the words, and text never wears a data hue.
+
+The clickable thing in a row is a real `<button>` carrying the start time, so a keyboard
+reaches it while a pointer can hit anywhere along the row.
+
+`showModal()` throws on an already-open dialog and an effect runs twice under StrictMode, so
+the open state is checked rather than assumed. The drawer is keyed by call id upstream, so a
+second call is a second drawer — the same remount trick S-17 used to keep `setState` out of
+an effect.
+
+The must-not held end to end: `audio elements in drawer: 0`, and the recording is an
+external link under a line saying graphify stores the link and never the audio.
+
+**Not done:** columns do not sort and the table is not paged — it draws the selection the
+filter bar asked for, and `last` is what bounds it. Recharts marks are still not focusable,
+unchanged from S-14/S-15/S-16/S-17.
 
 ### S-19 — Settings page: "+" add org and keys, test connection ☐
 **PR:** one. **Depends on:** S-12, S-14.
