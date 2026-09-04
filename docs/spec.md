@@ -1623,7 +1623,7 @@ the only record, and nothing rotates it. An org literally named `all` is shadowe
 keyword. Nothing has been installed on Abhishek's machine yet; that is his `--install` to
 answer.
 
-### S-32 — Dockerfile + docker-compose + password mode ☐
+### S-32 — Dockerfile + docker-compose + password mode ☑ (PR #33, c63d301)
 **PR:** one. **Depends on:** S-13, S-20, S-31.
 **Files:** `Dockerfile`, `docker-compose.yml`, `README.md`.
 **Today:** local only.
@@ -1633,3 +1633,76 @@ engine binary. Volume `/data`. Env: `GRAPHIFY_PASSWORD`, `GRAPHIFY_SECRET`,
 **Acceptance:** WHEN `docker compose up` runs with `GRAPHIFY_PASSWORD` THEN `http://localhost:3737` SHALL show the login page.
 **Verify:** build + run locally; screenshot.
 **Must not:** bake any key into the image.
+
+**Files (as built):** `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
+`docker/entrypoint.sh`, `README.md`, `engine/src/db.rs`, `engine/tests/db.rs`.
+
+**Learned.**
+
+*Build order is not a preference here.* `engine/build.rs` embeds `../ui/dist` at compile
+time, so the node stage has to come before the cargo stage. Getting it wrong does not
+fail: it produces a working binary that serves a page saying the UI was never built. The
+same shape as S-31's relative database path — the container's characteristic failure is
+not an error, it is a plausible wrong answer.
+
+*Three toolchains build it and none of them ships.* node, cargo and curl each live in a
+stage that contributes one file to the final image. What ships is `python:3.12-slim` with
+two binaries in it, 437 MB, running as uid 10001 with `/data` as the only writable thing.
+Debian and not Alpine, because `rusqlite`'s bundled SQLite is C and the runtime image is
+glibc: a musl binary would build fine and then not run.
+
+*A lockfile is not the whole install.* `pnpm install --frozen-lockfile` failed in the
+image and passes in CI, because `pnpm-workspace.yaml` carries the `allowBuilds` answer for
+`core-js` and the manifest-only COPY had left it behind. pnpm refuses to install at all
+when an ignored build script has no recorded answer and nobody to ask. Anything that
+configures the installer belongs in the dependency layer beside the lockfile.
+
+*What "must not bake a key into the image" actually costs.* `docker history` prints every
+ENV and every ARG of every layer, so a baked key is readable by anyone who can pull the
+image and stays readable after it is rotated. Two halves: nothing in the Dockerfile is a
+value, and `.dockerignore` keeps `data/`, `.env` and `.secret` out of the build context so
+no COPY can take one by accident. Verified by grepping the built history.
+
+*Named, not assigned.* Compose's `- VAR` passes a variable through only when the shell has
+it; `- VAR=${VAR:-}` sets it to the empty string. For `GRAPHIFY_DAILY_CAP_USD` that is the
+difference between "no cap given, use the default" and a value that will not parse, which
+by S-29's rule stops the run. The one deliberate exception is
+`${GRAPHIFY_PASSWORD:?…}`: this is the mode that publishes a port, so compose refuses to
+start without it.
+
+*The container's crontab is the short line, and that is the point.* S-31 spells out every
+path because a laptop's cron has no working directory and a PATH of `/usr/bin:/bin`. An
+image has both by construction — PATH, `GRAPHIFY_DB` and `GRAPHIFY_BIND` are set in it —
+so the entrypoint writes `0 6 * * * graphify sync --org all` and nothing more. supercronic
+rather than Debian's `cron`: it does not want to be PID 1, it hands each job the
+environment it inherited (which is how `GRAPHIFY_SECRET` reaches six o'clock, since the
+printed line cannot carry it), and it logs to stderr where `docker logs` already is. The
+crontab is written only when the command is `serve`, so
+`docker compose run graphify sync --org acme` is one command that ends rather than a
+second scheduler.
+
+*The image is the first configuration with two writers by default,* and it exposed a bug
+that was always latent: `Db::open` set no busy timeout, so SQLite's answer to the second
+process finding the file locked was to fail it immediately with "database is locked". Five
+seconds of waiting is the whole fix — every write here is one short statement or one short
+transaction. This is the one change outside the step's named files, and it is the step's
+own doing.
+
+*Verified past the suite, against a real daemon:* build clean on arm64; `up` without a
+password refused by name; with one, the login page rendered (screenshot), wrong password
+401, right password 200 with a `Set-Cookie`, then `/api/orgs` 200; `docker history`
+carrying nothing of ours; `GRAPHIFY_CRON='* * * * *'` firing the sync on the minute with
+its stdout in `docker logs` and the job reported succeeded; `GRAPHIFY_CRON=off` reading no
+crontab; a one-off `run` starting no scheduler; the volume keeping the database across a
+recreate and `down -v` removing it.
+
+**Not done:** no TLS, so the port is published on `127.0.0.1` and anything further needs a
+reverse proxy with a certificate. No healthcheck. supercronic is backgrounded by the
+entrypoint, so if it dies mid-life the container stays up and the mornings quietly stop —
+nothing notices. Only `amd64` and `arm64` have a recorded supercronic checksum. Nothing
+prunes `jobs` rows or rotates anything inside the volume.
+
+---
+
+**The register is complete.** S-1 through S-32 are all `☑`. Anything after this is a new
+step appended here, or a bug in `docs/backlog/bugs.md` promoted to one.
