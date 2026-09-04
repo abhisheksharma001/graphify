@@ -421,6 +421,33 @@ impl Db {
     /// A call with no `created_at` has an unknown age, so the age sweep leaves it alone
     /// rather than guess it is old. The `max_calls` sweep sorts it last, since unknown
     /// recency is not recency.
+    /// The saved dashboard layout for this org, as the JSON it was written as. NULL when
+    /// nothing has been saved, which is not the same thing as a layout with no charts in
+    /// it: the first says "the reader has never chosen", the second says "the reader chose
+    /// none of them".
+    pub fn dashboard(&self, org_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT config FROM dashboard WHERE org_id = ?1",
+                params![org_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Replaces the layout outright. It is one preference, not a set of them, so there is
+    /// nothing here to merge.
+    pub fn set_dashboard(&self, org_id: i64, config: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO dashboard (org_id, config) VALUES (?1, ?2)
+               ON CONFLICT(org_id) DO UPDATE SET config = excluded.config",
+            params![org_id, config],
+        )?;
+        Ok(())
+    }
+
     pub fn purge_calls(
         &mut self,
         org_id: i64,

@@ -1,4 +1,4 @@
-//! The HTTP API. Nine routes over the local database, plus a login when a password is
+//! The HTTP API. Ten routes over the local database, plus a login when a password is
 //! configured, plus the dashboard itself on everything left over. Everything here is
 //! read-only against Vapi and write-only against SQLite: the only outbound request the
 //! whole file can make is the connectivity test, and that one is a `GET`.
@@ -19,8 +19,9 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Loopback, always, unless `GRAPHIFY_BIND` says otherwise.
@@ -113,6 +114,7 @@ pub fn router(app: App) -> Router {
         .route("/api/calls", get(list_calls))
         .route("/api/calls/{id}", get(get_call))
         .route("/api/stats", get(get_stats))
+        .route("/api/dashboard", get(get_dashboard).put(put_dashboard))
         .layer(middleware::from_fn_with_state(app.clone(), gate));
 
     Router::new()
@@ -285,6 +287,134 @@ async fn get_stats(
 ) -> Result<Response, ApiError> {
     let filters = filters(query.as_deref())?;
     Ok(Json(queries::stats(&app.db(), &filters)?).into_response())
+}
+
+/// One chart of the dashboard, and whether it is drawn. The order of the list is the order
+/// the charts appear in.
+///
+/// The ids belong to the dashboard, not to the engine. Most of them name a chart that has
+/// existed since it was compiled, but a structured key becomes a chart the moment a call
+/// carries it, so there is no closed set of them to check against. The engine stores the
+/// list it is handed and checks its shape rather than its contents.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChartPref {
+    pub id: String,
+    pub on: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Layout {
+    pub charts: Vec<ChartPref>,
+}
+
+impl Layout {
+    /// What an org with nothing saved gets back. Read by the dashboard as "no choice has
+    /// been made", so it draws every chart it has — not as "draw nothing".
+    fn none() -> Self {
+        Layout { charts: Vec::new() }
+    }
+}
+
+/// A layout is a preference, not somewhere to put data. Room for every chart the dashboard
+/// draws plus every structured key an org could plausibly be collecting.
+const MAX_CHARTS: usize = 200;
+const MAX_ID: usize = 200;
+
+/// The saved layout for one org, or an empty one.
+async fn get_dashboard(
+    State(app): State<App>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let org = org_param(query.as_deref())?;
+    let db = app.db();
+    known_org(&db, org)?;
+    let layout = match db.dashboard(org)? {
+        // A layout that will not parse is a preference that cannot be honoured, and the
+        // answer to that is the default dashboard — not a 500 that takes every chart down
+        // with it because of a row nobody can see.
+        Some(json) => serde_json::from_str(&json).unwrap_or_else(|_| Layout::none()),
+        None => Layout::none(),
+    };
+    Ok(Json(layout).into_response())
+}
+
+async fn put_dashboard(
+    State(app): State<App>,
+    RawQuery(query): RawQuery,
+    Json(layout): Json<Layout>,
+) -> Result<Response, ApiError> {
+    let org = org_param(query.as_deref())?;
+    check(&layout)?;
+    let db = app.db();
+    known_org(&db, org)?;
+    let json = serde_json::to_string(&layout).map_err(anyhow::Error::from)?;
+    db.set_dashboard(org, &json)?;
+    // Back comes what was stored, so a caller never has to assume it landed.
+    Ok(Json(layout).into_response())
+}
+
+/// Shape, not contents. A duplicate id is the one thing worth refusing outright: the
+/// dashboard keys its charts by id, so two rows claiming the same one leave the order of
+/// the page undefined.
+fn check(layout: &Layout) -> Result<(), ApiError> {
+    if layout.charts.len() > MAX_CHARTS {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("a layout holds at most {MAX_CHARTS} charts"),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for chart in &layout.charts {
+        if chart.id.trim().is_empty() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "a chart in the layout needs an id",
+            ));
+        }
+        if chart.id.len() > MAX_ID {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("chart ids are at most {MAX_ID} characters"),
+            ));
+        }
+        if !seen.insert(chart.id.as_str()) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("chart {} is in the layout twice", chart.id),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The org a layout belongs to, read by hand rather than through `Filters`. A layout
+/// belongs to an org and not to a selection: accepting `?window=7h` here would say it
+/// could differ per range, which it cannot.
+fn org_param(query: Option<&str>) -> Result<i64, ApiError> {
+    let mut org = None;
+    for (k, v) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        match k.as_ref() {
+            "org" => {
+                org = Some(v.parse::<i64>().map_err(|_| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "org must be an org id")
+                })?)
+            }
+            other => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("unknown parameter {other}"),
+                ))
+            }
+        }
+    }
+    org.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "a dashboard layout belongs to an org, so ?org= is required",
+        )
+    })
 }
 
 /// A bad filter is the caller's mistake, so it is a 400 carrying the reason — a typo in a

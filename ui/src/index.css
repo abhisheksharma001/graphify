@@ -290,6 +290,73 @@ button {
   margin-top: 16px;
 }
 
+/* The ended-group chart reads across the whole span rather than across one measure of it,
+   so it takes the full width wherever the reader has put it. */
+.pack > .wide {
+  grid-column: 1 / -1;
+}
+
+/* The Charts menu. It changes what is below it, so it sits above it and to the right —
+   out of the reading order of the page, in the reach of the hand that wants it. */
+
+.charts-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.chart-menu {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  /* Two columns of names where there is room: the list is as long as the dashboard has
+     charts, and a schema with a dozen keys should not push the charts off the screen. */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 2px 8px;
+}
+
+.chart-menu li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: grab;
+}
+
+.chart-menu li:hover {
+  background: var(--wash);
+}
+
+.chart-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Takes the slack, so the two nudges line up down the right of the column however long
+     the names are. */
+  flex: 1;
+  cursor: pointer;
+}
+
+/* Small, quiet, and square: the order is the reader's to change, but it is not the thing
+   on this page worth looking at. */
+.chart-menu .nudge {
+  border: 0;
+  background: none;
+  padding: 0 4px;
+  color: var(--ink-2);
+  line-height: 1;
+}
+
+.chart-menu .nudge:disabled {
+  color: var(--grid);
+  cursor: default;
+}
+
 /* A panel with no subtitle still needs the space the subtitle would have held. */
 .card h2 + div {
   margin-top: 14px;
