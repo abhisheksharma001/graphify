@@ -16,6 +16,10 @@ export type Filters = {
   callId: string
 }
 
+/** Typing in the call-ID or last box should not fire a request per keystroke. Here rather
+ * than on one screen, because both screens under this bar debounce the same boxes. */
+export const SETTLE_MS = 250
+
 export const WINDOWS = ['5h', '7h', '1d'] as const
 
 export const LASTS = ['250', '500'] as const

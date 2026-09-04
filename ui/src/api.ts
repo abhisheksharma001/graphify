@@ -396,3 +396,59 @@ export const assistantPrompt = (org: number, id: string) =>
     `/api/assistants/${encodeURIComponent(id)}/prompt`,
     forOrg(org),
   )
+
+// --- patterns: the ones already saved ----------------------------------------------------
+//
+// Nothing below spends. A rule is the free half of a pattern — the engine runs it over the
+// stored calls and that is arithmetic — so re-applying one costs nothing in any mode.
+
+/** D-8's three. `free` puts no model in the loop at all; the other two do, which is why
+ * the cap beside them is required rather than optional. */
+export const MODES = ['free', 'hybrid', 'full'] as const
+
+export type Mode = (typeof MODES)[number]
+
+/** What the brain suggested this pattern be drawn as. `kind` is `Line` or `Bar` in BAML's
+ * spelling; anything else is a suggestion this dashboard does not have. */
+export type ChartSuggestion = { kind: string; title: string }
+
+/** A saved pattern. The four JSON columns arrive parsed; one the engine could not parse
+ * comes back null rather than taking the row with it, so every one of them is nullable. */
+export type Pattern = {
+  id: number
+  org_id: number | null
+  name: string | null
+  criterion: string | null
+  assistant_ids: string[] | null
+  plan: Plan | null
+  rule: unknown
+  chart: ChartSuggestion | null
+  model: string | null
+  /** Null on a half-written row. The editor reads that as `free`, which is what the
+   * engine's own column default says. */
+  mode: string | null
+  daily_cap_usd: number | null
+  sample_size: number | null
+  agreement: number | null
+  created_at: string | null
+  /** How many calls of the current selection this pattern matched. Null when no selection
+   * was named — an edit's answer is about a row, not about a window of calls. */
+  matched: number | null
+}
+
+/** The whole filter set, not just the org: `matched` is a count of the calls on screen. */
+export const patterns = (params: URLSearchParams) => get<Pattern[]>('/api/patterns', params)
+
+/** All three go every time. They are what the analyst owns on a saved pattern, and sending
+ * only the changed one would make "leave this alone" and "clear this" the same request.
+ *
+ * The engine validates the rule against the DSL and refuses to store one it would choke on
+ * later, so a 400 here is the rule being wrong and says which key. */
+export const savePattern = (
+  id: number,
+  body: { rule: unknown; mode: Mode; daily_cap_usd: number },
+) => send<Pattern>('PUT', `/api/patterns/${id}`, body)
+
+/** Re-run the rule over the org's calls. Free in every mode: this is the rule half. */
+export const applyPattern = (id: number) =>
+  send<{ matched: number; of: number }>('POST', `/api/patterns/${id}/apply`, null)

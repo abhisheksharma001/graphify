@@ -473,7 +473,8 @@ async fn a_brain_request_that_is_not_an_object_is_refused() {
 
 // --- patterns -------------------------------------------------------------------------
 
-/// One pattern with a rule, and three calls, one of which the rule matches.
+/// One pattern with a rule, and three calls, one of which the rule matches. The one it
+/// matches is the oldest, so a `last` that cuts the selection cuts it out.
 fn a_pattern(db: &Db, org: i64) {
     db.conn()
         .execute(
@@ -486,15 +487,15 @@ fn a_pattern(db: &Db, org: i64) {
             rusqlite::params![org],
         )
         .unwrap();
-    for (id, transcript) in [
-        ("c1", "User: get me a human"),
-        ("c2", "User: what are your hours"),
-        ("c3", "User: thanks"),
+    for (id, at, transcript) in [
+        ("c1", "2026-09-01T09:00:00.000Z", "User: get me a human"),
+        ("c2", "2026-09-02T09:00:00.000Z", "User: what are your hours"),
+        ("c3", "2026-09-03T09:00:00.000Z", "User: thanks"),
     ] {
         db.conn()
             .execute(
-                "INSERT INTO calls (id, org_id, transcript) VALUES (?1, ?2, ?3)",
-                rusqlite::params![id, org, transcript],
+                "INSERT INTO calls (id, org_id, created_at, transcript) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, org, at, transcript],
             )
             .unwrap();
     }
@@ -693,4 +694,84 @@ async fn a_job_left_running_by_a_dead_engine_does_not_block_the_next_one() {
     let (_, swept) = get(&server.url("/api/jobs/1")).await;
     assert_eq!(swept["status"], jobs::EXPIRED);
     assert!(swept["finished_at"].is_string(), "{swept}");
+}
+
+#[tokio::test]
+async fn a_pattern_is_listed_with_how_many_calls_of_the_selection_it_matched() {
+    let server = serve_with("/nonexistent/brain", a_pattern).await;
+
+    // Nothing applied yet, so nothing matched. Zero, and not a missing field: the count was
+    // taken and the answer is none.
+    let (status, body) = get(&server.url("/api/patterns?org=1")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body[0]["matched"], 0);
+
+    post(&server.url("/api/patterns/1/apply"), json!({})).await;
+    let (_, body) = get(&server.url("/api/patterns?org=1")).await;
+    assert_eq!(body[0]["matched"], 1);
+}
+
+#[tokio::test]
+async fn a_rule_edited_to_match_nothing_reads_zero_and_charts_nothing() {
+    let server = serve_with("/nonexistent/brain", a_pattern).await;
+    post(&server.url("/api/patterns/1/apply"), json!({})).await;
+
+    let edit = json!({
+        "rule": {"any_phrases": ["nobody has ever said this"]},
+        "mode": "free",
+        "daily_cap_usd": 1.0,
+    });
+    assert_eq!(put(&server.url("/api/patterns/1"), edit).await.0, 200);
+    let (status, body) = post(&server.url("/api/patterns/1/apply"), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, json!({"matched": 0, "of": 3}));
+
+    let (_, list) = get(&server.url("/api/patterns?org=1")).await;
+    assert_eq!(list[0]["matched"], 0);
+
+    // And the chart is empty rather than a flat line of zeroes: an axis with no instants
+    // on it is no chart at all.
+    let (_, stats) = get(&server.url("/api/stats?org=1&pattern=1")).await;
+    assert_eq!(stats["totals"]["calls"], 0);
+    assert_eq!(stats["per_bucket"], json!([]));
+}
+
+#[tokio::test]
+async fn the_call_list_can_be_cut_to_one_patterns_matches() {
+    let server = serve_with("/nonexistent/brain", a_pattern).await;
+    post(&server.url("/api/patterns/1/apply"), json!({})).await;
+
+    let (status, body) = get(&server.url("/api/calls?org=1&pattern=1")).await;
+    assert_eq!(status, 200, "{body}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["c1"]);
+}
+
+#[tokio::test]
+async fn a_pattern_narrows_the_selection_rather_than_paging_its_own_matches() {
+    let server = serve_with("/nonexistent/brain", a_pattern).await;
+    post(&server.url("/api/patterns/1/apply"), json!({})).await;
+
+    // `last=1` is the newest call, which is `c3`. The only call this pattern matched is the
+    // oldest, so the answer is none — not "the newest matched call", which is what folding
+    // the pattern into the `WHERE` would have returned.
+    let (_, body) = get(&server.url("/api/calls?org=1&last=1&pattern=1")).await;
+    assert_eq!(body, json!([]));
+
+    // And the count beside the pattern's name says the same thing about the same calls.
+    let (_, list) = get(&server.url("/api/patterns?org=1&last=1")).await;
+    assert_eq!(list[0]["matched"], 0);
+}
+
+#[tokio::test]
+async fn a_pattern_list_without_an_org_says_which_parameter_is_missing() {
+    let server = serve_with("/nonexistent/brain", a_pattern).await;
+    let (status, body) = get(&server.url("/api/patterns")).await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("org"), "{body}");
 }

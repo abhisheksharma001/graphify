@@ -1083,3 +1083,165 @@ thead th {
   color: var(--ink-muted);
   cursor: pointer;
 }
+
+/* The patterns screen. The list on the left, the one pattern on the right, the calls it
+ * matched under both — the same three-part shape as the dashboard, with the list playing
+ * the part the filter bar plays there: it is what changes everything to its right.
+ *
+ * The list keeps its width while the pattern beside it does not, because a column of names
+ * that resizes when you click a different one is a column you cannot aim at. */
+
+.patterns {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+@media (max-width: 800px) {
+  .patterns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pattern {
+  display: grid;
+  gap: 16px;
+}
+
+.pattern-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pattern-list li + li {
+  border-top: 1px solid var(--hairline);
+}
+
+/* The whole row is the target, not the name in it: a list of counts you have to hit the
+   four characters of is a list nobody clicks twice. */
+.pattern-list li button {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 8px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.pattern-list li button:hover {
+  background: var(--wash);
+}
+
+/* Which pattern is showing is said by fill and by `aria-current` both. Neither alone. */
+.pattern-list li button[aria-current] {
+  background: var(--wash);
+  font-weight: 600;
+}
+
+.pattern-list .what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pattern-list .n {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+/* Only ever on a mode that can spend, so it is worth the ink. */
+.pattern-list .mode {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+
+.new-pattern {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+/* What the pattern is, before what it counts: the criterion it was learned from, and how
+   well the rule agreed with the model that read the sample. */
+
+.about dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px 16px;
+  margin: 0;
+}
+
+.about dl div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.about dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+.about dd {
+  margin: 2px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The rule, as the data it is. Monospace and tall, because a rule is read down its keys
+   rather than across, and a three-line box makes a fifteen-key rule feel like a secret. */
+
+.rule-edit {
+  width: 100%;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--wash);
+  border: 1px solid var(--axis);
+  border-radius: 8px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.rule-edit:focus-visible {
+  outline: 2px solid var(--g-assistant);
+  outline-offset: 1px;
+}
+
+.editor .settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 14px 0 6px;
+}
+
+.editor .actions {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.editor button:disabled {
+  color: var(--ink-muted);
+  border-color: var(--grid);
+  cursor: not-allowed;
+}
+
+/* Back out of the wizard. Above it and to the left, where the way back always is. */
+.back {
+  margin-bottom: 14px;
+}

@@ -705,20 +705,41 @@ async fn go_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response,
 
 // --- patterns -------------------------------------------------------------------------
 
-/// The org's patterns. The four JSON columns are parsed on the way out; one that will not
-/// parse comes back as `null` rather than taking the row with it.
+/// The org's patterns, each with how many calls of the current selection it matched.
+///
+/// The whole filter set and not just the org, because the count beside a pattern's name has
+/// to be a count of the calls on screen. The list itself is never filtered: every pattern
+/// the org has is in it, and one this window holds nothing for reports 0 rather than
+/// vanishing — a pattern that disappears when you narrow the range looks deleted.
 async fn list_patterns(
     State(app): State<App>,
     RawQuery(query): RawQuery,
 ) -> Result<Response, ApiError> {
-    let org = org_param(query.as_deref())?;
+    let filters = filters(query.as_deref())?;
+    let org = filters.org.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "a pattern belongs to an org, so ?org= is required",
+        )
+    })?;
     let db = app.db();
     known_org(&db, org)?;
-    let rows: Vec<Value> = db.list_patterns(org)?.iter().map(pattern_json).collect();
+    let counts = queries::pattern_counts(&db, &filters)?;
+    let rows: Vec<Value> = db
+        .list_patterns(org)?
+        .iter()
+        .map(|p| pattern_json(p, Some(counts.get(&p.id).copied().unwrap_or(0))))
+        .collect();
     Ok(Json(rows).into_response())
 }
 
-fn pattern_json(p: &crate::db::Pattern) -> Value {
+/// One pattern as the browser reads it. The four JSON columns are parsed on the way out;
+/// one that will not parse comes back as `null` rather than taking the row with it.
+///
+/// `matched` is a count *of a selection*, so it is `None` — and null on the wire — wherever
+/// there is no selection to count. A pattern that was just edited has not been counted
+/// against anything, and saying 0 there would be a number the analyst could believe.
+fn pattern_json(p: &crate::db::Pattern, matched: Option<i64>) -> Value {
     let parse = |raw: &Option<String>| -> Value {
         raw.as_deref()
             .and_then(|t| serde_json::from_str::<Value>(t).ok())
@@ -727,6 +748,7 @@ fn pattern_json(p: &crate::db::Pattern) -> Value {
     json!({
         "id": p.id,
         "org_id": p.org_id,
+        "matched": matched,
         "name": p.name,
         "criterion": p.criterion,
         "assistant_ids": parse(&p.assistant_ids),
@@ -793,7 +815,7 @@ async fn update_pattern(
     known_pattern(&db, id)?;
     db.set_pattern_rule(id, rule.as_deref(), &body.mode, body.daily_cap_usd)?;
     // The stored row, so the caller never has to assume what landed.
-    Ok(Json(db.pattern(id)?.as_ref().map(pattern_json)).into_response())
+    Ok(Json(db.pattern(id)?.as_ref().map(|p| pattern_json(p, None))).into_response())
 }
 
 /// Re-run one pattern's rule over its org's calls. Costs nothing in any mode: this is the

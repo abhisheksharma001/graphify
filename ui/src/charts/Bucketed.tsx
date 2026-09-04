@@ -30,7 +30,7 @@ import type { Key } from './frame'
  * The pack's charts name fields of `Totals`. A structured numeric key has no field of its
  * own — the engine cannot know its name at compile time — so it arrives on a series of
  * its own under `avg`, which is why that one name is in here too. */
-export type Field = keyof Omit<Totals, 'calls'> | 'avg'
+export type Field = keyof Totals | 'avg'
 
 export type Measure = { field: Field; label: string; colour: string }
 
