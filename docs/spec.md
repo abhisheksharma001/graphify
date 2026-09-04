@@ -911,7 +911,7 @@ named three. Cache-read and batch rates are not priced; the ceiling covers the c
 over-states a cached run. `models --check` is not a CI step: it needs keys and CI holds
 none. Nothing imports `baml_client` yet: the first function arrives in S-22.
 
-### S-21 — Rule engine + `graphify apply` + `graphify rule-check` `[Rust]` ☐
+### S-21 — Rule engine + `graphify apply` + `graphify rule-check` `[Rust]` ☑ (PR #22, b06003c)
 **PR:** one. **Depends on:** S-8.
 **Files:** `engine/src/rules.rs`, `engine/src/cli.rs`, `engine/tests/rules.rs`.
 **Today:** nothing.
@@ -922,6 +922,61 @@ the pattern name; `matches(&Rule, &CallRow, &[ToolCall]) -> bool`. `apply` re-ru
 **Acceptance:** WHEN rule `{"any_phrases":["real human"],"speaker":"user"}` runs on a call where only the bot says it THEN `matches` SHALL be false; prove by removing the speaker filter → exactly that test fails.
 **Verify:** `cargo test -q --test rules` → pass.
 **Must not:** eval anything; import the brain.
+
+**Learned:** the DSL needed three decisions the spec left open, and each one is a way a
+count can be quietly wrong. **A list means "any of these"** everywhere, which makes
+`tool_not_called` the plain negation of `tool_called` instead of a second rule to learn.
+**Regexes compile case-insensitively** (`RegexBuilder::case_insensitive`, `(?-i)` to opt
+out): a transcript is speech recognition output, and a rule written in lower case missing
+a capitalised sentence would look like a rule that is merely too narrow. **NULL stays
+unknown** — a call with no transcript answers no question about words, and a `transferred`
+nobody recorded matches neither `true` nor `false`, the same rule as the dashboard's `—`
+and never `0`.
+
+`validate` takes the JSON and the pattern name and returns a `Checked`: parse, speaker
+word, empty phrase, and every regex compiled once. The name opens every message, because
+the caller that hits these is `apply`, running patterns it did not write. An empty phrase
+is refused outright — it is a substring of every line, so it matches the whole org while
+looking selective. `deny_unknown_fields` on `Rule` **and** on the `--calls` file: both are
+contracts with the brain, and a `transcripts` where `transcript` was meant would answer
+every question with "no".
+
+The turn parser is `ui/src/CallDrawer.tsx` transliterated, deliberately word for word —
+same six speaker words, same "anything else continues the previous turn". The drawer a
+reader checks a match against and the rule that produced it have to agree on who said
+what. `system` is a real speaker that is neither `user` nor `bot`, so a rule about the
+user passes over the system line rather than guessing.
+
+Signature deviates from what this step wrote down: `matches(&Checked, &Subject)`, not
+`matches(&Rule, &CallRow, &[ToolCall])`. `Checked` exists so a broken rule fails once at
+load rather than returning a quiet `false` on every call in the org, and so `apply`
+compiles each regex once instead of once per call; `Subject` carries its own tool calls
+because the `--calls` file does, and a second parallel type bought nothing. `Subject` is
+also six columns, not a `calls` row: a rule has no business seeing costs or the slim blob,
+and `apply` should not read them off disk to find that out. Calls are loaded once per org,
+not once per pattern — the transcript column is the biggest thing in that query.
+
+`apply` is free-mode only, by definition: those are the patterns a rule alone decides.
+Hybrid and full have a model in the loop and a daily cap on it, and re-running one is
+spending money. It replaces its own `source='rule'` rows and never touches `source='llm'`,
+which was paid for once. A pattern with no rule or no org is skipped — a row someone is
+halfway through creating is not a mistake — while a pattern whose rule is broken is an
+error naming it.
+
+`rule-check` reads two files and no database, which is what makes it usable by the brain
+in S-24: the brain writes the calls it labelled, the engine says which ones the rule
+agrees with, and the engine stays the only thing with an opinion about what a rule means.
+
+Acceptance proved by breaking it: removing the speaker filter from `text_hit` fails the
+acceptance test and two others, and restoring it returns 31 green. `regex` is the one new
+dependency; it has no backreferences and no backtracking, so a rule a model wrote cannot
+be made to run for ever, and a 1 MB `size_limit` caps what one can compile to.
+
+**Not done:** phrases and regexes see one turn at a time, so neither can span a speaker
+change. `apply` has no `--org` and re-runs everything, which is right at a few thousand
+calls and will not be at a million. Nothing calls `apply` on a schedule or after a sync —
+it is a command a person runs. The UI cannot see a pattern or its matches yet; the
+`patterns` rows tested here were written by hand, because nothing creates one until S-24.
 
 ### S-22 — BAML `PlanPattern` + `ClarifyPattern` ☐
 **PR:** one. **Depends on:** S-20.
