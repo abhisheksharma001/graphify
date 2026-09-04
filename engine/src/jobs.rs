@@ -50,6 +50,16 @@ pub const EXPIRED: &str = "expired";
 /// where `uv sync` and `pip install` both put it.
 pub const DEFAULT_BIN: &str = "graphify-brain";
 
+/// Which brain to spawn, as the environment names it. Both callers read it once and keep
+/// the answer — the server at boot, `sync` at the top of a run — so a variable that
+/// changes under a running process cannot point half its children somewhere else.
+pub fn binary_from_env() -> String {
+    std::env::var("GRAPHIFY_BRAIN")
+        .ok()
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_BIN.to_string())
+}
+
 /// How long a job may sit at its price before the child is killed. Long enough for an
 /// analyst to read a plan table and think about it; short enough that a wizard abandoned
 /// at lunchtime is not still holding an interpreter at five.
@@ -78,6 +88,9 @@ pub enum Kind {
     Clarify,
     Label,
     Synthesize,
+    /// The one function nobody starts by clicking. `sync` runs it, and D-8's two caps
+    /// stand where the click stands everywhere else.
+    Daily,
 }
 
 impl Kind {
@@ -87,6 +100,7 @@ impl Kind {
             Kind::Clarify => "clarify",
             Kind::Label => "label",
             Kind::Synthesize => "synthesize",
+            Kind::Daily => "daily",
         }
     }
 
@@ -208,6 +222,45 @@ pub fn start(
     org: i64,
     request: &Value,
 ) -> Result<i64> {
+    let (id, spawn) = begin(db, secrets, binary, kind, org, request)?;
+    let jobs = Arc::clone(jobs);
+    let db = Arc::clone(db);
+    thread::spawn(move || supervise(&jobs, &db, id, spawn));
+    Ok(id)
+}
+
+/// Run one brain function on this thread, and return its id once the row is closed out.
+///
+/// `start` is for the server, where an HTTP request has to be answered while the child is
+/// still working. A `sync` at six in the morning has nobody waiting on an answer, and a
+/// command that returned before its child had read anything would exit and take the child
+/// down with it.
+///
+/// No `Jobs` map: this is only ever used for a kind that does not park, so there is
+/// nothing for a `POST /go` to reach and nothing to put in one.
+pub fn run_blocking(
+    db: &Arc<Mutex<Db>>,
+    secrets: &Secrets,
+    binary: &str,
+    kind: Kind,
+    org: i64,
+    request: &Value,
+) -> Result<i64> {
+    let (id, spawn) = begin(db, secrets, binary, kind, org, request)?;
+    supervise(&Jobs::new(), db, id, spawn);
+    Ok(id)
+}
+
+/// Check the request, gather the keys, and write the `jobs` row. Everything both callers
+/// do before they differ over which thread the child runs on.
+fn begin(
+    db: &Arc<Mutex<Db>>,
+    secrets: &Secrets,
+    binary: &str,
+    kind: Kind,
+    org: i64,
+    request: &Value,
+) -> Result<(i64, Spawn)> {
     let body = serde_json::to_string(request)?;
     if body.contains('\n') {
         // The brain reads its request as one line. Serialising a `Value` never produces a
@@ -216,34 +269,27 @@ pub fn start(
         bail!("a job request has to be one line of JSON");
     }
 
-    let (id, spawn) = {
-        let db = lock(db);
-        let mut keys = Vec::new();
-        for name in secrets::GLOBAL_NAMES {
-            let var = secrets::env_var(name)
-                .ok_or_else(|| anyhow!("no environment variable is defined for {name}"))?;
-            if let Some(key) = secrets.get(&db, None, name)? {
-                keys.push((var, key));
-            }
+    let db = lock(db);
+    let mut keys = Vec::new();
+    for name in secrets::GLOBAL_NAMES {
+        let var = secrets::env_var(name)
+            .ok_or_else(|| anyhow!("no environment variable is defined for {name}"))?;
+        if let Some(key) = secrets.get(&db, None, name)? {
+            keys.push((var, key));
         }
-        let input = serde_json::json!({ "org": org, "body": request });
-        let id = db.create_job(kind.as_str(), RUNNING, &input.to_string(), &crate::now())?;
-        let spawn = Spawn {
-            kind,
-            binary: binary.to_string(),
-            db_path: db.path().to_path_buf(),
-            redact: Redact::new(&keys),
-            keys,
-            body,
-            org,
-        };
-        (id, spawn)
+    }
+    let input = serde_json::json!({ "org": org, "body": request });
+    let id = db.create_job(kind.as_str(), RUNNING, &input.to_string(), &crate::now())?;
+    let spawn = Spawn {
+        kind,
+        binary: binary.to_string(),
+        db_path: db.path().to_path_buf(),
+        redact: Redact::new(&keys),
+        keys,
+        body,
+        org,
     };
-
-    let jobs = Arc::clone(jobs);
-    let db = Arc::clone(db);
-    thread::spawn(move || supervise(&jobs, &db, id, spawn));
-    Ok(id)
+    Ok((id, spawn))
 }
 
 /// The last `PROGRESS n/m` the brain reported, read back out of the log.

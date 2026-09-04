@@ -140,6 +140,23 @@ def run(stdin: TextIO, stdout: TextIO, stderr: TextIO, conn: Any, yes: bool) -> 
     print(json.dumps(_label(job, conn, stderr)), file=stdout)
 
 
+def label_calls(payload: Any, conn: Any, stdout: TextIO, stderr: TextIO) -> dict[str, Any]:
+    """Show the price and label, with no `GO` between the two.
+
+    `run` is the command a person is at the other end of: it reads a request off stdin and
+    waits for somebody to approve the price before a call is read. `daily` has nobody to
+    ask at six in the morning, and D-8 puts two hard caps in place of the click. So it
+    needs the same two steps — the price said out loud, then the labelling — without the
+    conversation in the middle.
+
+    The cap still does all the work it does in `run`: `max_usd` is checked before every
+    batch, by the same function, so the price printed here is a ceiling and not a promise.
+    """
+    job = prepare(payload, conn)
+    print(f"ESTIMATE {estimate(job):.4f}", file=stdout, flush=True)
+    return _label(job, conn, stderr)
+
+
 def prepare(payload: Any, conn: Any) -> Job:
     """Check the request and read the calls it names. Raises `ValueError` for anything
     wrong with either, with no model touched."""

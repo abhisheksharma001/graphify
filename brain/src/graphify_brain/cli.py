@@ -150,6 +150,28 @@ def synthesize(db: Path = LABEL_DB) -> None:
         raise typer.Exit(1) from e
 
 
+@app.command()
+def daily(db: Path = LABEL_DB) -> None:
+    """Read the day's new calls for every hybrid and full pattern, inside two caps.
+
+    Input on stdin: `{org, max_usd}`, where `max_usd` is what is left of the org's day —
+    the engine works that out from the global cap and the `spend` table. Output: what each
+    pattern read, what it matched, and what the whole run cost.
+
+    No `--yes` and no `GO`. D-8 replaces the click with a cap for the daily modes, so the
+    flag that would let one run without a cap does not exist.
+    """
+    from graphify_brain import daily as dailies
+    from graphify_brain import db as database
+
+    try:
+        with closing(database.read_write(db)) as conn:
+            dailies.run(sys.stdin, sys.stdout, sys.stderr, conn)
+    except (ValueError, FileNotFoundError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+
+
 def _pipe(fn: Callable[[dict[str, Any]], dict[str, Any]], db: Optional[Path]) -> None:
     """The engine ↔ brain contract: JSON in, JSON out, exit 0 or 1, complaints on stderr.
 

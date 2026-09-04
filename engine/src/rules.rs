@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Ceiling on one compiled regex. A model writes these, and a pathological pattern can
 /// compile to an enormous automaton without ever looking wrong. 1 MB is far past anything
@@ -301,12 +301,17 @@ pub struct Applied {
     pub of: usize,
 }
 
+/// The mode a rule alone decides. The other two have a model in the loop, and what that
+/// changes for the rule half is spelled out on [`run_one`].
+pub const FREE: &str = "free";
+
 /// A `patterns` row as `apply` needs it.
 struct Stored {
     id: i64,
     org_id: Option<i64>,
     name: String,
     rule: Option<String>,
+    mode: String,
 }
 
 /// Re-run every free-mode pattern's rule over its org's calls, replacing that pattern's
@@ -334,7 +339,44 @@ pub fn apply(db: &mut Db) -> Result<Vec<Applied>> {
         if let Entry::Vacant(slot) = by_org.entry(org_id) {
             slot.insert(subjects(db, org_id)?);
         }
-        report.push(run_one(db, pattern.id, &pattern.name, json, &by_org[&org_id])?);
+        report.push(run_one(
+            db,
+            pattern.id,
+            &pattern.name,
+            json,
+            &by_org[&org_id],
+            &pattern.mode,
+        )?);
+    }
+    Ok(report)
+}
+
+/// Re-run the rule half of every pattern in one org, whatever mode each is in.
+///
+/// [`apply`] is the subcommand and stays free-only, because re-counting a model-backed
+/// pattern from the outside is somebody asking for a number and getting a bill. This runs
+/// inside `sync`, immediately before the daily run that reads what it selected — and in
+/// hybrid the rule *is* the prefilter, so a prefilter that has not seen this morning's
+/// calls is a model that reads none of them.
+///
+/// It still costs nothing: this is the rule half in every mode, the same arithmetic
+/// `apply_one` does behind the Re-apply button.
+pub fn apply_org(db: &mut Db, org_id: i64) -> Result<Vec<Applied>> {
+    let patterns = org_patterns(db, org_id)?;
+    let calls = subjects(db, org_id)?;
+    let mut report = Vec::new();
+    for pattern in patterns {
+        let Some(json) = pattern.rule.as_deref() else {
+            continue;
+        };
+        report.push(run_one(
+            db,
+            pattern.id,
+            &pattern.name,
+            json,
+            &calls,
+            &pattern.mode,
+        )?);
     }
     Ok(report)
 }
@@ -356,24 +398,41 @@ pub fn apply_one(db: &mut Db, id: i64) -> Result<Option<Applied>> {
         return Ok(None);
     };
     let name = pattern.name.unwrap_or_else(|| format!("#{id}"));
+    let mode = pattern.mode.clone().unwrap_or_else(|| FREE.to_string());
     let calls = subjects(db, org_id)?;
-    Ok(Some(run_one(db, id, &name, json, &calls)?))
+    Ok(Some(run_one(db, id, &name, json, &calls, &mode)?))
 }
 
 /// One pattern over one org's calls: validate, match, store, count.
+///
+/// In `free` the rule is the answer, so its hits are stored as they come. In the two modes
+/// with a model in the loop the rule is a prefilter and the model is the answer, so a call
+/// the model has read and rejected does not come back as a match when the rule is re-run.
+/// Without that, pressing Re-apply on a hybrid pattern would quietly undo every
+/// confirmation it had paid for, and the next daily run would not buy them back — those
+/// calls have been read once, and a model is not asked the same question twice.
+///
+/// A free pattern's labels are left alone by this on purpose. The wizard's sample is
+/// stored against every pattern, and a free pattern is one whose rule was chosen to
+/// disagree with part of that sample by a measured amount — that is what `agreement` is.
 fn run_one(
     db: &mut Db,
     id: i64,
     name: &str,
     json: &str,
     calls: &[Subject],
+    mode: &str,
 ) -> Result<Applied> {
     let rule = validate(json, &format!("pattern {name}"))?;
-    let hits: Vec<String> = calls
+    let mut hits: Vec<String> = calls
         .iter()
         .filter(|c| matches(&rule, c))
         .map(|c| c.id.clone())
         .collect();
+    if mode != FREE {
+        let rejected = rejected(db, id)?;
+        hits.retain(|call| !rejected.contains(call));
+    }
     db.replace_rule_matches(id, &hits)?;
     Ok(Applied {
         name: name.to_string(),
@@ -383,22 +442,51 @@ fn run_one(
 }
 
 fn free_patterns(db: &Db) -> Result<Vec<Stored>> {
-    let mut stmt = db
-        .conn()
-        .prepare("SELECT id, org_id, name, rule FROM patterns WHERE mode = 'free' ORDER BY id")?;
-    let rows = stmt.query_map([], |r| {
-        let id: i64 = r.get(0)?;
-        Ok(Stored {
-            id,
-            org_id: r.get(1)?,
-            // A pattern need not be named yet, and an error still has to point at it.
-            name: r
-                .get::<_, Option<String>>(2)?
-                .unwrap_or_else(|| format!("#{id}")),
-            rule: r.get(3)?,
-        })
-    })?;
+    let conn = db.conn();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {STORED_COLUMNS} FROM patterns WHERE mode = '{FREE}' ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([], stored_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn org_patterns(db: &Db, org_id: i64) -> Result<Vec<Stored>> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {STORED_COLUMNS} FROM patterns WHERE org_id = ?1 ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([org_id], stored_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+const STORED_COLUMNS: &str = "id, org_id, name, rule, mode";
+
+fn stored_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Stored> {
+    let id: i64 = r.get(0)?;
+    Ok(Stored {
+        id,
+        org_id: r.get(1)?,
+        // A pattern need not be named yet, and an error still has to point at it.
+        name: r
+            .get::<_, Option<String>>(2)?
+            .unwrap_or_else(|| format!("#{id}")),
+        rule: r.get(3)?,
+        // A row with no mode is a free one: that is what the column defaults to, and a
+        // pattern nobody has put a model behind is not one this may start spending on.
+        mode: r.get::<_, Option<String>>(4)?.unwrap_or_else(|| FREE.to_string()),
+    })
+}
+
+/// The calls a model has read for this pattern and said no about.
+///
+/// `pattern_labels` is where a verdict lives, so this is a read of what was already paid
+/// for rather than a second record of it that could fall out of step.
+fn rejected(db: &Db, pattern_id: i64) -> Result<HashSet<String>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare("SELECT call_id FROM pattern_labels WHERE pattern_id = ?1 AND llm_match = 0")?;
+    let rows = stmt.query_map([pattern_id], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
 /// Every call in the org, with the six columns a rule can read and its tool calls.

@@ -2,8 +2,9 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use graphify::{assistants, auth, db, rules, secrets, server, sync, vapi};
+use graphify::{assistants, auth, db, jobs, rules, secrets, server, sync, vapi};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// The graphify engine: pulls Vapi calls, stores them, serves the dashboard.
 #[derive(Parser)]
@@ -17,7 +18,8 @@ pub struct Cli {
 pub enum Command {
     /// Print the engine name and version.
     Version,
-    /// Pull calls from Vapi into the local database, then apply retention.
+    /// Pull calls from Vapi, apply retention, re-run every rule, then let the patterns
+    /// with a model in the loop read what is new — inside `GRAPHIFY_DAILY_CAP_USD`.
     Sync {
         /// Org to sync, by name.
         #[arg(long)]
@@ -73,7 +75,7 @@ impl Cli {
                 let mut db = db::Db::open(db::default_path())?;
                 let key = vapi_key(&db, &org)?;
                 let opts = sync::Opts {
-                    org,
+                    org: org.clone(),
                     last,
                     since,
                     base: vapi::DEFAULT_BASE.to_string(),
@@ -81,6 +83,22 @@ impl Cli {
                 };
                 let report = tokio::runtime::Runtime::new()?.block_on(sync::run(&mut db, &opts))?;
                 println!("{report}");
+
+                // Then what the new calls mean: every rule re-run, and after that the
+                // patterns with a model in the loop reading what those rules selected.
+                // The cap is read here rather than out there, so a `GRAPHIFY_DAILY_CAP_USD`
+                // nobody can parse stops the morning at a message instead of at a bill.
+                let store = secrets::Secrets::open(secrets::default_key_path())?;
+                let daily = sync::daily(
+                    &Arc::new(Mutex::new(db)),
+                    &store,
+                    &sync::DailyOpts {
+                        org,
+                        brain: jobs::binary_from_env(),
+                        cap_usd: sync::daily_cap_from_env()?,
+                    },
+                )?;
+                println!("{daily}");
                 Ok(())
             }
             Command::Assistants { org } => {
