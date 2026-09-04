@@ -104,7 +104,7 @@ fn vapi_key(db: &db::Db, org: &str) -> Result<String> {
         bail!("no org named {org}");
     };
     let store = secrets::Secrets::open(secrets::default_key_path())?;
-    match store.get(db, row.id, "vapi")? {
+    match store.get(db, Some(row.id), "vapi")? {
         Some(key) => Ok(key.expose().to_string()),
         None => bail!("no Vapi key for org {org}: set VAPI_API_KEY or store one via the API"),
     }

@@ -18,8 +18,16 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The secrets graphify knows how to hold, in the order `status` reports them.
-pub const NAMES: [&str; 3] = ["vapi", "anthropic", "openai"];
+/// The secrets graphify knows how to hold, split by who owns them. Every name lives at
+/// exactly one scope, and `status` reports each list in the order it is written here.
+///
+/// A Vapi key is a client's, so each org has its own.
+pub const ORG_NAMES: [&str; 1] = ["vapi"];
+
+/// The model keys belong to the whole install and are stored with `org_id NULL`: one
+/// account is billed for them and every org's calls spend them, so a copy per org would
+/// be three places to rotate the same key.
+pub const GLOBAL_NAMES: [&str; 2] = ["anthropic", "openai"];
 
 const KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
@@ -90,7 +98,7 @@ impl Secrets {
         })
     }
 
-    pub fn set(&self, db: &Db, org_id: i64, name: &str, value: &str) -> Result<()> {
+    pub fn set(&self, db: &Db, org_id: Option<i64>, name: &str, value: &str) -> Result<()> {
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
         let sealed = self
             .cipher
@@ -114,7 +122,7 @@ impl Secrets {
     ///
     /// The environment wins so an operator can override a stored key without touching the
     /// database — the same order the CLI already used before there was a store.
-    pub fn get(&self, db: &Db, org_id: i64, name: &str) -> Result<Option<Secret>> {
+    pub fn get(&self, db: &Db, org_id: Option<i64>, name: &str) -> Result<Option<Secret>> {
         if let Some(v) = from_env(name) {
             return Ok(Some(Secret(v)));
         }
@@ -142,10 +150,16 @@ impl Secrets {
         )))
     }
 
-    /// One row per known name, whether or not it is set. Reports what `get` would return,
-    /// so a key supplied only by the environment still reads as set.
-    pub fn status(&self, db: &Db, org_id: i64) -> Result<Vec<Status>> {
-        NAMES
+    /// One row per name that lives at this scope, whether or not it is set — the org's
+    /// names for an org, the install's for `None`. Reports what `get` would return, so a
+    /// key supplied only by the environment still reads as set.
+    pub fn status(&self, db: &Db, org_id: Option<i64>) -> Result<Vec<Status>> {
+        let names: &[&str] = if org_id.is_some() {
+            &ORG_NAMES
+        } else {
+            &GLOBAL_NAMES
+        };
+        names
             .iter()
             .map(|name| {
                 let (set, last4) = match from_env(name) {
@@ -184,8 +198,14 @@ fn from_env(name: &str) -> Option<String> {
 
 /// Binds a ciphertext to its row. Decryption of a blob moved to another org or name fails
 /// rather than returning the wrong org's key.
-fn aad(org_id: i64, name: &str) -> String {
-    format!("{org_id}:{name}")
+///
+/// An org's binding is spelled exactly as it was before there were global secrets, so
+/// every key already in a store keeps decrypting.
+fn aad(org_id: Option<i64>, name: &str) -> String {
+    match org_id {
+        Some(id) => format!("{id}:{name}"),
+        None => format!("global:{name}"),
+    }
 }
 
 /// The tail shown in the UI, or nothing at all for a value short enough that four

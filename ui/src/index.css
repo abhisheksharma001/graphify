@@ -153,6 +153,28 @@ body {
   flex: 1;
 }
 
+/* The two screens. Text, not a pill: the header is one line of chrome and a tab bar
+ * drawn in boxes would outweigh the wordmark beside it. The current tab is underlined
+ * and carries `aria-current`, so it is never the ink shade alone that says which. */
+.top nav {
+  display: flex;
+  gap: 4px;
+}
+
+.top .tab {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  color: var(--ink-muted);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.top .tab[aria-current='page'] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
 /* Filters: one row above everything they scope. */
 
 .filters {
@@ -737,6 +759,132 @@ thead th {
 
 .transcript .said {
   white-space: pre-wrap;
+}
+
+/* Settings: orgs, keys, retention.
+ *
+ * Every form here is one label grid — label, what is stored, the field, the button —
+ * so a key row and a retention row line up down the card instead of each inventing its
+ * own geometry. */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings .card h3 {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.key,
+.add-org {
+  display: grid;
+  grid-template-columns: 110px auto 1fr auto;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 0;
+}
+
+/* Two small numbers and a button, not a form: on the key grid the second label lands in
+ * the input column and the button falls to a row of its own. A wrapping row keeps each
+ * label against the box it names. */
+.limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 0;
+}
+
+.key + .key,
+.limits {
+  border-top: 1px solid var(--hairline);
+}
+
+.add-org {
+  grid-template-columns: 110px 1fr;
+}
+
+.key > label,
+.limits > label,
+.add-org > label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+/* A note that belongs to the whole form, not to one of its columns — in either layout. */
+.span {
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+/* What is on file. The word carries it; the dots are only the shape of a key, and the
+ * tail is the four characters the engine is willing to say. */
+.stored {
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* The number and what it counts, kept together: "7 days" is one fact and must not be
+ * split across a wrap. */
+.limits .unit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.limits > label {
+  margin-left: 6px;
+}
+
+.limits > label:first-of-type {
+  margin-left: 0;
+}
+
+.limits input {
+  width: 90px;
+}
+
+.test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 0;
+  flex-wrap: wrap;
+}
+
+/* The verdict is a word first. `Works` and `Failed` are written out, and the rule beside
+ * them is a second signal for the same fact — never the only one. */
+.verdict {
+  font-size: 12px;
+  color: var(--ink-2);
+  padding-left: 8px;
+  border-left: 3px solid var(--axis);
+}
+
+.verdict.ok {
+  border-left-color: var(--g-customer);
+}
+
+.verdict.bad {
+  border-left-color: var(--g-llm-error);
+}
+
+.add {
+  margin: 0;
 }
 
 /* Whole-page states */

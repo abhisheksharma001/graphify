@@ -11,6 +11,7 @@ use crate::db::Db;
 use crate::queries::{self, Filters};
 use crate::secrets::{self, Secrets};
 use crate::ui;
+use crate::sync;
 use crate::vapi::{self, Retry};
 use anyhow::Result;
 use axum::extract::{Path, RawQuery, Request, State};
@@ -107,9 +108,12 @@ pub fn router(app: App) -> Router {
     // with no session has to be able to reach.
     let guarded = Router::new()
         .route("/api/orgs", get(list_orgs).post(create_org))
+        .route("/api/orgs/{id}", put(set_limits))
         .route("/api/orgs/{id}/secrets", get(list_secrets))
         .route("/api/orgs/{id}/secrets/{name}", put(set_secret))
         .route("/api/orgs/{id}/test", post(test_key))
+        .route("/api/secrets", get(list_global_secrets))
+        .route("/api/secrets/{name}", put(set_global_secret))
         .route("/api/assistants", get(list_assistants))
         .route("/api/calls", get(list_calls))
         .route("/api/calls/{id}", get(get_call))
@@ -188,14 +192,54 @@ async fn create_org(
         ));
     }
     let id = db.create_org(&name)?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": id, "name": name }))).into_response())
+    // The stored row, not an echo of the request: the caller gets the retention defaults
+    // it did not send, and the settings screen gets the same shape `/api/orgs` returns.
+    Ok((StatusCode::CREATED, Json(db.org_by_id(id)?)).into_response())
+}
+
+/// The retention settings, and only those: a name is what an org is known by elsewhere,
+/// so renaming one is not something the settings screen does by accident.
+#[derive(Deserialize)]
+struct Limits {
+    keep_days: Option<i64>,
+    max_calls: Option<i64>,
+}
+
+async fn set_limits(
+    State(app): State<App>,
+    Path(id): Path<i64>,
+    Json(body): Json<Limits>,
+) -> Result<Response, ApiError> {
+    // D-5 is a cap, not a default: an org may keep less, never more. Refused here as well
+    // as in `sync`, so the number is rejected while someone is looking at it rather than
+    // at the next unattended run.
+    if body
+        .keep_days
+        .is_some_and(|d| !(1..=sync::MAX_KEEP_DAYS).contains(&d))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("keep_days must be between 1 and {}", sync::MAX_KEEP_DAYS),
+        ));
+    }
+    if body.max_calls.is_some_and(|n| n < 1) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "max_calls must be at least 1, or absent for no limit",
+        ));
+    }
+    let db = app.db();
+    known_org(&db, id)?;
+    db.set_org_limits(id, body.keep_days, body.max_calls)?;
+    // The stored row, so the caller never has to assume what landed.
+    Ok(Json(db.org_by_id(id)?).into_response())
 }
 
 /// Which secrets this org has, and their last four characters. Never their values.
 async fn list_secrets(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
     let db = app.db();
     known_org(&db, id)?;
-    Ok(Json(app.secrets.status(&db, id)?).into_response())
+    Ok(Json(app.secrets.status(&db, Some(id))?).into_response())
 }
 
 #[derive(Deserialize)]
@@ -208,23 +252,53 @@ async fn set_secret(
     Path((id, name)): Path<(i64, String)>,
     Json(body): Json<NewSecret>,
 ) -> Result<Response, ApiError> {
-    if !secrets::NAMES.contains(&name.as_str()) {
+    let value = named(&secrets::ORG_NAMES, &name, &body)?;
+    let db = app.db();
+    known_org(&db, id)?;
+    app.secrets.set(&db, Some(id), &name, value)?;
+    // The new status, not the value: this response goes straight back to a browser.
+    Ok(Json(app.secrets.status(&db, Some(id))?).into_response())
+}
+
+/// The install's own keys — the model providers — which no org owns.
+async fn list_global_secrets(State(app): State<App>) -> Result<Response, ApiError> {
+    let db = app.db();
+    Ok(Json(app.secrets.status(&db, None)?).into_response())
+}
+
+async fn set_global_secret(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Json(body): Json<NewSecret>,
+) -> Result<Response, ApiError> {
+    let value = named(&secrets::GLOBAL_NAMES, &name, &body)?;
+    let db = app.db();
+    app.secrets.set(&db, None, &name, value)?;
+    Ok(Json(app.secrets.status(&db, None)?).into_response())
+}
+
+/// The two checks both secret routes owe: that the name belongs at this scope, and that
+/// the value is not blank. Returns the trimmed value, which is what gets stored.
+fn named<'a>(allowed: &[&str], name: &str, body: &'a NewSecret) -> Result<&'a str, ApiError> {
+    if !allowed.contains(&name) {
+        // Named against this scope, not against every secret there is: "anthropic" is a
+        // real key and putting it on an org is still the wrong place for it.
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            format!("unknown secret {name}"),
+            format!(
+                "unknown secret {name} here; expected one of {}",
+                allowed.join(", ")
+            ),
         ));
     }
-    if body.value.trim().is_empty() {
+    let value = body.value.trim();
+    if value.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "a secret needs a value",
         ));
     }
-    let db = app.db();
-    known_org(&db, id)?;
-    app.secrets.set(&db, id, &name, body.value.trim())?;
-    // The new status, not the value: this response goes straight back to a browser.
-    Ok(Json(app.secrets.status(&db, id)?).into_response())
+    Ok(value)
 }
 
 /// One `GET /assistant` with the org's key, to answer "is this key any good".
@@ -234,7 +308,7 @@ async fn test_key(State(app): State<App>, Path(id): Path<i64>) -> Result<Respons
     let key = {
         let db = app.db();
         known_org(&db, id)?;
-        app.secrets.get(&db, id, "vapi")?
+        app.secrets.get(&db, Some(id), "vapi")?
     };
     let Some(key) = key else {
         return Err(ApiError::new(

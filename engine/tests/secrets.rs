@@ -1,5 +1,5 @@
 use graphify::db::Db;
-use graphify::secrets::{Secrets, Status, NAMES};
+use graphify::secrets::{Secrets, Status, GLOBAL_NAMES, ORG_NAMES};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
@@ -64,7 +64,7 @@ fn a_stored_key_is_absent_from_the_database_file_and_shows_only_its_tail() {
     clear_env();
     let f = fixture();
 
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
 
     let bytes = f.db_bytes();
     assert!(
@@ -74,7 +74,7 @@ fn a_stored_key_is_absent_from_the_database_file_and_shows_only_its_tail() {
         "the plaintext key is sitting in the database file"
     );
 
-    let status = f.secrets.status(&f.db, 1).unwrap();
+    let status = f.secrets.status(&f.db, Some(1)).unwrap();
     assert_eq!(
         status[0],
         Status {
@@ -91,10 +91,10 @@ fn a_value_comes_back_out_unchanged() {
     clear_env();
     let f = fixture();
 
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
 
     assert_eq!(
-        f.secrets.get(&f.db, 1, "vapi").unwrap().unwrap().expose(),
+        f.secrets.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         PLAIN
     );
 }
@@ -105,9 +105,9 @@ fn an_unset_secret_is_none_and_reports_unset() {
     clear_env();
     let f = fixture();
 
-    assert!(f.secrets.get(&f.db, 1, "vapi").unwrap().is_none());
-    let status = f.secrets.status(&f.db, 1).unwrap();
-    assert_eq!(status.len(), NAMES.len());
+    assert!(f.secrets.get(&f.db, Some(1), "vapi").unwrap().is_none());
+    let status = f.secrets.status(&f.db, Some(1)).unwrap();
+    assert_eq!(status.len(), ORG_NAMES.len());
     assert!(status.iter().all(|s| !s.set && s.last4.is_none()));
 }
 
@@ -117,14 +117,14 @@ fn setting_a_name_twice_replaces_it() {
     clear_env();
     let f = fixture();
 
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
-    f.secrets.set(&f.db, 1, "vapi", "sk-the-second-one-9999").unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", "sk-the-second-one-9999").unwrap();
 
     assert_eq!(
-        f.secrets.get(&f.db, 1, "vapi").unwrap().unwrap().expose(),
+        f.secrets.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         "sk-the-second-one-9999"
     );
-    assert_eq!(f.secrets.status(&f.db, 1).unwrap()[0].last4.as_deref(), Some("9999"));
+    assert_eq!(f.secrets.status(&f.db, Some(1)).unwrap()[0].last4.as_deref(), Some("9999"));
 }
 
 /// The environment wins, and a variable set to nothing is not an override — an empty
@@ -134,30 +134,30 @@ fn the_environment_overrides_the_store_unless_it_is_empty() {
     let _guard = env_lock();
     clear_env();
     let f = fixture();
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
 
     std::env::set_var("VAPI_API_KEY", "sk-from-the-environment-7777");
     assert_eq!(
-        f.secrets.get(&f.db, 1, "vapi").unwrap().unwrap().expose(),
+        f.secrets.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         "sk-from-the-environment-7777"
     );
-    assert_eq!(f.secrets.status(&f.db, 1).unwrap()[0].last4.as_deref(), Some("7777"));
+    assert_eq!(f.secrets.status(&f.db, Some(1)).unwrap()[0].last4.as_deref(), Some("7777"));
 
     std::env::set_var("VAPI_API_KEY", "   ");
     assert_eq!(
-        f.secrets.get(&f.db, 1, "vapi").unwrap().unwrap().expose(),
+        f.secrets.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         PLAIN,
         "an empty variable must fall through to the store"
     );
 
     clear_env();
     assert_eq!(
-        f.secrets.get(&f.db, 1, "vapi").unwrap().unwrap().expose(),
+        f.secrets.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         PLAIN
     );
 }
 
-/// A key supplied only by the environment is still a key the org has.
+/// A key supplied only by the environment is still a key the install has.
 #[test]
 fn an_environment_only_secret_reads_as_set() {
     let _guard = env_lock();
@@ -165,12 +165,81 @@ fn an_environment_only_secret_reads_as_set() {
     let f = fixture();
 
     std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-env-only-4242");
-    let status = f.secrets.status(&f.db, 1).unwrap();
+    let status = f.secrets.status(&f.db, None).unwrap();
     clear_env();
 
     let anthropic = status.iter().find(|s| s.name == "anthropic").unwrap();
     assert!(anthropic.set);
     assert_eq!(anthropic.last4.as_deref(), Some("4242"));
+}
+
+/// The model keys belong to the install, so they are stored once, under no org.
+#[test]
+fn a_global_secret_round_trips_and_is_not_an_orgs() {
+    let _guard = env_lock();
+    clear_env();
+    let f = fixture();
+
+    f.secrets.set(&f.db, None, "anthropic", PLAIN).unwrap();
+
+    assert_eq!(
+        f.secrets
+            .get(&f.db, None, "anthropic")
+            .unwrap()
+            .unwrap()
+            .expose(),
+        PLAIN
+    );
+    // Same name, an org's scope: a different row, and an unset one.
+    assert!(f.secrets.get(&f.db, Some(1), "anthropic").unwrap().is_none());
+
+    let global = f.secrets.status(&f.db, None).unwrap();
+    assert_eq!(global.len(), GLOBAL_NAMES.len());
+    assert_eq!(
+        global[0],
+        Status {
+            name: "anthropic".into(),
+            set: true,
+            last4: Some("0001".into()),
+        }
+    );
+    // And the org's own status is about the org's own names, so it never mentions it.
+    let org = f.secrets.status(&f.db, Some(1)).unwrap();
+    assert!(org.iter().all(|s| s.name != "anthropic"));
+}
+
+/// `PRIMARY KEY (org_id, name)` does not constrain rows whose `org_id` is NULL — SQLite
+/// counts those NULLs as distinct — so without the partial unique index, replacing a
+/// global key would leave the old one behind and `get` could return either.
+#[test]
+fn setting_a_global_name_twice_replaces_it_rather_than_piling_up() {
+    let _guard = env_lock();
+    clear_env();
+    let f = fixture();
+
+    f.secrets.set(&f.db, None, "openai", PLAIN).unwrap();
+    f.secrets
+        .set(&f.db, None, "openai", "sk-the-second-one-9999")
+        .unwrap();
+
+    let rows: i64 = f
+        .db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM secrets WHERE org_id IS NULL AND name = 'openai'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1, "a replaced global secret left its predecessor behind");
+    assert_eq!(
+        f.secrets
+            .get(&f.db, None, "openai")
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "sk-the-second-one-9999"
+    );
 }
 
 /// The whole point of the wrapper: there is no formatting that prints the value.
@@ -179,9 +248,9 @@ fn a_secret_never_formats_as_its_value() {
     let _guard = env_lock();
     clear_env();
     let f = fixture();
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
 
-    let secret = f.secrets.get(&f.db, 1, "vapi").unwrap().unwrap();
+    let secret = f.secrets.get(&f.db, Some(1), "vapi").unwrap().unwrap();
 
     assert_eq!(format!("{secret:?}"), "***");
     assert_eq!(format!("{secret}"), "***");
@@ -194,13 +263,13 @@ fn a_ciphertext_moved_to_another_row_will_not_decrypt() {
     let _guard = env_lock();
     clear_env();
     let f = fixture();
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
-    let (blob, tail) = f.db.secret(1, "vapi").unwrap().unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
+    let (blob, tail) = f.db.secret(Some(1), "vapi").unwrap().unwrap();
 
-    f.db.upsert_secret(1, "anthropic", &blob, tail.as_deref(), "now").unwrap();
-    f.db.upsert_secret(2, "vapi", &blob, tail.as_deref(), "now").unwrap();
+    f.db.upsert_secret(Some(1), "anthropic", &blob, tail.as_deref(), "now").unwrap();
+    f.db.upsert_secret(Some(2), "vapi", &blob, tail.as_deref(), "now").unwrap();
 
-    for (org, name) in [(1, "anthropic"), (2, "vapi")] {
+    for (org, name) in [(Some(1), "anthropic"), (Some(2), "vapi")] {
         let err = f.secrets.get(&f.db, org, name).unwrap_err();
         assert!(err.to_string().contains("could not be decrypted"), "was: {err}");
         assert!(!err.to_string().contains(PLAIN));
@@ -212,12 +281,12 @@ fn a_different_key_cannot_read_the_store() {
     let _guard = env_lock();
     clear_env();
     let f = fixture();
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
 
     let other_dir = tempfile::tempdir().unwrap();
     let other = Secrets::open(other_dir.path().join(".secret")).unwrap();
 
-    let err = other.get(&f.db, 1, "vapi").unwrap_err();
+    let err = other.get(&f.db, Some(1), "vapi").unwrap_err();
     assert!(err.to_string().contains("could not be decrypted"), "was: {err}");
 }
 
@@ -233,10 +302,10 @@ fn the_key_file_is_created_private_and_reused() {
     assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
 
     // Re-opening must reuse the same key, or every restart would orphan every secret.
-    f.secrets.set(&f.db, 1, "vapi", PLAIN).unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
     let again = Secrets::open(&f.key_path).unwrap();
     assert_eq!(
-        again.get(&f.db, 1, "vapi").unwrap().unwrap().expose(),
+        again.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         PLAIN
     );
 }
@@ -264,9 +333,9 @@ fn a_short_value_gets_no_tail() {
     clear_env();
     let f = fixture();
 
-    f.secrets.set(&f.db, 1, "vapi", "abc123").unwrap();
+    f.secrets.set(&f.db, Some(1), "vapi", "abc123").unwrap();
 
-    let status = f.secrets.status(&f.db, 1).unwrap();
+    let status = f.secrets.status(&f.db, Some(1)).unwrap();
     assert!(status[0].set);
     assert_eq!(status[0].last4, None);
 }
@@ -285,9 +354,9 @@ fn graphify_secret_supplies_the_key_and_writes_no_file() {
     // 32 zero bytes, base64. A real deployment generates its own.
     std::env::set_var("GRAPHIFY_SECRET", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
     let secrets = Secrets::open(&key_path).unwrap();
-    secrets.set(&db, 1, "vapi", PLAIN).unwrap();
+    secrets.set(&db, Some(1), "vapi", PLAIN).unwrap();
     let reopened = Secrets::open(&key_path).unwrap();
-    let got = reopened.get(&db, 1, "vapi").unwrap().unwrap().expose().to_string();
+    let got = reopened.get(&db, Some(1), "vapi").unwrap().unwrap().expose().to_string();
     clear_env();
 
     assert_eq!(got, PLAIN);
