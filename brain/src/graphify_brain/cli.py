@@ -1,12 +1,14 @@
 """Command-line entry point. `graphify-brain --help` lists commands."""
 
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import typer
 
 from graphify_brain import __version__, cost
+from graphify_brain import label as labelling
 from graphify_brain import plan as planning
 
 app = typer.Typer(help="graphify-brain — plan, clarify, label, synthesize, ask.", no_args_is_help=True)
@@ -98,6 +100,34 @@ def clarify(db: Optional[Path] = DB) -> None:
     Input `{criterion, plan, answers: [{question, answer}]}`; output the whole `Plan`.
     """
     _pipe(planning.clarify, db)
+
+
+#: `label` is the first command that reads a row, so its `--db` is required rather than
+#: merely checked: the transcripts it shows a model come out of the engine's `calls` table
+#: and there is no other place to get them.
+LABEL_DB = typer.Option(..., "--db", help="The engine's SQLite file. Read for transcripts.")
+
+
+@app.command()
+def label(
+    db: Path = LABEL_DB,
+    yes: bool = typer.Option(False, "--yes", help="Spend without waiting for GO on stdin."),
+) -> None:
+    """Read calls and label them against a plan. Costs money; prints the price first.
+
+    Input, on one line of stdin: `{criterion, plan, call_ids, model, max_usd,
+    batch_size?, pattern_id?}`. Then `ESTIMATE {usd}` on stdout, and — unless `--yes` —
+    `GO` on stdin before a single call is read. Output: the labels, what was not labelled
+    and why, and what it actually cost.
+    """
+    from graphify_brain import db as database
+
+    try:
+        with closing(database.read_write(db)) as conn:
+            labelling.run(sys.stdin, sys.stdout, sys.stderr, conn, yes)
+    except (ValueError, FileNotFoundError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
 
 
 def _pipe(fn: Callable[[dict[str, Any]], dict[str, Any]], db: Optional[Path]) -> None:
