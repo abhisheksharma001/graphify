@@ -75,8 +75,8 @@ def client() -> Any:
 
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
     """`{criterion, system_prompt?}` in, a plan out."""
-    _envelope(payload, "plan", required={"criterion"}, optional={"system_prompt"})
-    criterion = _text(payload, "criterion")
+    envelope(payload, "plan", required={"criterion"}, optional={"system_prompt"})
+    criterion = required_text(payload, "criterion")
     prompt = payload.get("system_prompt")
     # An assistant with an empty prompt and an assistant whose prompt nobody read are the
     # same absence to the model, and `None` is what skips the prompt block entirely.
@@ -104,10 +104,10 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     and the wizard's gate opens on that flag. The money that gate is protecting is spent
     in the next step.
     """
-    _envelope(payload, "clarify", required={"criterion", "plan", "answers"}, optional=set())
+    envelope(payload, "clarify", required={"criterion", "plan", "answers"}, optional=set())
     from baml_client import types
 
-    criterion = _text(payload, "criterion")
+    criterion = required_text(payload, "criterion")
     answers = payload["answers"]
     if not isinstance(answers, list) or not answers:
         raise ValueError("clarify: answers is empty, so there is nothing to revise")
@@ -136,8 +136,11 @@ def run(fn: Callable[[dict[str, Any]], dict[str, Any]], stdin: str) -> str:
     return json.dumps(fn(payload))
 
 
-def _envelope(payload: Any, name: str, required: set[str], optional: set[str]) -> None:
+def envelope(payload: Any, name: str, required: set[str], optional: set[str]) -> None:
     """Refuse an input whose fields are not the fields this function has.
+
+    Public, and named without an underscore, because `label.py` needs the same refusal
+    worded the same way. Two copies of it would be two places for the wording to drift.
 
     An unknown key is refused rather than ignored for the same reason the engine refuses
     one in a rule: a `criteria` where `criterion` was meant would otherwise reach the
@@ -152,7 +155,7 @@ def _envelope(payload: Any, name: str, required: set[str], optional: set[str]) -
         raise ValueError(f"{name}: input has no field {', '.join(sorted(unknown))}")
 
 
-def _text(payload: dict[str, Any], key: str) -> str:
+def required_text(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         # An empty criterion is not a criterion the model should guess at. It would
