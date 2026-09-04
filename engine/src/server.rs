@@ -1,14 +1,19 @@
-//! The HTTP API. Ten routes over the local database, plus a login when a password is
+//! The HTTP API. The routes over the local database, plus a login when a password is
 //! configured, plus the dashboard itself on everything left over. Everything here is
 //! read-only against Vapi and write-only against SQLite: the only outbound request the
 //! whole file can make is the connectivity test, and that one is a `GET`.
+//!
+//! The pattern routes start a brain subprocess and read its row back; the spawning itself
+//! is `jobs`'.
 //!
 //! Bound to loopback unless told otherwise. A dashboard that reaches a Vapi key is not
 //! something to put on `0.0.0.0` because a default said so.
 
 use crate::auth::{self, Auth};
 use crate::db::Db;
+use crate::jobs::{self, Jobs, Kind};
 use crate::queries::{self, Filters};
+use crate::rules;
 use crate::secrets::{self, Secrets};
 use crate::ui;
 use crate::sync;
@@ -21,7 +26,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -45,16 +50,47 @@ pub struct App {
     auth: Arc<Auth>,
     /// Where the connectivity test points. Configurable so tests can aim at a mock.
     vapi_base: String,
+    /// The brain jobs that are parked on their go. Shared, because the thread holding a
+    /// child and the handler that wakes it are on opposite sides of the process.
+    jobs: Arc<Jobs>,
+    /// The brain binary to spawn. Read from the environment once here rather than at each
+    /// spawn, so a test can point one server at a fake without touching the environment
+    /// every other test in the process is also reading.
+    brain: String,
 }
 
 impl App {
     pub fn new(db: Db, secrets: Secrets, auth: Auth) -> Self {
+        // Whatever was running or waiting belonged to a process that is gone, and its
+        // children went with it. Left alone, four abandoned `waiting` rows would count
+        // against the live cap for ever and no job would ever start again.
+        //
+        // Best effort: a sweep that cannot run is not a reason to refuse to serve, and the
+        // rows it did not touch are visible in the API either way.
+        let _ = db.abandon_live_jobs(jobs::RUNNING, jobs::WAITING, jobs::EXPIRED, &crate::now());
         App {
             db: Arc::new(Mutex::new(db)),
             secrets: Arc::new(secrets),
             auth: Arc::new(auth),
             vapi_base: vapi::DEFAULT_BASE.to_string(),
+            jobs: Arc::new(Jobs::new()),
+            brain: std::env::var("GRAPHIFY_BRAIN")
+                .ok()
+                .filter(|b| !b.trim().is_empty())
+                .unwrap_or_else(|| jobs::DEFAULT_BIN.to_string()),
         }
+    }
+
+    pub fn with_brain(mut self, binary: impl Into<String>) -> Self {
+        self.brain = binary.into();
+        self
+    }
+
+    /// How long a job parked on its go waits before it is killed unspent. Only the tests
+    /// set this; everything else takes the half-hour `jobs` chose.
+    pub fn with_go_wait(mut self, wait: std::time::Duration) -> Self {
+        self.jobs = Arc::new(Jobs::waiting_for(wait));
+        self
     }
 
     pub fn with_vapi_base(mut self, base: impl Into<String>) -> Self {
@@ -119,6 +155,18 @@ pub fn router(app: App) -> Router {
         .route("/api/calls/{id}", get(get_call))
         .route("/api/stats", get(get_stats))
         .route("/api/dashboard", get(get_dashboard).put(put_dashboard))
+        // The four brain functions get a route each rather than one route over a captured
+        // name: which functions the API can start is a decision, and a list of four is the
+        // place to read it.
+        .route("/api/patterns/plan", post(start_plan))
+        .route("/api/patterns/clarify", post(start_clarify))
+        .route("/api/patterns/label", post(start_label))
+        .route("/api/patterns/synthesize", post(start_synthesize))
+        .route("/api/patterns", get(list_patterns))
+        .route("/api/patterns/{id}", put(update_pattern))
+        .route("/api/patterns/{id}/apply", post(apply_pattern))
+        .route("/api/jobs/{id}", get(get_job))
+        .route("/api/jobs/{id}/go", post(go_job))
         .layer(middleware::from_fn_with_state(app.clone(), gate));
 
     Router::new()
@@ -506,6 +554,247 @@ fn known_org(db: &Db, id: i64) -> Result<(), ApiError> {
         None => Err(ApiError::new(
             StatusCode::NOT_FOUND,
             format!("no org {id}"),
+        )),
+    }
+}
+
+// --- brain jobs -----------------------------------------------------------------------
+
+async fn start_plan(app: State<App>, q: RawQuery, body: Json<Value>) -> Result<Response, ApiError> {
+    start(Kind::Plan, app, q, body)
+}
+
+async fn start_clarify(
+    app: State<App>,
+    q: RawQuery,
+    body: Json<Value>,
+) -> Result<Response, ApiError> {
+    start(Kind::Clarify, app, q, body)
+}
+
+async fn start_label(
+    app: State<App>,
+    q: RawQuery,
+    body: Json<Value>,
+) -> Result<Response, ApiError> {
+    start(Kind::Label, app, q, body)
+}
+
+async fn start_synthesize(
+    app: State<App>,
+    q: RawQuery,
+    body: Json<Value>,
+) -> Result<Response, ApiError> {
+    start(Kind::Synthesize, app, q, body)
+}
+
+/// Spawn one brain function and hand back the job id to watch it by.
+///
+/// The body is forwarded to the brain exactly as it arrived. The engine does not know what
+/// a plan or a label request looks like and has no business editing one: the brain names
+/// the key it did not expect, in its own words, and that message reaches the log.
+///
+/// The org rides in the query string rather than the body for the same reason. It is the
+/// engine's own bookkeeping — `jobs` has no org column and the spend does — and putting it
+/// in the body would mean adding a key the brain would then refuse.
+fn start(
+    kind: Kind,
+    State(app): State<App>,
+    RawQuery(query): RawQuery,
+    Json(body): Json<Value>,
+) -> Result<Response, ApiError> {
+    let org = org_param(query.as_deref())?;
+    if !body.is_object() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "a brain request is a JSON object",
+        ));
+    }
+    {
+        let db = app.db();
+        known_org(&db, org)?;
+        if db.live_jobs(jobs::RUNNING, jobs::WAITING)? >= jobs::MAX_LIVE {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "{} jobs are already running or waiting for a go; finish or abandon one first",
+                    jobs::MAX_LIVE
+                ),
+            ));
+        }
+    }
+    let id = jobs::start(
+        &app.jobs,
+        &app.db,
+        &app.secrets,
+        &app.brain,
+        kind,
+        org,
+        &body,
+    )?;
+    // 202: the row exists and the child is starting. Everything after this is read through
+    // `GET /api/jobs/{id}`.
+    Ok((StatusCode::ACCEPTED, Json(json!({ "id": id, "status": jobs::RUNNING }))).into_response())
+}
+
+/// One job: where it has got to, what it quoted, and what it has cost.
+///
+/// The progress and the price are read back out of the log the brain wrote rather than
+/// kept in columns beside it, so there is one account of what the job said and nothing to
+/// fall out of step with it.
+async fn get_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
+    let Some(job) = app.db().job(id)? else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, format!("no job {id}")));
+    };
+    let progress = jobs::progress(&job.log).map(|(done, of)| json!({ "done": done, "of": of }));
+    Ok(Json(json!({
+        "id": job.id,
+        "kind": job.kind,
+        "status": job.status,
+        "progress": progress,
+        "estimate_usd": jobs::estimate(&job.log),
+        "cost_usd": job.cost_usd,
+        "output": job.output.as_deref().and_then(|t| serde_json::from_str::<Value>(t).ok()),
+        "log": job.log,
+        "created_at": job.created_at,
+        "finished_at": job.finished_at,
+    }))
+    .into_response())
+}
+
+/// Approve the price. This is the click, and it is the only thing in the engine that lets
+/// a labelling job read a call.
+async fn go_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
+    if !app.jobs.go(id) {
+        // Not 404: the row may well exist. What it is not is parked on a go — it finished,
+        // it expired, it was already gone, or it is a kind that never waits for one.
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!("job {id} is not waiting for a go"),
+        ));
+    }
+    Ok(Json(json!({ "id": id, "status": jobs::RUNNING })).into_response())
+}
+
+// --- patterns -------------------------------------------------------------------------
+
+/// The org's patterns. The four JSON columns are parsed on the way out; one that will not
+/// parse comes back as `null` rather than taking the row with it.
+async fn list_patterns(
+    State(app): State<App>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let org = org_param(query.as_deref())?;
+    let db = app.db();
+    known_org(&db, org)?;
+    let rows: Vec<Value> = db.list_patterns(org)?.iter().map(pattern_json).collect();
+    Ok(Json(rows).into_response())
+}
+
+fn pattern_json(p: &crate::db::Pattern) -> Value {
+    let parse = |raw: &Option<String>| -> Value {
+        raw.as_deref()
+            .and_then(|t| serde_json::from_str::<Value>(t).ok())
+            .unwrap_or(Value::Null)
+    };
+    json!({
+        "id": p.id,
+        "org_id": p.org_id,
+        "name": p.name,
+        "criterion": p.criterion,
+        "assistant_ids": parse(&p.assistant_ids),
+        "plan": parse(&p.plan),
+        "rule": parse(&p.rule),
+        "chart": parse(&p.chart),
+        "model": p.model,
+        "mode": p.mode,
+        "daily_cap_usd": p.daily_cap_usd,
+        "sample_size": p.sample_size,
+        "agreement": p.agreement,
+        "created_at": p.created_at,
+    })
+}
+
+/// The three modes of D-8. `free` costs nothing; the other two put a model in the loop and
+/// are the reason the cap below is required rather than optional.
+const MODES: [&str; 3] = ["free", "hybrid", "full"];
+
+/// What the analyst owns on a saved pattern: what it matches, whether a model helps, and
+/// how much that model may spend in a day. All three are sent every time, so "leave this
+/// alone" and "clear this" are not the same request.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatternEdit {
+    /// The rule, as the DSL spells it. `null` clears it, which is what a pattern being
+    /// re-learned looks like between the two halves of the wizard.
+    rule: Option<Value>,
+    mode: String,
+    daily_cap_usd: f64,
+}
+
+async fn update_pattern(
+    State(app): State<App>,
+    Path(id): Path<i64>,
+    Json(body): Json<PatternEdit>,
+) -> Result<Response, ApiError> {
+    if !MODES.contains(&body.mode.as_str()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("mode must be one of {}", MODES.join(", ")),
+        ));
+    }
+    if !(body.daily_cap_usd > 0.0 && body.daily_cap_usd.is_finite()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "daily_cap_usd must be a positive number of dollars",
+        ));
+    }
+    // Checked here, in the engine, and refused while the analyst is looking at it. A rule
+    // stored unchecked is a rule that fails at the next unattended `apply`, naming a
+    // pattern nobody is in front of any more.
+    let rule = match &body.rule {
+        Some(Value::Null) | None => None,
+        Some(value) => {
+            let text = serde_json::to_string(value).map_err(anyhow::Error::from)?;
+            rules::validate(&text, &format!("pattern {id}"))
+                .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+            Some(text)
+        }
+    };
+
+    let db = app.db();
+    known_pattern(&db, id)?;
+    db.set_pattern_rule(id, rule.as_deref(), &body.mode, body.daily_cap_usd)?;
+    // The stored row, so the caller never has to assume what landed.
+    Ok(Json(db.pattern(id)?.as_ref().map(pattern_json)).into_response())
+}
+
+/// Re-run one pattern's rule over its org's calls. Costs nothing in any mode: this is the
+/// rule half, and the rule half is arithmetic.
+async fn apply_pattern(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
+    let mut db = app.db();
+    known_pattern(&db, id)?;
+    // A rule this refuses is very nearly always the reason it failed, and `validate` names
+    // the key it choked on. A 500 would tell the analyst it was the server's fault.
+    let applied = rules::apply_one(&mut db, id)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    match applied {
+        Some(applied) => {
+            Ok(Json(json!({ "matched": applied.matched, "of": applied.of })).into_response())
+        }
+        None => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("pattern {id} has no rule to run yet"),
+        )),
+    }
+}
+
+fn known_pattern(db: &Db, id: i64) -> Result<(), ApiError> {
+    match db.pattern(id)? {
+        Some(_) => Ok(()),
+        None => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("no pattern {id}"),
         )),
     }
 }
