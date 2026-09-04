@@ -10,6 +10,7 @@ pub mod extract;
 pub mod jobs;
 pub mod queries;
 pub mod rules;
+pub mod schedule;
 pub mod secrets;
 pub mod server;
 pub mod sync;

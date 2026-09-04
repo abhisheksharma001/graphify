@@ -97,3 +97,40 @@ fn serve_takes_no_open() {
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
     assert!(stdout.contains("--no-open"), "stdout was: {stdout}");
 }
+
+/// `--org all` is what a scheduled line uses, and the reason it exists is that a machine
+/// syncing at six has nobody to name the orgs for it. One org without a key must not stop
+/// the ones after it — and the run must still say it went wrong, or a cron log full of
+/// zeroes reads as a quiet morning.
+#[test]
+fn syncing_all_orgs_keeps_going_past_a_failure_and_still_fails() {
+    let dir = db_dir();
+    Db::open(dir.path().join("graphify.db"))
+        .unwrap()
+        .create_org("globex")
+        .unwrap();
+    let output = graphify(&dir)
+        .args(["sync", "--org", "all"])
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    for org in ["acme", "globex"] {
+        assert!(stdout.contains(&format!("--- {org}")), "stdout was: {stdout}");
+        assert!(stderr.contains(org), "stderr was: {stderr}");
+    }
+    assert!(stderr.contains("2 of 2 orgs failed"), "stderr was: {stderr}");
+}
+
+/// A fresh install has none, and that is not an error to wake anyone for.
+#[test]
+fn syncing_all_orgs_on_an_empty_database_says_so_and_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    Db::open(dir.path().join("graphify.db")).unwrap();
+    let output = graphify(&dir)
+        .args(["sync", "--org", "all"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    assert!(stdout.contains("no orgs yet"), "stdout was: {stdout}");
+}
