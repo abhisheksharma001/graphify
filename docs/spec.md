@@ -1800,7 +1800,7 @@ type checker and by reading: there is still no UI test runner.
 
 ---
 
-### S-34 — The wizard's model picker reaches the chat ☐
+### S-34 — The wizard's model picker reaches the chat ☑ (PR #35, 9f26d55)
 **PR:** one. **Depends on:** S-33, S-26, S-22.
 **Files:** `brain/src/graphify_brain/cost.py`, `brain/src/graphify_brain/plan.py`,
 `brain/src/graphify_brain/label.py`, `brain/tests/test_plan.py`, `ui/src/api.ts`,
@@ -1834,6 +1834,56 @@ live walkthrough picking a model that is not the default.
 **Must not:** fall back to a default when `model` is missing or unknown — the request
 names a model or it is refused, exactly as `label` refuses. Quote one model's rate and
 call another.
+
+**Files (as built):** `brain/src/graphify_brain/cost.py`, `plan.py`, `label.py`,
+`synth.py`, `ask.py`, `cli.py`; `brain/tests/test_plan.py`, `test_cost.py`, `test_ask.py`,
+`test_label.py`; `engine/tests/jobs.rs`; `ui/src/api.ts`, `ui/src/patterns/Wizard.tsx`.
+No engine source, again.
+
+**Learned.**
+
+*A control that is read by four callers out of five is not a control, and S-33 turned it
+from a wrong answer into a wrong price.* Picking Opus and being quoted Sonnet is not a
+smaller version of picking Opus and getting Sonnet — it is a different failure, because a
+person who reads the price has been told something false about the call they are about to
+make. It is worth noticing that the step before this one is what made this one urgent: a
+figure that was merely absent became a figure that was wrong. Adding a number to a screen
+puts the burden on that number being right.
+
+*The cycle decided where the shared list goes, and the answer was better than the
+constraint.* `plan.py` could not import from `label.py`, because `label` already imports
+`envelope` from `plan`. The cheap way out was a fifth copy of the model validator, which
+is what `max_usd` got in S-33 for exactly the same reason. The right way out was to notice
+that `CLIENTS` had no business in `label` at all: the set of models that may be asked for
+is the set whose spend can be counted, and the price table is what does the counting. In
+`cost.py` it is reachable by all four callers with no cycle, and `set(CLIENTS) ==
+set(PRICES)` — an assertion that `test_label.py` and `test_ask.py` each held a copy of
+because the list lived in neither of their modules — becomes one test in `test_cost.py`,
+where both objects now are. A duplicate that will not go away is usually a thing living in
+the wrong module.
+
+*The provider proved it, which no fake can.* The unit tests assert the client name handed
+to `with_options`, and that is worth having, but it is a test of what this code passes
+down. Running it live against a deliberately bad key produced
+`BamlClientHttpError(client_name=Opus, ...)` from Anthropic's own 401 — the far end saying
+which client it was, at no cost. A `gpt` clarify went further and failed asking for
+`OPENAI_API_KEY`, a variable that is not set: a wrong dispatch could not have produced
+that error. Two-and-a-half times exactly (`0.0438` → `0.1094`) is Opus over Sonnet on both
+halves of the rate, so the quote is not merely different, it is right.
+
+*The engine needed nothing for the second step running,* and this is now a property worth
+naming rather than a coincidence: `jobs.rs` forwards the request body whole and books the
+output's `usd`, so any field the brain learns to read is a field the engine already sends.
+The test added to `jobs.rs` asserts exactly that and nothing more.
+
+**Not done:** `plan.baml` still declares `client Sonnet` on both functions, as
+`label.baml` and `ask.baml` declare theirs — always overridden per call, never removed, so
+the declaration is now decoration that a reader could mistake for the answer. The ceiling
+is still loose for S-33's reason. The picker lives on step 1 and the chat is step 2, so
+nothing stops a person going back and changing it mid-conversation and paying a different
+rate for the next message than the last; the price line names the model for that reason,
+but naming is all it does. And the wizard's two figures are still held by the type checker
+and by reading: there is still no UI test runner.
 
 ---
 
