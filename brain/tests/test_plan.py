@@ -36,6 +36,11 @@ class Recorder:
         self.reply = reply
         self.calls = []
 
+    def with_options(self, **_kwargs):
+        """The generated client returns a configured copy of itself; this one is already
+        the copy. Present so the collector both functions attach has somewhere to go."""
+        return self
+
     def PlanPattern(self, **kwargs):  # noqa: N802 — the generated client's name
         self.calls.append(("PlanPattern", kwargs))
         return self.reply
@@ -50,6 +55,22 @@ class Never:
 
     def __getattr__(self, name):
         raise AssertionError(f"a test called {name}; no test may call a model")
+
+
+#: What the fake provider says every faked call cost. A test that is about the money sets
+#: its own; the rest take this one and ignore it.
+FAKE_USD = 0.0031
+
+
+@pytest.fixture(autouse=True)
+def priced(monkeypatch):
+    """No fake can know what a call it never made was billed for.
+
+    `charged` reads a collector the real client filled in, so every test in this file
+    replaces it. Autouse, because a test that forgot would not fail on a wrong price — it
+    would fail on `None.usage`, which reads like a bug in the code under test.
+    """
+    monkeypatch.setattr(planning, "charged", lambda _collector: FAKE_USD)
 
 
 @pytest.fixture
@@ -71,6 +92,23 @@ def run(args, stdin):
     return CliRunner().invoke(app, args, input=stdin)
 
 
+def answer(result):
+    """The result line, parsed.
+
+    Stdout carries `ESTIMATE {usd}` before the answer now, so the answer is the last
+    non-empty line rather than the whole of stdout. `engine/src/jobs.rs` reads it the same
+    way, for the same reason.
+    """
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    return json.loads(lines[-1])
+
+
+def quoted(result):
+    """The USD on the `ESTIMATE` line, as a float."""
+    line = next(l for l in result.stdout.splitlines() if l.startswith("ESTIMATE "))
+    return float(line.removeprefix("ESTIMATE "))
+
+
 # --- the plan comes back as the model wrote it ------------------------------------
 
 
@@ -88,12 +126,12 @@ def test_a_plan_the_model_is_unsure_about_is_printed_unchanged(recorder):
         )
     )
 
-    result = run(["plan"], '{"criterion": "calls where the caller asked for a person"}')
+    result = run(["plan"], '{"criterion": "calls where the caller asked for a person", "max_usd": 1}')
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == fake.reply.model_dump()
-    assert json.loads(result.stdout)["confidence"] == 0.7
-    assert len(json.loads(result.stdout)["questions"]) == 2
+    assert answer(result) == {**fake.reply.model_dump(), "usd": FAKE_USD}
+    assert answer(result)["confidence"] == 0.7
+    assert len(answer(result)["questions"]) == 2
 
 
 def test_the_row_condition_is_called_if_underscore_the_whole_way_out(recorder):
@@ -102,9 +140,9 @@ def test_the_row_condition_is_called_if_underscore_the_whole_way_out(recorder):
     a field somebody reads under the wrong one."""
     recorder(a_plan())
 
-    result = run(["plan"], '{"criterion": "asked for a person"}')
+    result = run(["plan"], '{"criterion": "asked for a person", "max_usd": 1}')
 
-    assert json.loads(result.stdout)["rows"][0]["if_"] == "the caller asks for a person"
+    assert answer(result)["rows"][0]["if_"] == "the caller asks for a person"
 
 
 # --- what the model is told --------------------------------------------------------
@@ -113,7 +151,7 @@ def test_the_row_condition_is_called_if_underscore_the_whole_way_out(recorder):
 def test_the_model_is_shown_the_dsl_it_has_to_plan_against(recorder):
     fake = recorder(a_plan())
 
-    run(["plan"], '{"criterion": "asked for a person"}')
+    run(["plan"], '{"criterion": "asked for a person", "max_usd": 1}')
 
     name, kwargs = fake.calls[0]
     assert name == "PlanPattern"
@@ -133,7 +171,7 @@ def test_an_assistant_prompt_nobody_read_reaches_the_model_as_nothing(recorder):
     prompt stored. Both are the same absence, and an empty string is not a prompt."""
     fake = recorder(a_plan())
 
-    run(["plan"], '{"criterion": "asked for a person", "system_prompt": "   "}')
+    run(["plan"], '{"criterion": "asked for a person", "system_prompt": "   ", "max_usd": 1}')
 
     assert fake.calls[0][1]["system_prompt"] is None
 
@@ -141,7 +179,7 @@ def test_an_assistant_prompt_nobody_read_reaches_the_model_as_nothing(recorder):
 def test_an_assistant_prompt_is_handed_over_whole(recorder):
     fake = recorder(a_plan())
 
-    run(["plan"], json.dumps({"criterion": "booked", "system_prompt": "You book trucks.\nUse bookAppointment."}))
+    run(["plan"], json.dumps({"criterion": "booked", "system_prompt": "You book trucks.\nUse bookAppointment.", "max_usd": 1}))
 
     assert fake.calls[0][1]["system_prompt"] == "You book trucks.\nUse bookAppointment."
 
@@ -150,7 +188,7 @@ def test_an_assistant_prompt_is_handed_over_whole(recorder):
 
 
 def test_an_empty_criterion_is_refused_before_the_model(never):
-    result = run(["plan"], '{"criterion": "   "}')
+    result = run(["plan"], '{"criterion": "   ", "max_usd": 1}')
 
     assert result.exit_code == 1
     assert "criterion must be a non-empty string" in result.output
@@ -166,7 +204,7 @@ def test_a_missing_criterion_is_refused(never):
 def test_a_misspelled_field_is_named_rather_than_dropped(never):
     """`criteria` for `criterion` would otherwise arrive as no criterion at all, and the
     model would answer about some other question with a confidence attached."""
-    result = run(["plan"], '{"criterion": "asked for a person", "systemprompt": "x"}')
+    result = run(["plan"], '{"criterion": "asked for a person", "systemprompt": "x", "max_usd": 1}')
 
     assert result.exit_code == 1
     assert "has no field systemprompt" in result.output
@@ -182,7 +220,7 @@ def test_stdin_that_is_not_json_exits_one(never):
 def test_a_db_that_is_not_there_fails_before_the_model(never, tmp_path):
     """`--db` is checked, not read. A path that is wrong is wrong at the first step of
     the wizard rather than three functions later, after the labelling has been paid for."""
-    result = run(["plan", "--db", str(tmp_path / "nope.db")], '{"criterion": "asked"}')
+    result = run(["plan", "--db", str(tmp_path / "nope.db")], '{"criterion": "asked", "max_usd": 1}')
 
     assert result.exit_code == 1
     assert "no graphify database at" in result.output
@@ -201,6 +239,7 @@ def test_clarify_hands_the_model_the_criterion_the_plan_and_the_answers(recorder
             "criterion": "calls where the caller asked for a person",
             "plan": a_plan(confidence=0.7, questions=["Does the manager count?"]).model_dump(),
             "answers": [{"question": "Does the manager count?", "answer": "Yes."}],
+            "max_usd": 1,
         }
     )
 
@@ -213,11 +252,11 @@ def test_clarify_hands_the_model_the_criterion_the_plan_and_the_answers(recorder
     assert kwargs["plan"].questions == ["Does the manager count?"]
     assert kwargs["answers"][0].answer == "Yes."
     assert kwargs["dsl"] == planning.DSL
-    assert json.loads(result.stdout)["confidence"] == 0.96
+    assert answer(result)["confidence"] == 0.96
 
 
 def test_clarify_with_no_answers_is_refused(never):
-    stdin = json.dumps({"criterion": "asked for a person", "plan": a_plan().model_dump(), "answers": []})
+    stdin = json.dumps({"criterion": "asked for a person", "plan": a_plan().model_dump(), "answers": [], "max_usd": 1})
 
     result = run(["clarify"], stdin)
 
@@ -230,7 +269,7 @@ def test_clarify_refuses_a_plan_that_is_not_one(never):
     class is one this brain did not write, and guessing the missing field is worse."""
     broken = a_plan().model_dump()
     del broken["expressible"]
-    stdin = json.dumps({"criterion": "asked", "plan": broken, "answers": [{"question": "q", "answer": "a"}]})
+    stdin = json.dumps({"criterion": "asked", "plan": broken, "answers": [{"question": "q", "answer": "a"}], "max_usd": 1})
 
     result = run(["clarify"], stdin)
 
@@ -309,3 +348,159 @@ def test_the_clarify_prompt_carries_the_plan_the_answers_and_the_dsl():
     assert "the caller asks for a person" in user
     assert "0.7" in user
     assert "A: Yes." in user and "A: No." in user
+
+
+# --- what it costs ----------------------------------------------------------------
+#
+# S-33. Before this every message in the wizard's chat called a model, reported nothing,
+# and was counted by no cap — the one place the register left the spec's "no model call
+# without a shown cost and an explicit go" broken. The go is still the Send button. These
+# are about the other half.
+
+
+def test_a_plan_reports_what_it_actually_cost(recorder):
+    """The acceptance. `jobs.rs` books whatever is in `usd`, so a plan that does not carry
+    one is a plan the day's spend never hears about."""
+    recorder(a_plan())
+
+    result = run(["plan"], '{"criterion": "asked for a person", "max_usd": 1}')
+
+    assert result.exit_code == 0
+    assert answer(result)["usd"] == FAKE_USD
+
+
+def test_a_clarify_reports_what_it_actually_cost(recorder):
+    recorder(a_plan(confidence=0.96, questions=[]))
+    stdin = json.dumps(
+        {
+            "criterion": "asked for a person",
+            "plan": a_plan(confidence=0.7, questions=["Does the manager count?"]).model_dump(),
+            "answers": [{"question": "Does the manager count?", "answer": "Yes."}],
+            "max_usd": 1,
+        }
+    )
+
+    result = run(["clarify"], stdin)
+
+    assert result.exit_code == 0
+    assert answer(result)["usd"] == FAKE_USD
+
+
+def test_the_price_is_on_stdout_before_the_answer(recorder):
+    """`ESTIMATE` first, the answer last. That order is the engine's contract, not a
+    presentation choice: `jobs.rs` logs every ESTIMATE line and keeps the last other line
+    as the result."""
+    recorder(a_plan())
+
+    result = run(["plan"], '{"criterion": "asked for a person", "max_usd": 1}')
+
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines[0].startswith("ESTIMATE ")
+    # To four places, which is what `ESTIMATE` prints — the line is for a person and for
+    # the engine's log, and neither wants nine decimals of a cent.
+    assert quoted(result) == pytest.approx(planning.plan_usd("asked for a person", None), abs=1e-4)
+
+
+def test_a_message_over_the_cap_is_refused_before_the_model(never):
+    """The half of the rule a function that never parks has to keep on its own. `never`
+    raises on any attribute access, so "no model was called" is asserted by the fake."""
+    result = run(["plan"], '{"criterion": "asked for a person", "max_usd": 0.0001}')
+
+    assert result.exit_code == 1
+    assert "over the $0.0001 cap" in result.output
+
+
+def test_the_price_is_still_printed_for_a_message_that_is_refused(never):
+    """A message turned down for being too expensive is exactly the one whose price is
+    worth having in the log."""
+    result = run(["plan"], '{"criterion": "asked for a person", "max_usd": 0.0001}')
+
+    assert quoted(result) > 0.0001
+
+
+def test_a_cap_that_is_not_a_cap_is_refused(never):
+    for bad in ("0", "-1", '"1"', "true", "null"):
+        result = run(["plan"], '{"criterion": "asked", "max_usd": %s}' % bad)
+
+        assert result.exit_code == 1, bad
+        assert "max_usd must be a positive number" in result.output, bad
+
+
+def test_a_message_with_no_cap_is_refused_by_name(never):
+    for args, stdin in (
+        (["plan"], '{"criterion": "asked"}'),
+        (
+            ["clarify"],
+            json.dumps(
+                {
+                    "criterion": "a",
+                    "plan": a_plan().model_dump(),
+                    "answers": [{"question": "q", "answer": "a"}],
+                }
+            ),
+        ),
+    ):
+        result = run(args, stdin)
+
+        assert result.exit_code == 1
+        assert "is missing max_usd" in result.output
+
+
+def test_the_ceiling_covers_the_prompt_that_is_actually_rendered():
+    """`FIXED_PROMPT_CHARS` is a measurement, and a prompt that grows past it turns the
+    ceiling into a guess. Rendered here rather than trusted, the same way `test_label.py`
+    holds its own."""
+    cases = [
+        (
+            request(
+                "PlanPattern",
+                criterion="asked for a person",
+                system_prompt="You book trucks.",
+                dsl=planning.DSL,
+            ),
+            len(planning.DSL) + len("asked for a person") + len("You book trucks."),
+        ),
+        (
+            request(
+                "PlanPattern", criterion="asked for a person", system_prompt=None, dsl=planning.DSL
+            ),
+            len(planning.DSL) + len("asked for a person"),
+        ),
+    ]
+    for (system, user), variable in cases:
+        fixed = len(system) + len(user) - variable
+        assert fixed <= planning.FIXED_PROMPT_CHARS, fixed
+
+
+def test_the_clarify_ceiling_covers_its_rendered_prompt():
+    prior = a_plan(confidence=0.7, questions=["Does the manager count?"])
+    given = [types.Answer(question="Does the manager count?", answer="Yes.")]
+    system, user = request(
+        "ClarifyPattern", criterion="asked", plan=prior, answers=given, dsl=planning.DSL
+    )
+
+    variable = (
+        len(planning.DSL)
+        + len("asked")
+        + len(prior.model_dump_json())
+        + sum(len(a.question) + len(a.answer) for a in given)
+    )
+    assert len(system) + len(user) - variable <= planning.FIXED_PROMPT_CHARS
+
+
+def test_the_price_is_quoted_for_the_client_plan_baml_actually_declares():
+    """A price for a model that is not the one being called is worse than no price. Both
+    functions declare their client in `plan.baml`; `MODEL` has to be that one."""
+    from pathlib import Path
+
+    from graphify_brain import cost
+
+    baml = (Path(__file__).resolve().parents[1] / "baml_src" / "plan.baml").read_text()
+    declared = {
+        line.split()[1].lower()
+        for line in baml.splitlines()
+        if line.strip().startswith("client ")
+    }
+
+    assert declared == {planning.MODEL}
+    assert planning.MODEL in cost.PRICES

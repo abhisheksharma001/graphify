@@ -68,6 +68,15 @@ printf '%s\n' "$request" > "$here/request.json"
 echo '{"confidence":0.91,"expressible":true}'
 "#;
 
+/// The same, but priced: since S-33 `plan` and `clarify` quote themselves before the call
+/// and report what it cost after it, without ever parking on a go.
+const PRICED_ANSWER: &str = r#"
+request=$(cat)
+printf '%s\n' "$request" > "$here/request.json"
+echo "ESTIMATE 0.0438"
+echo '{"confidence":0.91,"expressible":true,"usd":0.0031}'
+"#;
+
 /// Write a fake brain into `dir` and return its path.
 fn fake(dir: &Path, body: &str) -> String {
     let path = dir.join("brain.sh");
@@ -803,4 +812,50 @@ async fn a_pattern_list_without_an_org_says_which_parameter_is_missing() {
     let (status, body) = get(&server.url("/api/patterns")).await;
     assert_eq!(status, 400, "{body}");
     assert!(body["error"].as_str().unwrap().contains("org"), "{body}");
+}
+
+/// S-33. Before it, every message in the wizard's chat cost money and booked none: the one
+/// place the register left the spec's "no model call without a shown cost" broken.
+///
+/// Nothing in the engine changed for it — which is the thing worth holding down. `plan`
+/// reports what it spent the way `label` already did, so the row and the day's spend pick
+/// it up through the path that was already there.
+#[tokio::test]
+async fn a_plan_books_what_it_cost_without_ever_parking() {
+    let server = served(PRICED_ANSWER).await;
+
+    let (status, body) = post(
+        &server.url("/api/patterns/plan?org=1"),
+        json!({"criterion": "asked for a person", "max_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    let id = body["id"].as_i64().unwrap();
+    let done = until(&server, id, jobs::DONE).await;
+
+    // The price it quoted, off the log, and the price it paid, off the row.
+    assert_eq!(done["estimate_usd"], 0.0438);
+    assert_eq!(done["cost_usd"], 0.0031);
+
+    let spent = server.db().spend_on(&graphify::now()[..10], 1).unwrap();
+    assert!((spent - 0.0031).abs() < 1e-9, "the day's spend was {spent}");
+}
+
+/// The go stays the Send button. A plan that parked would hold one of the four live slots
+/// for half an hour over four tenths of a cent.
+#[tokio::test]
+async fn a_plan_is_never_parked_on_a_go() {
+    let server = served(PRICED_ANSWER).await;
+
+    let (_, body) = post(
+        &server.url("/api/patterns/plan?org=1"),
+        json!({"criterion": "asked for a person", "max_usd": 1.0}),
+    )
+    .await;
+    let done = until(&server, body["id"].as_i64().unwrap(), jobs::DONE).await;
+
+    assert_eq!(done["status"], jobs::DONE);
+    // 409 and not 404: the row exists. What it is not, and never was, is parked on a go.
+    let (status, why) = post(&server.url(&format!("/api/jobs/{}/go", body["id"])), json!({})).await;
+    assert_eq!(status, 409, "a plan answered a go: {why}");
 }
