@@ -1981,7 +1981,61 @@ the plan ceiling is still roughly ten times a real message, and a person can sti
 back to step 1 mid-conversation and pay a different rate for the next message than the
 last.
 
+### S-36 — No price, no go ☐
+**PR:** one. **Depends on:** S-35, S-33, S-22, S-13.
+**Files:** `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`,
+`docs/backlog/bugs.md`. No engine and no brain source.
+**Today:** the two-click rule is the second Must-never — never call a model without a
+shown cost and an explicit go — and it is the only one of the five that needs two
+programs to agree. The engine holds up its end and is tested for it: a label job that is
+never told to go stays waiting and spends nothing, a go for a job that is not waiting is
+refused, a job nobody approves is killed unspent rather than held for ever, and a plan is
+never parked on a go at all. Four tests in `engine/tests/jobs.rs`, and they are about the
+half of the rule that lives in Rust.
+
+The other half lives in the browser and nothing tests it. `priceIt` starts the labelling
+job and lets it park, having read nothing; `spend` sends `POST /api/jobs/{id}/go`, which
+is the only call in the system that lets a model read a call. Between them sits a `went`
+ref whose comment says it exists so that a double-click on a slow network is not two
+goes, and a `settings` tag whose job is to take the price off the button the moment the
+plan, the model or the selection changes underneath it. Both are load-bearing and both
+are held by reading.
+
+And there is a bug in the middle of it, which is why this step is a fix and not only
+tests. The button draws its price as `money(live.job.estimate_usd ?? 0)`. `money` renders
+NULL as an em dash and S-35 spent three assertions establishing that it never renders a
+missing number as zero; the `?? 0` at the call site means the formatter is never given
+the chance. A parked job with no price on it draws as `up to $0.00`, and the click behind
+that button is the go. It is reachable: `append` in `engine/src/jobs.rs` discards the
+error from `append_job_log`, then parks regardless, so a failed log write leaves a job
+waiting with no `ESTIMATE` line for `estimate()` to find. The type in `api.ts` already
+says `number | null`, and the comment on the field directly above it says a job that has
+said nothing "does not have a progress of zero". The caller overrode both.
+**Change:** the price on the button is `money(live.job.estimate_usd)` with no coalesce,
+so an unpriced job reads as a dash. The go is disabled while the price is unknown, with a
+line saying that nothing will be read until one comes back — a shown cost is a
+precondition of the go, not decoration beside it, and the button that cannot say what
+something costs must not be the button that buys it. Then the tests for the browser half
+of the rule: that the first click sends no go, that the price is on the button before the
+click that costs and not before the one that does not, that a double-click sends exactly
+one go, that a setting edited after a quote takes the price off the button and turns the
+next click back into a price rather than a go, and that an unpriced parked job offers no
+go at all.
+**Acceptance:** WHEN a labelling job is parked with a null `estimate_usd` THEN the wizard
+SHALL show a dash rather than `$0.00` and SHALL NOT offer the go. WHEN the spend button
+is double-clicked THEN exactly one `POST /api/jobs/{id}/go` SHALL be sent. WHEN a
+setting changes after a quote THEN the next click SHALL start a new price and SHALL NOT
+send a go for the job priced against the old settings.
+**Verify:** every new assertion broken on purpose once and seen to fail, as in S-35, and
+the fix demonstrated by a test that is red against the current `?? 0` and green after it
+goes.
+**Must not:** change the engine. The invariant that a waiting job has a price is the
+engine's to keep and this step does not reach into it; what is being fixed here is a
+browser that assumes it. Do not add a cancel for a parked job, do not touch the `save`
+button, and do not let this grow into the rest of the wizard's screens — this step is the
+two-click rule and nothing else.
+
 ---
 
-**The register is complete through S-35.** Anything after that is a new step appended
+**The register is complete through S-36.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
