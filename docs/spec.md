@@ -1704,7 +1704,7 @@ prunes `jobs` rows or rotates anything inside the volume.
 
 ---
 
-### S-33 — Meter `plan` and `clarify` `[Rust]` ☐
+### S-33 — Meter `plan` and `clarify` ☑ (PR #34, af61bb7)
 **PR:** one. **Depends on:** S-22, S-25, S-26.
 **Files:** `brain/src/graphify_brain/plan.py`, `ui/src/patterns/Wizard.tsx`, tests either
 side. The engine is expected to need nothing: `jobs.rs` already reads `ESTIMATE` off
@@ -1736,7 +1736,69 @@ walkthrough in the browser showing a non-zero cost on a plan and on a clarify.
 ceiling: the ceiling is what the cap is checked against, the collector's number is what
 is booked. Let a plan carry `usd` back into `clarify` as part of the plan object.
 
+**Files (as built):** `brain/src/graphify_brain/plan.py`, `brain/src/graphify_brain/cli.py`,
+`brain/tests/test_plan.py`, `ui/src/api.ts`, `ui/src/patterns/Wizard.tsx`,
+`engine/tests/jobs.rs`. No engine source at all — tagged `[Rust]` on the way in, and it
+turned out not to be one.
+
+**Learned.**
+
+*"A shown cost and an explicit go" is two requirements, and they can be met by two
+different things.* The go was already there — the Send button — and S-22 was right about
+that. What was missing was only the cost. Reading the rule as one requirement is what kept
+it unfixed for eleven steps: every attempt to picture the fix ended at a parked child and a
+second click, which for four tenths of a cent is worse than nothing, because a person made
+to approve a price they cannot care about stops reading prices.
+
+*The ceiling and the charge answer different questions and must not be the same number.*
+`label` had already worked this out; it is worth stating plainly. The ceiling is a bound
+computed before the call, and it is what a cap can be checked against precisely because it
+exists before there is anything to check. The collector's figure is what the provider
+actually billed, and it is what gets booked, because a day's spend built out of ceilings is
+a day's spend that is wrong. Here the two are far apart — `MAX_OUTPUT_TOKENS` is BAML's
+4,096 and a plan is nearer 300 — so booking the ceiling would have overstated by ten times.
+
+*A fake that answers cannot also invoice.* `test_plan.py` replaced `client` and that was
+sufficient while nothing cost anything. The moment a price came off the call one seam was
+not enough: a canned answer carries no usage, and `charged()` reading `collector.last.usage`
+on a fake fails with `None.usage`, which reads exactly like a bug in the code under test.
+Two seams, and the second one autouse — because the failure mode of forgetting it is a
+confusing error rather than a wrong number.
+
+*The prediction that the engine needed nothing was worth writing down before checking it.*
+It held. `jobs.rs` reads `ESTIMATE` off stdout and books the output's `usd`, and it does
+that for every kind, so a function that starts reporting money is picked up by machinery
+that was already there. The two engine tests added are not changes; they are that claim
+held down.
+
+*Where a number is displayed decides where it is computed.* The wizard shows what the last
+message cost and what the conversation has cost, and both come off `cost_usd` — the figure
+the engine booked. S-29 paid for a second copy of the pricing arithmetic in Rust because a
+quote had to exist before a process did; there is no such requirement here, and a third
+copy in TypeScript would have been a number free to disagree with the booked one, with
+nobody able to say which was right.
+
+*The one thing no assertion can hold is `FIXED_PROMPT_CHARS`,* so it is held by rendering:
+`test_plan.py` builds both prompts through `b.request` without sending them and fails if
+either has grown past the constant. A measurement that nothing re-measures stops being one.
+
+*Verified live, through the real engine and the real brain over HTTP, with a deliberately
+invalid `ANTHROPIC_API_KEY` so nothing could be spent:* `max_usd: 0.0001` failed with
+`ESTIMATE 0.0438` and then the refusal, and the provider was never reached; `max_usd: 1`
+gave the same quote and then did reach the provider and fail on the key, so nothing but the
+cap stands between the estimate and the call — and the key stayed absent from the log; no
+`max_usd` at all was refused by name.
+
+**Not done:** `plan.baml` declares `client Sonnet` for both functions, so neither honours
+the model the wizard picked in step one. `MODEL` is pinned to that declaration and a test
+fails if it moves, but making them follow the picker is its own change. The ceiling is
+loose — roughly ten times a typical message — because `MAX_OUTPUT_TOKENS` is BAML's default
+rather than something `plan.baml` sets. `plan` and `clarify` book against the org's day like
+everything else, so an afternoon in the wizard and the next morning's sync draw on one
+number and neither knows about the other. And the two figures in the wizard are held by the
+type checker and by reading: there is still no UI test runner.
+
 ---
 
-**The register is complete through S-32.** Anything after that is a new step appended
+**The register is complete through S-33.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
