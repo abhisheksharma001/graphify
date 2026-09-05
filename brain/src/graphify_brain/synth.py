@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Sequence, TextIO
 
 from graphify_brain import cost
-from graphify_brain.label import CHARS_PER_TOKEN, CLIENTS, MAX_OUTPUT_TOKENS
+from graphify_brain.label import CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS
 from graphify_brain.plan import DSL, envelope, required_text
 
 #: Below this, one `RefineRule` call is made. The register's number. It is a fraction of
@@ -123,7 +123,7 @@ def prepare(payload: Any, conn: Any) -> Job:
     criterion = required_text(payload, "criterion")
     plan = types.Plan.model_validate(payload["plan"])
     name = required_text(payload, "name")
-    model = _model(payload["model"])
+    model = cost.model_name(payload["model"], "synthesize")
     max_usd = _max_usd(payload["max_usd"])
     org_id = _whole(payload["org_id"], "org_id")
     assistants = _assistant_ids(payload.get("assistant_ids", []))
@@ -180,7 +180,7 @@ def synthesize_rule(job: Job) -> tuple[Any, float]:
 
     seen = [types.LabelForRule(match=x["match"], evidence=x["evidence"]) for x in job.labels]
     collector = Collector()
-    got = client().with_options(client=CLIENTS[job.model], collector=collector).SynthesizeRule(
+    got = client().with_options(client=cost.CLIENTS[job.model], collector=collector).SynthesizeRule(
         criterion=job.criterion, plan=job.plan, labels=seen, dsl=DSL
     )
     return got, _spent(collector, job.model)
@@ -202,7 +202,7 @@ def refine_rule(job: Job, rule: Any, disagreements: Sequence[dict[str, Any]]) ->
         for d in disagreements[:MAX_DISAGREEMENTS]
     ]
     collector = Collector()
-    got = client().with_options(client=CLIENTS[job.model], collector=collector).RefineRule(
+    got = client().with_options(client=cost.CLIENTS[job.model], collector=collector).RefineRule(
         criterion=job.criterion, plan=job.plan, rule=rule, disagreements=told, dsl=DSL
     )
     return got, _spent(collector, job.model)
@@ -428,13 +428,6 @@ def _subjects(conn: Any, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
 
 
 # --- checking the request ---------------------------------------------------------------
-
-
-def _model(value: Any) -> str:
-    known = ", ".join(sorted(CLIENTS))
-    if not isinstance(value, str) or value.strip().lower() not in CLIENTS:
-        raise ValueError(f"synthesize: model must be one of {known}, not {value!r}")
-    return value.strip().lower()
 
 
 def _max_usd(value: Any) -> float:

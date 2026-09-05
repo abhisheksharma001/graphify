@@ -241,7 +241,7 @@ export default function Wizard({
       const prompt = await systemPrompt()
       // Left out rather than sent empty: the brain skips the prompt block entirely for an
       // absent one, and a heading with nothing under it is not the same absence.
-      const asked = { criterion: line, max_usd: Number(cap) }
+      const asked = { criterion: line, model, max_usd: Number(cap) }
       const body = prompt ? { ...asked, system_prompt: prompt } : asked
       const { id } = await api.startPlan(org, body)
       const done = await watch(id, ['done'])
@@ -263,6 +263,7 @@ export default function Wizard({
         criterion: criterion.trim(),
         plan,
         answers: given,
+        model,
         max_usd: Number(cap),
       })
       const done = await watch(id, ['done'])
@@ -490,12 +491,16 @@ export default function Wizard({
             {/* The price, before the click that costs and after it. Drafting and revising
                 read no transcripts, so they are a few cents rather than a few dollars —
                 but a few cents a message with nothing said about it is how a wizard left
-                open all afternoon becomes a line on a bill nobody can account for. */}
+                open all afternoon becomes a line on a bill nobody can account for. The
+                model is named because the picker that chose it is back on step one and
+                the price here is its rate: Opus messages cost two and a half times what
+                the same message costs on Sonnet. */}
             <p className="hint">
               {chat === null
-                ? `Each message costs a few cents, and is refused above ${money(Number(cap))}.`
+                ? `Each message goes to ${model} and costs a few cents, refused above` +
+                  ` ${money(Number(cap))}.`
                 : `Last message ${money(chat.last)} · this conversation ${money(chat.total)},` +
-                  ` each refused above ${money(Number(cap))}.`}
+                  ` each on ${model} and refused above ${money(Number(cap))}.`}
             </p>
 
             {plan !== null && plan.questions.length > 0 && (

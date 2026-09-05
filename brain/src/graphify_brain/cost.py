@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 #: The day the prices below were read from the vendors' own pricing pages:
 #: https://platform.claude.com/docs/en/about-claude/pricing and
@@ -72,6 +73,30 @@ _BY_NAME: dict[str, Price] = {
     **PRICES,
     **{p.model: p for p in PRICES.values()},
 }
+
+
+#: The model nickname a request names, and the BAML client in `baml_src/clients.baml`
+#: that nickname selects. Keyed by `PRICES`'s keys, and living beside them for exactly
+#: that reason: a model that may be asked for is a model whose spend can be counted, and
+#: an unpriced model is refused rather than run against a total that never grows.
+CLIENTS = {"opus": "Opus", "sonnet": "Sonnet", "gpt": "GPT"}
+
+
+def model_name(value: Any, name: str) -> str:
+    """The client a request asked for, lowercased — or a refusal that names the command.
+
+    `name` is the command doing the asking, so that `ask`'s refusal does not say `label`.
+
+    It lives here rather than in `label.py`, where it was written, because `plan.py` needs
+    it too and cannot import from `label.py`: `label` imports `envelope` from `plan`, so
+    that direction closes a cycle. This module imports nothing from the package and
+    already holds the list being checked against, which makes it the one place all four
+    callers can reach.
+    """
+    known = ", ".join(sorted(CLIENTS))
+    if not isinstance(value, str) or value.strip().lower() not in CLIENTS:
+        raise ValueError(f"{name}: model must be one of {known}, not {value!r}")
+    return value.strip().lower()
 
 
 def price(model: str) -> Price:

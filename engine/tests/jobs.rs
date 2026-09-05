@@ -841,6 +841,28 @@ async fn a_plan_books_what_it_cost_without_ever_parking() {
     assert!((spent - 0.0031).abs() < 1e-9, "the day's spend was {spent}");
 }
 
+/// S-34. The wizard picks a model in step one and the brain prices the message at that
+/// model's rate, so the picked model has to survive the trip. The engine knows nothing
+/// about the field and that is the point of the test: the body is forwarded whole, so a
+/// field the brain adds needs no change here.
+#[tokio::test]
+async fn a_plan_reaches_the_brain_with_the_model_the_wizard_picked() {
+    let server = served(PRICED_ANSWER).await;
+
+    let (status, body) = post(
+        &server.url("/api/patterns/plan?org=1"),
+        json!({"criterion": "asked for a person", "model": "opus", "max_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    until(&server, body["id"].as_i64().unwrap(), jobs::DONE).await;
+
+    let sent = request(&server.path());
+    assert_eq!(sent["model"], "opus");
+    assert_eq!(sent["criterion"], "asked for a person");
+    assert_eq!(sent["max_usd"], 1.0);
+}
+
 /// The go stays the Send button. A plan that parked would hold one of the four live slots
 /// for half an hour over four tenths of a cent.
 #[tokio::test]
