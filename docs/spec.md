@@ -1885,7 +1885,7 @@ rate for the next message than the last; the price line names the model for that
 but naming is all it does. And the wizard's two figures are still held by the type checker
 and by reading: there is still no UI test runner.
 
-### S-35 — A test runner for the UI, and the money screen goes first ☐
+### S-35 — A test runner for the UI, and the money screen goes first ☑ (PR #36, 1e8c4e8)
 **PR:** one. **Depends on:** S-34, S-33, S-22, S-13.
 **Files:** `ui/package.json`, `ui/vite.config.ts`, `ui/tsconfig.app.json`, new
 `ui/src/*.test.ts(x)`, `.github/workflows/ci.yml`. No engine and no brain source.
@@ -1925,6 +1925,61 @@ snapshot asserts that a screen has not changed, which is a different claim from 
 is right, and it is the assertion that gets re-recorded rather than read. Stub `fetch`
 and nothing above it: a test that replaced `api.ts` would pass over a `Wizard.tsx` that
 sends the wrong body, and sending the wrong body is exactly what S-34 shipped.
+
+**Files (as built):** `ui/package.json`, `ui/pnpm-lock.yaml`, `ui/vite.config.ts`,
+`ui/src/api.ts`; new `ui/src/format.test.ts`, `ui/src/jobs.test.ts`,
+`ui/src/patterns/Wizard.test.tsx`; `.github/workflows/ci.yml`. No engine and no brain
+source, and `ui/tsconfig.app.json` needed no change — it already includes `src`, so the
+tests are type-checked with everything else for free.
+
+**Learned.**
+
+*An assertion that has never failed is a sentence, not a test.* Thirty-three tests went
+green the first time they were run, which proves nothing at all about whether any of them
+is about anything. So each was broken on purpose once: `money(null)` made to answer
+`$0.00`, `model` dropped from the plan body, the cap sent as the string it was typed in,
+the last line of a traceback made to win, an unreported cost counted as nothing, the
+price line's model name removed, and the plan's `usd` carried back into `clarify`. Seven
+breaks, seven reds — two, three, four, one, one, two and one — and the counts matter as
+much as the colours: a break that reddens more tests than it should is a suite where
+several tests are asserting the same thing under different names. Then repaired and
+green. That loop took about as long as writing the tests and is the only part of this
+step that establishes anything.
+
+*Stubbing `fetch` rather than `api.ts` is the whole difference between a test and a
+tautology.* The failure S-34 fixed was that `Wizard.tsx` never put `model` on the request
+body. A test that replaced `api.ts` and asserted `startPlan` was called would have been
+green on the day that bug shipped, because `startPlan` *was* called — with the wrong
+body. The seam has to be below the thing that could be wrong. That is a general rule and
+it is easy to get backwards, because the higher seam is always the more comfortable one
+to write against.
+
+*The three things worth testing first were not the three biggest files.* Thirty-three
+source files, and the ones that earned tests are the two smallest and the one that
+spends. `format.ts` is sixty lines and is where a Must-never is actually decided for
+every number on the dashboard; `jobs.ts` picks a headline out of a Python traceback with
+a regex its own comment already called "a guess, and a load-bearing one" — a comment
+that is a request for a test, written by someone who could not write one. A rule enforced
+only by reading is a rule that is already half broken, and rules are cheaper to test than
+rendering because they have no screen in them.
+
+*`pnpm test` goes after `pnpm build`, not before.* The tests live under `src`, so
+`tsc -b` type-checks them along with the source. A test file that stopped compiling
+should fail as a compile error rather than as a run that quietly covers one file fewer,
+and that ordering is what makes the difference visible.
+
+**Not done:** three files of thirty-three. The dashboard, the charts, the call table, the
+ask box, the settings screen and every PDF path are still held by the type checker and by
+reading, and the runner existing is not the same as them being tested — the next screen
+to grow a bug will be one of those. Nothing asserts the wizard's *second* click, the one
+that actually spends: `priceIt` parks a job and `spend` sends the go, and both were left
+alone here because a test of them is a test of the two-click rule and deserves its own
+step rather than a corner of this one. There is no coverage figure and deliberately no
+threshold: a number that must go up is a number that gets gone up. And everything S-34
+left open is still open — `plan.baml` still declares a client that is always overridden,
+the plan ceiling is still roughly ten times a real message, and a person can still walk
+back to step 1 mid-conversation and pay a different rate for the next message than the
+last.
 
 ---
 
