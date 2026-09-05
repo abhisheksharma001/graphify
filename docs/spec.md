@@ -2088,6 +2088,55 @@ right figure but a different kind of promise from the one on the go. And everyth
 left open is still open — twenty-eight of thirty-three UI files untested, no coverage
 figure, and the plan ceiling still roughly ten times a real message.
 
+### S-37 — The engine does not park on a price it cannot read ☐ [Rust]
+**PR:** one. **Depends on:** S-36, S-33, S-22, S-13.
+**Files:** `engine/src/jobs.rs`, `engine/tests/jobs.rs`, `docs/backlog/bugs.md`. No brain
+and no UI.
+**Today:** S-36 taught the browser to draw a parked job with no price honestly — a dash,
+and no go behind it. This step stops the engine making one. The supervisor's rule for
+parking is `line.starts_with("ESTIMATE ")` and nothing more: it appends the line and parks
+on the strength of the prefix. The number is read much later and somewhere else, by
+`estimate()`, when the browser asks for the job. Between the two sits a whole state the
+engine believes cannot exist — a job waiting for a go with no price for anyone to
+approve — and it is reachable four ways, only one of which needs anything to fail.
+
+`append` discards the error from `append_job_log` and `park` runs regardless, which is the
+one already in the bug log and the one S-36 named in its Not-done. The other three need
+no failure at all, only a line: `ESTIMATE abc` does not parse, so `estimate()` finds
+nothing; `ESTIMATE nan` and `ESTIMATE inf` do parse — Rust's `f64` accepts both — and
+serde_json writes a non-finite float as `null`, so the browser is handed the same missing
+price by a different road; and `ESTIMATE -5` parses cleanly and puts a negative number on
+the go button, which is worse than a dash, because a dash says the price is unknown and
+`-$5.0000` says something false. All four end at the same place: a waiting job the browser
+cannot price. The brain prints `{usd:.4f}` and would have to be broken to send any of
+them, which is the point — the engine's job is not to assume the brain is well, and the
+one line in this system that stands between a model and a call is not the place to start.
+**Change:** one function, `price(rest) -> Option<f64>`, which parses the text after
+`ESTIMATE ` and returns it only when it is finite and not negative. `estimate()` reads
+through it, so a log already carrying a bad line reads as no price rather than a wrong
+one. The park site reads through it too, before it writes anything: a line whose price
+`price` refuses is not appended and not parked on — it fails the job, quoting what the
+brain actually said, and `supervise` kills the child on the way out, so nothing is read.
+Only when there is a price does the log line go in, and that write is checked rather than
+discarded — if the quote cannot be recorded, the job fails instead of parking, because a
+price nobody can read back is not a shown cost. `append` keeps its swallowed error where
+`drain` uses it: a dropped line of stderr is a dropped line of stderr.
+**Acceptance:** WHEN the brain prints an `ESTIMATE` line carrying anything but a finite,
+non-negative number THEN the job SHALL end `failed` with the offending text in its reason,
+SHALL NOT reach `waiting`, and SHALL book no spend. WHEN the quote cannot be written to
+the job's log THEN the job SHALL fail rather than park. WHEN the price is good THEN the
+job SHALL park exactly as it does today.
+**Verify:** a fake brain per bad line — `abc`, `nan`, `inf`, `-5` — each asserted to reach
+`failed` and never `waiting`, and asserted to have spent nothing; the existing park and go
+tests still green, which is what says the good path did not move; every new assertion
+broken on purpose once and seen to fail.
+**Must not:** move the price into a column of its own. The log is where the brain's own
+words live and `estimate()` reading them back is the design, not the bug; what is being
+fixed is that the engine never looked at them before acting on them. Do not touch the UI —
+S-36 already draws this state correctly and will keep working when it stops arriving. Do
+not change what the brain prints, do not add a validation to the Python side, and do not
+touch `drain` or the stderr path.
+
 ---
 
 **The register is complete through S-36.** Anything after that is a new step appended

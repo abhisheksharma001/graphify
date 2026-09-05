@@ -12,3 +12,15 @@ Reproduce: answer `GET /api/jobs/{id}` with `status: "waiting"` and
 because `append` (`engine/src/jobs.rs:545`) discards the write error and `park` runs
 regardless — the job is parked and waiting with no `ESTIMATE` line for `estimate()` to
 find. · Fixed by S-36 (PR #37, 0d94d91).
+
+2026-09-06 · `engine/src/jobs.rs:418` · The engine parks a labelling job on any line that
+starts with `ESTIMATE `, without ever reading the number off it. The price is parsed much
+later and somewhere else — `estimate()` reads it back out of the log when the browser asks
+— so a line that begins right and ends wrong parks a job that no one can price. Four ways
+in, and only the first needs anything to fail: a discarded `append_job_log` error (logged
+above, fixed in the browser by S-36 and still open here); `ESTIMATE abc`, which does not
+parse; `ESTIMATE nan` or `ESTIMATE inf`, which parse to non-finite floats that serde_json
+writes as `null`; and `ESTIMATE -5`, which parses fine and puts a negative price on the go
+button. · Reproduce: a brain that prints any of those four lines and then waits. Verified:
+`"nan".parse::<f64>()` is `Ok(NaN)`, `json!({"estimate_usd": Some(f64::NAN)})` is
+`{"estimate_usd":null}`, and `"-5".parse::<f64>()` is `Ok(-5.0)`. · Fixed by S-37.
