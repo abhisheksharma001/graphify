@@ -48,6 +48,17 @@ const DEFAULT_CAP = '2.00'
  * `$0.00` for a run that cost money. */
 const money = (usd: number) => `$${usd.toFixed(4)}`
 
+/** The plan out of a finished `plan` or `clarify` job.
+ *
+ * The brain returns what the message cost sitting beside the plan's own fields, the same
+ * shape `label` returns. It comes off here: the cost belongs to the job row, where the
+ * engine has already booked it into the day's spend, and a plan carrying it would carry
+ * it back into the next `clarify` as part of a plan the brain would have to ignore. */
+function planOf(output: unknown): Plan {
+  const { usd: _usd, ...rest } = output as Plan & { usd?: number }
+  return rest as Plan
+}
+
 const percent = (x: number) => `${Math.round(x * 100)}%`
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -90,6 +101,12 @@ export default function Wizard({
   // Step 2: the conversation.
   const [criterion, setCriterion] = useState('')
   const [plan, setPlan] = useState<Plan | null>(null)
+  /** What this conversation has cost, and what its last message cost. Read off the job
+   *  rows rather than worked out here: `cost_usd` is the figure the engine booked into
+   *  the day's spend, and a second one in the browser that disagreed with it would be the
+   *  one nobody could reconcile. Null until a message has been paid for — no messages yet
+   *  is not a spend of zero. */
+  const [chat, setChat] = useState<{ last: number; total: number } | null>(null)
   const [answers, setAnswers] = useState<Record<string, string>>({})
 
   // The spending, and what came of it. One object, because a quote, the calls it was
@@ -210,17 +227,27 @@ export default function Wizard({
     return parts.length > 0 ? parts.join('\n\n') : undefined
   }
 
+  /** Add what one message cost to the conversation's running total.
+   *
+   * A job that reported no cost is left out of both figures rather than counted as
+   * nothing: an unreported spend is unknown, and the spec's rule about a missing value is
+   * the same rule here as it is in a table cell. */
+  const charge = (usd: number | null) =>
+    setChat((prior) => (usd === null ? prior : { last: usd, total: (prior?.total ?? 0) + usd }))
+
   const draft = () =>
     during('Planning…', async () => {
       const line = criterion.trim()
       const prompt = await systemPrompt()
       // Left out rather than sent empty: the brain skips the prompt block entirely for an
       // absent one, and a heading with nothing under it is not the same absence.
-      const body = prompt ? { criterion: line, system_prompt: prompt } : { criterion: line }
+      const asked = { criterion: line, max_usd: Number(cap) }
+      const body = prompt ? { ...asked, system_prompt: prompt } : asked
       const { id } = await api.startPlan(org, body)
       const done = await watch(id, ['done'])
-      setPlan(done.output as Plan)
+      setPlan(planOf(done.output))
       setAnswers({})
+      charge(done.cost_usd)
     })
 
   const revise = () =>
@@ -236,10 +263,12 @@ export default function Wizard({
         criterion: criterion.trim(),
         plan,
         answers: given,
+        max_usd: Number(cap),
       })
       const done = await watch(id, ['done'])
-      setPlan(done.output as Plan)
+      setPlan(planOf(done.output))
       setAnswers({})
+      charge(done.cost_usd)
     })
 
   /** Click one: start the labelling job and let it park on its price. Reads nothing. */
@@ -457,6 +486,17 @@ export default function Wizard({
                 {plan === null ? 'Draft the plan' : 'Start over from this line'}
               </button>
             </div>
+
+            {/* The price, before the click that costs and after it. Drafting and revising
+                read no transcripts, so they are a few cents rather than a few dollars —
+                but a few cents a message with nothing said about it is how a wizard left
+                open all afternoon becomes a line on a bill nobody can account for. */}
+            <p className="hint">
+              {chat === null
+                ? `Each message costs a few cents, and is refused above ${money(Number(cap))}.`
+                : `Last message ${money(chat.last)} · this conversation ${money(chat.total)},` +
+                  ` each refused above ${money(Number(cap))}.`}
+            </p>
 
             {plan !== null && plan.questions.length > 0 && (
               <div className="questions">

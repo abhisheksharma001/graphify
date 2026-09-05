@@ -1704,5 +1704,39 @@ prunes `jobs` rows or rotates anything inside the volume.
 
 ---
 
-**The register is complete.** S-1 through S-32 are all `☑`. Anything after this is a new
-step appended here, or a bug in `docs/backlog/bugs.md` promoted to one.
+### S-33 — Meter `plan` and `clarify` `[Rust]` ☐
+**PR:** one. **Depends on:** S-22, S-25, S-26.
+**Files:** `brain/src/graphify_brain/plan.py`, `ui/src/patterns/Wizard.tsx`, tests either
+side. The engine is expected to need nothing: `jobs.rs` already reads `ESTIMATE` off
+stdout and books the output's `usd` through `add_spend`.
+**Today:** every message in the wizard's chat calls Sonnet, reports `cost_usd` 0 whatever
+it cost, and is counted by no cap. Four Not-done paragraphs say so (S-22, S-23, S-25,
+S-26), and it is the one place the register leaves a **Must never** broken: *no model
+call without a shown cost and an explicit go.*
+**Change:** `plan` and `clarify` take a required `max_usd`, like `label` and
+`synthesize`. Each prices its own call at the ceiling before the model is touched, prints
+`ESTIMATE {usd}`, and refuses rather than sends when the ceiling is over the cap. The
+call itself runs under a `baml_py.Collector`, so what comes back is what was actually
+spent, and that goes out as a top-level `usd` beside the plan's fields — the same shape
+`label` already returns and the same field `jobs.rs` already books.
+
+The go stays the Send button, which is what S-22 argued and is still right: these are a
+few cents and they read no transcript, so parking them on a second click would buy
+nothing. The shown cost is the per-step cap on the button, plus what the last message
+cost and what the chat has cost so far, read from `jobs.cost_usd` rather than recomputed
+in the browser. Nothing mirrors the pricing arithmetic into TypeScript — S-29 paid for a
+second copy in Rust because a quote had to exist before a process did, and there is no
+such requirement here.
+**Acceptance:** WHEN a plan or a clarify finishes THEN its job row SHALL carry the USD it
+actually cost and that amount SHALL appear in the day's `spend`; AND WHEN a message's
+ceiling is over `max_usd` THEN no model call SHALL be made.
+**Verify:** unit tests over the seam (`client()` replaced, `Collector` faked); one live
+walkthrough in the browser showing a non-zero cost on a plan and on a clarify.
+**Must not:** park either function on a go — the Send button is the go. Charge the
+ceiling: the ceiling is what the cap is checked against, the collector's number is what
+is booked. Let a plan carry `usd` back into `clarify` as part of the plan object.
+
+---
+
+**The register is complete through S-32.** Anything after that is a new step appended
+here, or a bug in `docs/backlog/bugs.md` promoted to one.

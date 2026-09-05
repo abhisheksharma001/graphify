@@ -87,18 +87,22 @@ DB = typer.Option(None, "--db", help="The engine's SQLite file. Checked, not rea
 
 @app.command()
 def plan(db: Optional[Path] = DB) -> None:
-    """Turn one plain-English criterion into a plan. Reads JSON on stdin, writes JSON out.
+    """Turn one plain-English criterion into a plan. Costs a few cents; prices itself first.
 
-    Input `{criterion, system_prompt?}`; output the whole `Plan`, printed as it came back.
+    Input `{criterion, max_usd, system_prompt?}`. Then `ESTIMATE {usd}` on stdout — and if
+    that ceiling is over `max_usd`, nothing else: the message is refused with the model
+    untouched. Otherwise the whole `Plan` as it came back, with `usd` beside it saying what
+    the call actually cost. There is no `GO`: the caller's send is the go.
     """
     _pipe(planning.plan, db)
 
 
 @app.command()
 def clarify(db: Optional[Path] = DB) -> None:
-    """Revise a plan with the analyst's answers. Reads JSON on stdin, writes JSON out.
+    """Revise a plan with the analyst's answers. Costs a few cents; prices itself first.
 
-    Input `{criterion, plan, answers: [{question, answer}]}`; output the whole `Plan`.
+    Input `{criterion, plan, answers: [{question, answer}], max_usd}`; `ESTIMATE {usd}` and
+    then the whole `Plan` with `usd` beside it, on the same terms as `plan` above.
     """
     _pipe(planning.clarify, db)
 

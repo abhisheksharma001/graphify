@@ -9,14 +9,26 @@ Neither judges its own answer. A plan that comes back at 0.4 confidence with thr
 questions is a fine plan and is printed as it stands; the gate that will not spend money
 below 0.95 lives in the wizard, where the person who would be spending it can see it.
 
+Both cost money, and both say so. Neither parks on a go — the Send button is the go, and
+a second click to approve four tenths of a cent would teach an analyst to click through
+prices. What each one does instead is the other half of the rule: the ceiling goes out as
+`ESTIMATE` before the model is touched and is refused outright when it is over the
+caller's cap, and what the provider actually charged comes back as `usd` beside the plan.
+The ceiling is what the cap is checked against; the collector's number is what is booked.
+
 Every model call in this module goes through `client()`, and that is the only way in. A
-test replaces that one function and has replaced every call.
+test replaces that one function and has replaced every call. `charged()` is the second
+seam and exists for the other half of the same problem: a fake client returns a canned
+answer, and no fake can know what a call it never made was billed for.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Callable
+
+from graphify_brain import cost
 
 #: The rule DSL as the model is told about it.
 #:
@@ -58,6 +70,30 @@ transcript, the ended reason, the tool calls, the transfer and the duration. A p
 needs any of that is not expressible.
 """
 
+#: The BAML client both functions in `plan.baml` declare, and so the rate both are priced
+#: at. Not the model the wizard picked in step one: that one is `label`'s and
+#: `synthesize`'s, and these two run on Sonnet whatever it says. `test_plan.py` reads
+#: `plan.baml` and fails if the declared client moves, because a price quoted for a model
+#: that is not the one being called is worse than no price at all.
+MODEL = "sonnet"
+
+#: Characters per token, for the ceiling. `label.py` carries the same figure for the same
+#: reason — English prose runs nearer four, so three over-counts, which is the direction an
+#: estimate guarding a cap has to err. Deliberately its own constant and not a shared one:
+#: these are two independent ceilings over two different prompts, and one being re-measured
+#: is no reason for the other to move.
+CHARS_PER_TOKEN = 3
+
+#: The instructions and the output schema around the arguments, measured from the rendered
+#: request and rounded up. `test_plan.py` renders both prompts and fails if either has
+#: grown past this, so the ceiling cannot quietly stop being one when a prompt is edited.
+FIXED_PROMPT_CHARS = 2_400
+
+#: The `max_tokens` BAML sends with every call. This is what makes the output half of the
+#: ceiling a bound rather than a guess: no answer can be longer than this, so no answer can
+#: cost more output than the cap check allowed for.
+MAX_OUTPUT_TOKENS = 4_096
+
 
 def client() -> Any:
     """The generated BAML client.
@@ -74,20 +110,28 @@ def client() -> Any:
 
 
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
-    """`{criterion, system_prompt?}` in, a plan out."""
-    envelope(payload, "plan", required={"criterion"}, optional={"system_prompt"})
+    """`{criterion, max_usd, system_prompt?}` in, a plan and what it cost out."""
+    envelope(payload, "plan", required={"criterion", "max_usd"}, optional={"system_prompt"})
     criterion = required_text(payload, "criterion")
+    cap = max_usd(payload["max_usd"], "plan")
     prompt = payload.get("system_prompt")
     # An assistant with an empty prompt and an assistant whose prompt nobody read are the
     # same absence to the model, and `None` is what skips the prompt block entirely.
     system_prompt = prompt.strip() if isinstance(prompt, str) and prompt.strip() else None
 
+    afford(plan_usd(criterion, system_prompt), cap, "plan")
+
     # Every argument is built before the client is reached for, so a bad input is refused
     # with the model still untouched. Not a style preference: `client().PlanPattern(...)`
     # would resolve the function first and then evaluate the arguments, which reads like
     # a call that has already begun.
-    result = client().PlanPattern(criterion=criterion, system_prompt=system_prompt, dsl=DSL)
-    return result.model_dump()
+    from baml_py import Collector
+
+    collector = Collector()
+    result = client().with_options(collector=collector).PlanPattern(
+        criterion=criterion, system_prompt=system_prompt, dsl=DSL
+    )
+    return {**result.model_dump(), "usd": round(charged(collector), 6)}
 
 
 def clarify(payload: dict[str, Any]) -> dict[str, Any]:
@@ -104,10 +148,16 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     and the wizard's gate opens on that flag. The money that gate is protecting is spent
     in the next step.
     """
-    envelope(payload, "clarify", required={"criterion", "plan", "answers"}, optional=set())
+    envelope(
+        payload,
+        "clarify",
+        required={"criterion", "plan", "answers", "max_usd"},
+        optional=set(),
+    )
     from baml_client import types
 
     criterion = required_text(payload, "criterion")
+    cap = max_usd(payload["max_usd"], "clarify")
     answers = payload["answers"]
     if not isinstance(answers, list) or not answers:
         raise ValueError("clarify: answers is empty, so there is nothing to revise")
@@ -119,8 +169,81 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     prior = types.Plan.model_validate(payload["plan"])
     given = [types.Answer.model_validate(a) for a in answers]
 
-    result = client().ClarifyPattern(criterion=criterion, plan=prior, answers=given, dsl=DSL)
-    return result.model_dump()
+    afford(clarify_usd(criterion, prior, given), cap, "clarify")
+
+    from baml_py import Collector
+
+    collector = Collector()
+    result = client().with_options(collector=collector).ClarifyPattern(
+        criterion=criterion, plan=prior, answers=given, dsl=DSL
+    )
+    return {**result.model_dump(), "usd": round(charged(collector), 6)}
+
+
+def plan_usd(criterion: str, system_prompt: str | None) -> float:
+    """USD for one `plan`, at the ceiling. What the cap is checked against."""
+    chars = FIXED_PROMPT_CHARS + len(DSL) + len(criterion) + len(system_prompt or "")
+    return cost.estimate(chars // CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS, MODEL)
+
+
+def clarify_usd(criterion: str, prior: Any, given: list[Any]) -> float:
+    """USD for one `clarify`, at the ceiling.
+
+    The plan is counted as the JSON it arrived as rather than as BAML renders it into the
+    prompt. The two are within a few dozen characters of each other and `FIXED_PROMPT_CHARS`
+    is measured with room over the larger, which is the only way the difference is allowed
+    to fall.
+    """
+    chars = (
+        FIXED_PROMPT_CHARS
+        + len(DSL)
+        + len(criterion)
+        + len(prior.model_dump_json())
+        + sum(len(a.question) + len(a.answer) for a in given)
+    )
+    return cost.estimate(chars // CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS, MODEL)
+
+
+def afford(usd: float, cap: float, name: str) -> None:
+    """Say the price, then refuse it if it is over the cap.
+
+    Printed first and whatever happens next: `ESTIMATE` is how the engine learns what a
+    job was quoted, and a message refused for being too expensive is exactly the one whose
+    price is worth having in the log. Refusing is a `ValueError`, so the CLI reports it the
+    way it reports any other bad input — before the model is touched, which is the half of
+    the rule a message that never parks has to keep.
+    """
+    print(f"ESTIMATE {usd:.4f}", file=sys.stdout, flush=True)
+    if usd > cap:
+        raise ValueError(
+            f"{name}: this message could cost up to ${usd:.4f}, over the ${cap:.4f} cap"
+        )
+
+
+def charged(collector: Any) -> float:
+    """What the provider says the call it just made actually cost.
+
+    Its own function because it is the seam a test replaces. A fake client returns a
+    canned answer, and no fake can know what a call it never made was billed for — so
+    "what did the model say" and "what did it cost" have to be two questions with two
+    answers, or every test in `test_plan.py` would be asserting a price it invented.
+    """
+    usage = collector.last.usage
+    return cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, MODEL)
+
+
+def max_usd(value: Any, name: str) -> float:
+    """The caller's ceiling for this one message.
+
+    Worded exactly as `label._max_usd` and `synth._max_usd` word it, and a fourth copy
+    rather than an import because `label` already imports `envelope` from here and the
+    other direction would close the circle.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        # No default. A cap that a caller can leave out is a cap that gets left out, and
+        # "must not exceed max_usd" means nothing when there is no max_usd.
+        raise ValueError(f"{name}: max_usd must be a positive number, not {value!r}")
+    return float(value)
 
 
 def run(fn: Callable[[dict[str, Any]], dict[str, Any]], stdin: str) -> str:
