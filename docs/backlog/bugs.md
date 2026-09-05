@@ -23,4 +23,6 @@ parse; `ESTIMATE nan` or `ESTIMATE inf`, which parse to non-finite floats that s
 writes as `null`; and `ESTIMATE -5`, which parses fine and puts a negative price on the go
 button. · Reproduce: a brain that prints any of those four lines and then waits. Verified:
 `"nan".parse::<f64>()` is `Ok(NaN)`, `json!({"estimate_usd": Some(f64::NAN)})` is
-`{"estimate_usd":null}`, and `"-5".parse::<f64>()` is `Ok(-5.0)`. · Fixed by S-37.
+`{"estimate_usd":null}`, and `"-5".parse::<f64>()` is `Ok(-5.0)`. · Fixed by S-37
+(PR #38, dcb266d), except the discarded write error, which is now checked at the quote and
+still discarded in `drain` where a dropped stderr line is all it costs.

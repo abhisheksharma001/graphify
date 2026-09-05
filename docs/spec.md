@@ -2088,7 +2088,7 @@ right figure but a different kind of promise from the one on the go. And everyth
 left open is still open — twenty-eight of thirty-three UI files untested, no coverage
 figure, and the plan ceiling still roughly ten times a real message.
 
-### S-37 — The engine does not park on a price it cannot read ☐ [Rust]
+### S-37 — The engine does not park on a price it cannot read ☑ [Rust] (PR #38, dcb266d)
 **PR:** one. **Depends on:** S-36, S-33, S-22, S-13.
 **Files:** `engine/src/jobs.rs`, `engine/tests/jobs.rs`, `docs/backlog/bugs.md`. No brain
 and no UI.
@@ -2137,7 +2137,52 @@ S-36 already draws this state correctly and will keep working when it stops arri
 not change what the brain prints, do not add a validation to the Python side, and do not
 touch `drain` or the stderr path.
 
+**Files (as built):** `engine/src/jobs.rs`, `engine/tests/jobs.rs`, and the bug log entry
+that came with the spec entry. No brain and no UI, and 36 tests in `jobs.rs` became 43.
+
+**Learned.**
+
+*Three of the four ways in needed nothing to go wrong.* The bug log had one entry and it
+was about a discarded write error, which is the kind of bug that needs a bad day to
+happen. Reading for the fix turned up three more that need only a line: a number that does
+not parse, a number that parses to something serde_json cannot write, and a number that
+parses and serialises perfectly and is simply wrong. The one in the log was the rarest of
+them. A bug found by reading the code and a bug found by watching it fail are different
+sizes, and the second is usually a corner of the first.
+
+*`nan` is caught by the comparison, not by the finiteness check.* Breaking `price` down to
+`usd >= 0.0` alone reddened one test out of the four bad quotes — `inf` — because `NaN >=
+0.0` is already false, and so is `-inf >= 0.0`. The two halves of that condition overlap
+almost entirely and neither is redundant: `is_finite()` alone lets `-5` through and `>=
+0.0` alone lets `inf` through. Someone tidying that line to one comparison would keep
+three of the four cases and lose the fourth in silence. The break said so; reading it
+would not have.
+
+*The self-review found the one that mattered.* The failure reason quotes what the brain
+printed, and `finish` appends that reason to the job's log — so the first version of this
+step wrote unscrubbed brain output into the log, on the exact path taken when the brain is
+behaving strangely enough to print something other than a price on a line it holds the
+keys to write. Every test was green when that was true. The fourth Must-never says never
+print a key to a log, and it was the diff that said it, not the suite.
+
+*A control can be right and untestable at the same time.* The checked log write is the
+half of this step that closes the original bug-log entry, and breaking it back to the
+discarded error left all forty-three tests green. Nothing in this repository can make
+SQLite fail, so there is no test to write without a fault-injecting `Db` first. It stays
+in — a quote that is not on record is not a shown cost — and it stays unproven, which is
+a different thing from untrue and is written here so nobody reads the green suite as
+covering it.
+
+**Not done:** the checked write has no test, as above; proving it needs a `Db` that can be
+told to fail, which is a step of its own and touches every handler that swallows a write.
+The price is still a line in a log rather than a column, by this step's own Must-not — the
+state is now unreachable rather than impossible, and the difference is one guard. Nothing
+validates the `ESTIMATE` line on the Python side, so a brain that computes a bad price
+still gets as far as the engine before anything says so; that is the right side for the
+check to live on and the wrong side for the bug to be found on. And there is still no
+cancel for a parked job, which S-36 left open and this step did not reach.
+
 ---
 
-**The register is complete through S-36.** Anything after that is a new step appended
+**The register is complete through S-37.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
