@@ -1885,7 +1885,48 @@ rate for the next message than the last; the price line names the model for that
 but naming is all it does. And the wizard's two figures are still held by the type checker
 and by reading: there is still no UI test runner.
 
+### S-35 — A test runner for the UI, and the money screen goes first ☐
+**PR:** one. **Depends on:** S-34, S-33, S-22, S-13.
+**Files:** `ui/package.json`, `ui/vite.config.ts`, `ui/tsconfig.app.json`, new
+`ui/src/*.test.ts(x)`, `.github/workflows/ci.yml`. No engine and no brain source.
+**Today:** the engine has 235 tests and the brain has 185. The UI has none. CI runs
+`pnpm build` and `oxlint`, which between them prove that the TypeScript compiles and that
+nobody left an unused variable — neither of which is a claim about what the screen says.
+Thirty-three source files are held by the type checker and by reading.
+
+Two of the last three steps changed `Wizard.tsx`. S-33 put a price on it; S-34 made that
+price the picked model's rate. Both were verified by one person driving one browser once,
+and the Not-done paragraph under each of them says so — the last line of S-34's is that
+there is still no UI test runner.
+
+The gap is not even across the tree. Three things in `ui/` are rules rather than
+rendering, and a rule enforced only by reading is a rule that is already half broken.
+`format.ts` is where "NULL → —, never 0" is actually decided for every number on the
+dashboard, and it is one of five Must-nevers. `jobs.ts` picks the headline out of a
+Python traceback with a regex its own comment calls "a guess, and a load-bearing one".
+And `Wizard.tsx` builds the request bodies that spend money.
+**Change:** vitest, jsdom and Testing Library in `ui/`; a `pnpm test` that runs once and
+exits rather than watching; `pnpm test` added to CI's `ui` job, making it four checks and
+five. Then the first tests, and only these three subjects: the Must-never in `format.ts`,
+the headline in `jobs.ts`, and the wizard's spend surface — that the model and the cap
+chosen in step 1 are on the `plan` and `clarify` request bodies, and that the price line
+names the model that was chosen. `api.ts`'s comment on `MODELS` still points at
+`label.py`, where `CLIENTS` lived until S-34 moved it; that is an orphan the last step
+made and it is corrected here.
+**Acceptance:** WHEN `pnpm test` runs THEN it SHALL exit non-zero for a `format.ts` that
+answers `0` where a value is missing, for a `Wizard.tsx` that drops `model` or `max_usd`
+from a request body, and for a `jobs.ts` that reports the last line of a traceback over
+the line that names the fault.
+**Verify:** every new assertion broken on purpose once and seen to fail — an assertion
+that has never failed is a sentence, not a test. Then CI red on one break and green on
+its repair.
+**Must not:** grow this into tests for all thirty-three files, or snapshot anything. A
+snapshot asserts that a screen has not changed, which is a different claim from that it
+is right, and it is the assertion that gets re-recorded rather than read. Stub `fetch`
+and nothing above it: a test that replaced `api.ts` would pass over a `Wizard.tsx` that
+sends the wrong body, and sending the wrong body is exactly what S-34 shipped.
+
 ---
 
-**The register is complete through S-34.** Anything after that is a new step appended
+**The register is complete through S-35.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
