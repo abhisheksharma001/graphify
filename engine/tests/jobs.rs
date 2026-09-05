@@ -61,6 +61,20 @@ echo "PROGRESS 3/3" >&2
 echo '{"labels":[{"call_id":"c1","match":true}],"usd":0.0123,"stopped":null}'
 "#;
 
+/// A brain that quotes something which is not a price and then waits for a go it must
+/// never be given. The `read` after the quote is what makes the test mean something: if
+/// the engine parks anyway, this child is sitting there ready to be told to read.
+fn bad_quote(quote: &str) -> String {
+    format!(
+        r#"
+read -r request
+echo "ESTIMATE {quote}"
+read -r go
+echo '{{"labels":[{{"call_id":"c1","match":true}}],"usd":0.0123,"stopped":null}}'
+"#
+    )
+}
+
 /// A brain that answers straight off, the way `plan` and `clarify` do.
 const ANSWERS: &str = r#"
 request=$(cat)
@@ -880,4 +894,156 @@ async fn a_plan_is_never_parked_on_a_go() {
     // 409 and not 404: the row exists. What it is not, and never was, is parked on a go.
     let (status, why) = post(&server.url(&format!("/api/jobs/{}/go", body["id"])), json!({})).await;
     assert_eq!(status, 409, "a plan answered a go: {why}");
+}
+
+// --- reading a price back out of a log --------------------------------------------------
+
+/// `estimate` is what the API answers `estimate_usd` with, and it is the same judgement
+/// the supervisor parks on. Tested here rather than through a server because the guard
+/// added by S-37 means a bad quote never reaches a log any more — so a log that already
+/// has one, written before that guard existed, is the only way this is reached.
+#[test]
+fn a_price_read_back_out_of_a_log_is_one_that_can_be_shown_to_someone() {
+    assert_eq!(jobs::estimate("ESTIMATE 0.1094\n"), Some(0.1094));
+    // Free is not missing: a run with nothing to read costs nothing, and that is a figure.
+    assert_eq!(jobs::estimate("ESTIMATE 0\n"), Some(0.0));
+    assert_eq!(jobs::estimate("ESTIMATE abc\n"), None);
+    assert_eq!(jobs::estimate("ESTIMATE nan\n"), None);
+    assert_eq!(jobs::estimate("ESTIMATE inf\n"), None);
+    assert_eq!(jobs::estimate("ESTIMATE -5\n"), None);
+    // The last one wins, which is how it read before and how a re-quote should behave.
+    assert_eq!(jobs::estimate("ESTIMATE 0.2\nPROGRESS 1/2\nESTIMATE 0.3\n"), Some(0.3));
+    assert_eq!(jobs::estimate("PROGRESS 1/2\n"), None);
+}
+
+// --- the quote the engine will not park on ---------------------------------------------
+
+/// Start a labelling job against a brain that quotes `quote`, and return the failed row.
+///
+/// `until` would sit through six hundred seconds of `waiting` before it gave up, so the
+/// wait is wound down: a run that parks here is a bug, and the test should say so quickly.
+async fn refused(quote: &str) -> (Server, Value) {
+    let server = served_for(&bad_quote(quote), Duration::from_millis(200)).await;
+    let (status, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "asked for a human", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    let failed = until(&server, body["id"].as_i64().unwrap(), jobs::FAILED).await;
+    (server, failed)
+}
+
+/// Nothing this job did can have cost anything: not the row, not the day, not the ledger.
+fn spent_nothing(server: &Server, job: &Value) {
+    assert_eq!(job["cost_usd"], 0.0);
+    assert!(job["output"].is_null(), "something came back: {job}");
+    let db = server.db();
+    assert_eq!(db.spend_on(&graphify::now()[..10], 1).unwrap(), 0.0);
+    let total: f64 = db
+        .conn()
+        .query_row("SELECT COALESCE(SUM(usd), 0) FROM spend", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(total, 0.0, "a job that never showed a price booked spend");
+}
+
+#[tokio::test]
+async fn a_quote_that_is_not_a_number_fails_the_job_instead_of_parking_it() {
+    let (server, failed) = refused("abc").await;
+    assert_eq!(failed["status"], jobs::FAILED);
+    // The text is in the reason because whoever reads this log needs to know what the
+    // brain actually said, not that something unspecified was wrong with it.
+    assert!(failed["log"].as_str().unwrap().contains(r#"quoted "abc""#), "{failed}");
+    assert!(failed["estimate_usd"].is_null(), "{failed}");
+    spent_nothing(&server, &failed);
+}
+
+#[tokio::test]
+async fn a_quote_of_nan_fails_the_job_rather_than_reaching_the_browser_as_no_price() {
+    // `"nan".parse::<f64>()` is `Ok(NaN)` and serde_json writes a non-finite float as
+    // `null`, so without the check this parks and the browser is handed a waiting job
+    // with no price on it — which is the state S-36 had to teach the wizard to draw.
+    let (server, failed) = refused("nan").await;
+    assert_eq!(failed["status"], jobs::FAILED);
+    assert!(failed["log"].as_str().unwrap().contains(r#"quoted "nan""#), "{failed}");
+    spent_nothing(&server, &failed);
+}
+
+#[tokio::test]
+async fn a_quote_of_inf_fails_the_job_for_the_same_reason_nan_does() {
+    let (server, failed) = refused("inf").await;
+    assert_eq!(failed["status"], jobs::FAILED);
+    assert!(failed["log"].as_str().unwrap().contains(r#"quoted "inf""#), "{failed}");
+    spent_nothing(&server, &failed);
+}
+
+#[tokio::test]
+async fn a_negative_quote_never_reaches_the_go_button() {
+    // This one parses and serialises perfectly well. Left alone it would put `-$5.0000`
+    // on the button that buys, which is worse than the dash a missing price gets: a dash
+    // says nobody knows what this costs, and a number says somebody does.
+    let (server, failed) = refused("-5").await;
+    assert_eq!(failed["status"], jobs::FAILED);
+    assert!(failed["log"].as_str().unwrap().contains(r#"quoted "-5""#), "{failed}");
+    assert!(failed["estimate_usd"].is_null(), "{failed}");
+    spent_nothing(&server, &failed);
+}
+
+#[tokio::test]
+async fn the_text_of_a_bad_quote_is_scrubbed_before_it_reaches_the_log() {
+    let _guard = env_lock().await;
+    clear_env();
+
+    // A brain broken enough to print something other than a price on its `ESTIMATE` line
+    // is broken enough to print anything there, and it is holding the keys when it does.
+    let server = served_for(&bad_quote("sk-ant-fake-0001"), Duration::from_millis(200)).await;
+    {
+        let store = Secrets::open(server.path().join(".secret")).unwrap();
+        store.set(&server.db(), None, "anthropic", "sk-ant-fake-0001").unwrap();
+    }
+    let (_, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "asked for a human", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
+    )
+    .await;
+    let failed = until(&server, body["id"].as_i64().unwrap(), jobs::FAILED).await;
+
+    let log = failed["log"].as_str().unwrap();
+    assert!(!log.contains("sk-ant-fake-0001"), "a key reached the log: {log}");
+    assert!(log.contains("***"), "the reason lost the text entirely: {log}");
+}
+
+#[tokio::test]
+async fn a_bad_quote_is_never_parked_on_even_for_a_moment() {
+    // The status the job is refused at matters as much as the one it ends at. A job that
+    // touches `waiting` on its way to `failed` was, for that moment, a job a `go` could
+    // have been sent to.
+    let server = served_for(&bad_quote("nan"), Duration::from_millis(200)).await;
+    let (_, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "asked for a human", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
+    )
+    .await;
+    let id = body["id"].as_i64().unwrap();
+
+    let url = server.url(&format!("/api/jobs/{id}"));
+    let mut seen = Vec::new();
+    for _ in 0..1500 {
+        let (_, job) = get(&url).await;
+        let status = job["status"].as_str().unwrap_or_default().to_string();
+        if seen.last() != Some(&status) {
+            seen.push(status.clone());
+        }
+        if status == jobs::FAILED {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(seen.contains(&jobs::FAILED.to_string()), "never failed: {seen:?}");
+    assert!(!seen.contains(&jobs::WAITING.to_string()), "it parked on a bad quote: {seen:?}");
+
+    // And the one call that could have spent something is refused, because there is no
+    // parked job for it to approve.
+    let (status, why) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
+    assert_eq!(status, 409, "a job that never showed a price answered a go: {why}");
 }
