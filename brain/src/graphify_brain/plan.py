@@ -15,6 +15,10 @@ prices. What each one does instead is the other half of the rule: the ceiling go
 `ESTIMATE` before the model is touched and is refused outright when it is over the
 caller's cap, and what the provider actually charged comes back as `usd` beside the plan.
 The ceiling is what the cap is checked against; the collector's number is what is booked.
+Both are priced at the model the request names, which is also the model the call runs on:
+`plan.baml` declares a client the way `label.baml` and `ask.baml` do, and every one of
+them is overridden per call. A price quoted for a model that is not the one being called
+is worse than no price at all.
 
 Every model call in this module goes through `client()`, and that is the only way in. A
 test replaces that one function and has replaced every call. `charged()` is the second
@@ -70,13 +74,6 @@ transcript, the ended reason, the tool calls, the transfer and the duration. A p
 needs any of that is not expressible.
 """
 
-#: The BAML client both functions in `plan.baml` declare, and so the rate both are priced
-#: at. Not the model the wizard picked in step one: that one is `label`'s and
-#: `synthesize`'s, and these two run on Sonnet whatever it says. `test_plan.py` reads
-#: `plan.baml` and fails if the declared client moves, because a price quoted for a model
-#: that is not the one being called is worse than no price at all.
-MODEL = "sonnet"
-
 #: Characters per token, for the ceiling. `label.py` carries the same figure for the same
 #: reason — English prose runs nearer four, so three over-counts, which is the direction an
 #: estimate guarding a cap has to err. Deliberately its own constant and not a shared one:
@@ -110,16 +107,22 @@ def client() -> Any:
 
 
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
-    """`{criterion, max_usd, system_prompt?}` in, a plan and what it cost out."""
-    envelope(payload, "plan", required={"criterion", "max_usd"}, optional={"system_prompt"})
+    """`{criterion, model, max_usd, system_prompt?}` in, a plan and what it cost out."""
+    envelope(
+        payload,
+        "plan",
+        required={"criterion", "model", "max_usd"},
+        optional={"system_prompt"},
+    )
     criterion = required_text(payload, "criterion")
+    model = cost.model_name(payload["model"], "plan")
     cap = max_usd(payload["max_usd"], "plan")
     prompt = payload.get("system_prompt")
     # An assistant with an empty prompt and an assistant whose prompt nobody read are the
     # same absence to the model, and `None` is what skips the prompt block entirely.
     system_prompt = prompt.strip() if isinstance(prompt, str) and prompt.strip() else None
 
-    afford(plan_usd(criterion, system_prompt), cap, "plan")
+    afford(plan_usd(criterion, system_prompt, model), cap, "plan")
 
     # Every argument is built before the client is reached for, so a bad input is refused
     # with the model still untouched. Not a style preference: `client().PlanPattern(...)`
@@ -128,14 +131,14 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     from baml_py import Collector
 
     collector = Collector()
-    result = client().with_options(collector=collector).PlanPattern(
-        criterion=criterion, system_prompt=system_prompt, dsl=DSL
-    )
-    return {**result.model_dump(), "usd": round(charged(collector), 6)}
+    result = client().with_options(
+        client=cost.CLIENTS[model], collector=collector
+    ).PlanPattern(criterion=criterion, system_prompt=system_prompt, dsl=DSL)
+    return {**result.model_dump(), "usd": round(charged(collector, model), 6)}
 
 
 def clarify(payload: dict[str, Any]) -> dict[str, Any]:
-    """`{criterion, plan, answers}` in, the whole plan back out.
+    """`{criterion, plan, answers, model, max_usd}` in, the whole plan back out.
 
     The register's table says the inputs are "plan + user answers". Two more go in, both
     for the same reason: without them the model is grading an answer it cannot check.
@@ -151,12 +154,13 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     envelope(
         payload,
         "clarify",
-        required={"criterion", "plan", "answers", "max_usd"},
+        required={"criterion", "plan", "answers", "model", "max_usd"},
         optional=set(),
     )
     from baml_client import types
 
     criterion = required_text(payload, "criterion")
+    model = cost.model_name(payload["model"], "clarify")
     cap = max_usd(payload["max_usd"], "clarify")
     answers = payload["answers"]
     if not isinstance(answers, list) or not answers:
@@ -169,24 +173,24 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     prior = types.Plan.model_validate(payload["plan"])
     given = [types.Answer.model_validate(a) for a in answers]
 
-    afford(clarify_usd(criterion, prior, given), cap, "clarify")
+    afford(clarify_usd(criterion, prior, given, model), cap, "clarify")
 
     from baml_py import Collector
 
     collector = Collector()
-    result = client().with_options(collector=collector).ClarifyPattern(
-        criterion=criterion, plan=prior, answers=given, dsl=DSL
-    )
-    return {**result.model_dump(), "usd": round(charged(collector), 6)}
+    result = client().with_options(
+        client=cost.CLIENTS[model], collector=collector
+    ).ClarifyPattern(criterion=criterion, plan=prior, answers=given, dsl=DSL)
+    return {**result.model_dump(), "usd": round(charged(collector, model), 6)}
 
 
-def plan_usd(criterion: str, system_prompt: str | None) -> float:
+def plan_usd(criterion: str, system_prompt: str | None, model: str) -> float:
     """USD for one `plan`, at the ceiling. What the cap is checked against."""
     chars = FIXED_PROMPT_CHARS + len(DSL) + len(criterion) + len(system_prompt or "")
-    return cost.estimate(chars // CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS, MODEL)
+    return cost.estimate(chars // CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS, model)
 
 
-def clarify_usd(criterion: str, prior: Any, given: list[Any]) -> float:
+def clarify_usd(criterion: str, prior: Any, given: list[Any], model: str) -> float:
     """USD for one `clarify`, at the ceiling.
 
     The plan is counted as the JSON it arrived as rather than as BAML renders it into the
@@ -201,7 +205,7 @@ def clarify_usd(criterion: str, prior: Any, given: list[Any]) -> float:
         + len(prior.model_dump_json())
         + sum(len(a.question) + len(a.answer) for a in given)
     )
-    return cost.estimate(chars // CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS, MODEL)
+    return cost.estimate(chars // CHARS_PER_TOKEN, MAX_OUTPUT_TOKENS, model)
 
 
 def afford(usd: float, cap: float, name: str) -> None:
@@ -220,7 +224,7 @@ def afford(usd: float, cap: float, name: str) -> None:
         )
 
 
-def charged(collector: Any) -> float:
+def charged(collector: Any, model: str) -> float:
     """What the provider says the call it just made actually cost.
 
     Its own function because it is the seam a test replaces. A fake client returns a
@@ -229,7 +233,7 @@ def charged(collector: Any) -> float:
     answers, or every test in `test_plan.py` would be asserting a price it invented.
     """
     usage = collector.last.usage
-    return cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, MODEL)
+    return cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, model)
 
 
 def max_usd(value: Any, name: str) -> float:

@@ -690,12 +690,6 @@ def test_the_prompt_carries_the_criterion_the_plan_the_facts_and_the_transcript(
     assert "evidence" in text and "match" in text
 
 
-def test_the_clients_that_can_be_asked_for_are_the_ones_that_can_be_priced():
-    """A model the cap cannot count is a model that runs against a total that never
-    grows."""
-    assert set(labelling.CLIENTS) == set(cost.PRICES)
-
-
 def test_the_columns_this_reads_are_the_ones_the_engine_makes():
     """`store` builds the tables by hand, so this is what keeps the copy honest."""
     schema = MIGRATION.read_text()

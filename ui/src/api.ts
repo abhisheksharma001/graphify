@@ -359,12 +359,14 @@ type Started = { id: number; status: JobStatus }
 const startJob = (fn: string, org: number, body: unknown) =>
   send<Started>('POST', `/api/patterns/${fn}?${forOrg(org)}`, body)
 
-/** `max_usd` is required, as it is for every other function that spends. These two are a
- *  few cents each and neither reads a transcript, so the go is the button rather than a
- *  second click — but a message with no ceiling on it is a message nothing can refuse. */
+/** `max_usd` and `model` are both required, as they are for every other function that
+ *  spends. These two are a few cents each and neither reads a transcript, so the go is the
+ *  button rather than a second click — but a message with no ceiling on it is a message
+ *  nothing can refuse, and a message that does not name a model is one whose quoted price
+ *  belongs to some other model than the one that ran. */
 export const startPlan = (
   org: number,
-  body: { criterion: string; max_usd: number; system_prompt?: string },
+  body: { criterion: string; model: string; max_usd: number; system_prompt?: string },
 ) => startJob('plan', org, body)
 
 export const startClarify = (
@@ -373,6 +375,7 @@ export const startClarify = (
     criterion: string
     plan: Plan
     answers: { question: string; answer: string }[]
+    model: string
     max_usd: number
   },
 ) => startJob('clarify', org, body)

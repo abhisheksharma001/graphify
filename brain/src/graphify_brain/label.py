@@ -65,11 +65,6 @@ FIXED_PROMPT_CHARS = 2_400
 #: turning the cap into an approximation.
 MAX_OUTPUT_TOKENS = 4_096
 
-#: The model nickname in the request, and the BAML client it selects. The keys are also
-#: `cost.PRICES`'s keys, so a model that can be asked for is a model whose spend can be
-#: counted — an unpriced model is refused rather than run against a total that never grows.
-CLIENTS = {"opus": "Opus", "sonnet": "Sonnet", "gpt": "GPT"}
-
 #: How many `?` placeholders to put in one SELECT. SQLite's default limit is 999 bound
 #: variables; five hundred leaves room and costs one extra round trip per five hundred
 #: calls, which is nothing next to reading them.
@@ -172,7 +167,7 @@ def prepare(payload: Any, conn: Any) -> Job:
 
     criterion = required_text(payload, "criterion")
     plan = types.Plan.model_validate(payload["plan"])
-    model = _model(payload["model"])
+    model = cost.model_name(payload["model"], "label")
     batch_size = _batch_size(payload.get("batch_size", DEFAULT_BATCH))
     max_usd = _max_usd(payload["max_usd"])
     pattern_id = _pattern_id(payload.get("pattern_id"))
@@ -246,9 +241,9 @@ def call_batch(job: Job, batch: Sequence[Call]) -> tuple[list[Any], float]:
 
     numbered = [types.CallToLabel(n=i + 1, facts=c.facts, transcript=c.transcript) for i, c in enumerate(batch)]
     collector = Collector()
-    got = client().with_options(client=CLIENTS[job.model], collector=collector).LabelBatch(
-        criterion=job.criterion, plan=job.plan, calls=numbered
-    )
+    got = client().with_options(
+        client=cost.CLIENTS[job.model], collector=collector
+    ).LabelBatch(criterion=job.criterion, plan=job.plan, calls=numbered)
     usage = collector.last.usage
     return list(got), cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, job.model)
 
@@ -481,15 +476,6 @@ def _tools(counted: Any, names: Sequence[str]) -> str:
 
 
 # --- checking the request -------------------------------------------------------------
-
-
-def _model(value: Any, name: str = "label") -> str:
-    """`name` is the command asking, so that `ask`'s refusal does not say `label`. These
-    two checks are shared with `ask.py` — one list of models, one rule about the cap."""
-    known = ", ".join(sorted(CLIENTS))
-    if not isinstance(value, str) or value.strip().lower() not in CLIENTS:
-        raise ValueError(f"{name}: model must be one of {known}, not {value!r}")
-    return value.strip().lower()
 
 
 def _batch_size(value: Any) -> int:

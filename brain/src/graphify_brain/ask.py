@@ -31,17 +31,16 @@ from typing import Any, TextIO
 
 from graphify_brain import cost
 
-# Half a dozen names come from `label` rather than being written again here. The two that
-# matter are `CLIENTS` and `_model`: the models a question may be asked of are exactly the
-# models a label may be bought from, so there is one list, one price table and one set of
-# keys rather than two that can come to disagree.
+# Half a dozen names come from `label` rather than being written again here: reading a
+# call for a question and reading it for a label are the same reading. Which models may
+# be asked, and what they cost, come from `cost` instead — the models a question may be
+# asked of are exactly the models a label may be bought from, so there is one list beside
+# the one price table rather than two that can come to disagree.
 from graphify_brain.label import (
     CHARS_PER_TOKEN,
-    CLIENTS,
     MAX_OUTPUT_TOKENS,
     Call,
     _facts,
-    _model,
     _max_usd,
     _read_calls,
     _read_tools,
@@ -124,7 +123,7 @@ def prepare(payload: Any, conn: Any) -> Job:
     )
     question = required_text(payload, "question")
     stats = _stats(payload["stats"])
-    model = _model(payload["model"], "ask")
+    model = cost.model_name(payload["model"], "ask")
     max_usd = _max_usd(payload["max_usd"], "ask")
     ids = _call_ids(payload["call_ids"])
 
@@ -197,7 +196,7 @@ def ask(job: Job) -> tuple[str, float]:
     collector = Collector()
     answer = (
         client()
-        .with_options(client=CLIENTS[job.model], collector=collector)
+        .with_options(client=cost.CLIENTS[job.model], collector=collector)
         .AskAnalysis(question=job.question, stats=job.stats, calls=numbered)
     )
     usage = collector.last.usage

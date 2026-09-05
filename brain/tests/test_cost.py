@@ -20,9 +20,14 @@ from graphify_brain.cost import (
     checked_days_ago,
     estimate,
     is_stale,
+    model_name,
     price,
 )
+from graphify_brain.cost import CLIENTS as CLIENTS_BY_NAME
 
+#: The path to the BAML file. Aliased apart from `CLIENTS_BY_NAME` above because the two
+#: are related and not the same: this is the file that declares the clients, that is the
+#: set of names the rest of the brain may ask for.
 CLIENTS = Path(__file__).resolve().parents[1] / "baml_src" / "clients.baml"
 
 
@@ -112,3 +117,22 @@ def test_staleness_turns_over_at_the_threshold():
 
 def test_the_prices_say_when_they_were_read():
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", PRICES_CHECKED)
+
+
+def test_the_clients_that_can_be_asked_for_are_the_ones_that_can_be_priced():
+    """A model the cap cannot count is a model that runs against a total that never
+    grows. Asserted here rather than in `test_label.py` and `test_ask.py`, which each
+    held their own copy while `CLIENTS` lived in `label`: the list and the price table
+    are both in this module now, so this is the one place the two can be held together.
+    """
+    assert set(CLIENTS_BY_NAME) == set(PRICES)
+
+
+def test_a_model_the_request_does_not_name_is_refused_rather_than_defaulted():
+    """Every command that spends money asks for the model by name. A fallback would be
+    a model whose price nobody chose."""
+    for bad in ("gemini", "", None, 3, "  "):
+        with pytest.raises(ValueError, match="plan: model must be one of gpt, opus, sonnet"):
+            model_name(bad, "plan")
+
+    assert model_name("  Opus  ", "plan") == "opus"

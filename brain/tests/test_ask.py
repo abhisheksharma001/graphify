@@ -465,11 +465,3 @@ def test_the_columns_this_reads_are_the_ones_the_engine_makes():
     for column in ["transcript", "duration_s", "ended_reason", "ended_group", "transferred",
                    "tool_calls", "tool_failures"]:
         assert column in schema, column
-
-
-def test_the_models_a_question_may_be_asked_of_are_the_models_that_are_priced():
-    """One list. A model that can be asked for and not priced is a model whose spend
-    nothing counts."""
-    from graphify_brain.label import CLIENTS
-
-    assert set(CLIENTS) == set(cost.PRICES)
