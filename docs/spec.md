@@ -1981,7 +1981,7 @@ the plan ceiling is still roughly ten times a real message, and a person can sti
 back to step 1 mid-conversation and pay a different rate for the next message than the
 last.
 
-### S-36 — No price, no go ☐
+### S-36 — No price, no go ☑ (PR #37, 0d94d91)
 **PR:** one. **Depends on:** S-35, S-33, S-22, S-13.
 **Files:** `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`,
 `docs/backlog/bugs.md`. No engine and no brain source.
@@ -2034,6 +2034,59 @@ engine's to keep and this step does not reach into it; what is being fixed here 
 browser that assumes it. Do not add a cancel for a parked job, do not touch the `save`
 button, and do not let this grow into the rest of the wizard's screens — this step is the
 two-click rule and nothing else.
+
+**Files (as built):** `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`, and
+the bug log entry that came with the spec entry. No engine and no brain source, and
+`format.ts` was read but not changed.
+
+**Learned.**
+
+*The coalesce was load-bearing, and that is why it was there.* `?? 0` looks like
+carelessness until you notice that `Wizard.tsx` keeps its own `money` — four decimals
+rather than `format.ts`'s two, because these are fractions of a cent and rounding one to
+two would print `$0.00` for a run that cost money — and that it took a `number`. Someone
+reached for the coalesce because the alternative was widening a formatter, and widening a
+formatter is a bigger-looking change than adding two characters at a call site. The fix
+is the bigger-looking one: the null branch belongs in the formatter, where the rest of the
+app keeps it, and `DASH` comes from `format.ts` so there is one em dash in this codebase
+and not two. A rule that is enforced in one file and worked around in another is a rule
+with an exception, and the exception was on the most expensive button in the product.
+
+*S-35's tests walked straight past this.* Three assertions established that `money(null)`
+is a dash and is not a zero, and they were about `format.ts`'s `money`, which the wizard
+does not use. Testing a rule at the place it is written is not the same as testing it
+everywhere it is relied on, and the gap between those two is exactly where this bug was
+sitting while its tests were green. The lesson is not that the S-35 tests were wrong; it
+is that "the rule has a test" and "the rule holds" are different claims.
+
+*A test can name the right thing and assert a different one.* The double-click test was
+written the obvious way — two `fireEvent` clicks in a row — and it passed. Then the `went`
+ref was deleted and it still passed, along with everything else. React flushes a discrete
+event synchronously, so the first click had already re-rendered the button into its
+`disabled` state before the second one landed: the test was asserting an attribute, not
+the ref whose comment says it exists for precisely this case. Batching both clicks inside
+one `act` stops the re-render happening between them, and the ref then carries its own
+weight — without it, two goes are sent. Six breaks, six reds, and the one that came back
+green was worth more than the five that did not.
+
+*The engine's invariants are not the browser's guarantees.* A parked job has a price
+because the engine appends the `ESTIMATE` line before it parks — except that `append`
+discards the error from `append_job_log` and parks anyway. The browser was written against
+the invariant rather than against the type, and `api.ts` had the type right all along:
+`number | null`, with the field above it explaining that a job which has said nothing does
+not have a progress of zero. Two programs in two languages agreeing on a rule is the
+shape of this whole feature, and it is where the rule will keep breaking.
+
+**Not done:** the engine end is untouched, by the step's own Must-not. `append` still
+swallows its write error and `park` still runs regardless, so the state this step now
+draws honestly can still be reached; making a parked job's price a column rather than a
+line in a log would end it, and that is a step about the engine and not about a button.
+There is still no cancel for a parked job: the way out of an unpriced quote is to change a
+setting and price again, which leaves the first job holding one of the engine's four slots
+until it expires. The `save` button still shows the cap rather than a quote, which is the
+right figure but a different kind of promise from the one on the go. And everything S-35
+left open is still open — twenty-eight of thirty-three UI files untested, no coverage
+figure, and the plan ceiling still roughly ten times a real message.
 
 ---
 

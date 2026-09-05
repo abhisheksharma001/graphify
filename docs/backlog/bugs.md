@@ -11,4 +11,4 @@ Reproduce: answer `GET /api/jobs/{id}` with `status: "waiting"` and
 `estimate_usd: null`. The engine reaches that state whenever `append_job_log` fails,
 because `append` (`engine/src/jobs.rs:545`) discards the write error and `park` runs
 regardless — the job is parked and waiting with no `ESTIMATE` line for `estimate()` to
-find. · Fixed by S-36.
+find. · Fixed by S-36 (PR #37, 0d94d91).
