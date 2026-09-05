@@ -8,13 +8,17 @@
 // `fetch` is stubbed and nothing above it. Replacing `api.ts` would test that the wizard
 // calls `startPlan`, which was already true on the day the bug shipped; what has to be
 // asserted is the JSON that leaves the browser.
+//
+// S-36 added the second click. `POST /api/jobs/{id}/go` is the only call in the system
+// that lets a model read a call, so the tests at the bottom are about when it is sent,
+// when it is not, and how many times.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import Wizard from './Wizard'
-import type { Job, Plan } from '../api'
+import type { Job, Labelled, Plan } from '../api'
 
 /** One request the browser made, as the engine would have received it. */
 type Sent = { method: string; url: string; body: Record<string, unknown> }
@@ -29,6 +33,26 @@ const PLAN: Plan & { usd: number } = {
   // it off, and a `clarify` that carried it back would be sending the brain a field it
   // would refuse.
   usd: 0.0043,
+}
+
+/** A plan the wizard will let you spend on. `PLAN` sits under `GATE` on purpose, which is
+ * fine for the tests above — they never reach the spend button — and is no good for the
+ * ones below, where a disabled button would pass for the wrong reason. */
+const SURE: Plan & { usd: number } = { ...PLAN, confidence: 0.97 }
+
+const LABELLED: Labelled = {
+  labels: [
+    { call_id: 'c1', match: true },
+    { call_id: 'c2', match: false },
+    { call_id: 'c3', match: true },
+  ],
+  no_transcript: [],
+  no_label: [],
+  not_reached: [],
+  usd: 0.0312,
+  batches: 1,
+  model: 'sonnet',
+  stopped: null,
 }
 
 const done = (id: number, output: unknown, cost: number | null): Job => ({
@@ -46,11 +70,31 @@ const done = (id: number, output: unknown, cost: number | null): Job => ({
 
 let sent: Sent[]
 
+type StubOptions = {
+  /** What `plan` and `clarify` answer with. */
+  plan?: Plan & { usd: number }
+  /** What a labelling job has parked on. `null` is the engine's invariant broken: a job
+   * waiting for a go with no price for anyone to approve. */
+  estimate?: number | null
+  /** How many calls `GET /api/calls` finds for the selection. */
+  found?: number
+}
+
 /** The engine, as far as this component can tell. Every start answers with a job id and
  * every job is already finished, so nothing here has to wait out a poll. */
-function stubEngine(costs: (number | null)[] = [0.0043, 0.0051]) {
+function stubEngine(
+  costs: (number | null)[] = [0.0043, 0.0051],
+  { plan = PLAN, estimate = 0.1094, found = 3 }: StubOptions = {},
+) {
   sent = []
   let started = 0
+  /** What each started job was asked to be, by the id it was given. A labelling job parks
+   * and a planning one does not, and `GET /api/jobs/{id}` is the same URL for both. */
+  const kinds = new Map<number, string>()
+  /** The labelling jobs that have been told to go. Before the go a labelling job answers
+   * `waiting`, which is the state the whole two-click rule is about. */
+  const gone = new Set<number>()
+
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -66,14 +110,29 @@ function stubEngine(costs: (number | null)[] = [0.0043, 0.0051]) {
         json: async () => data,
       })
 
-      if (method === 'POST' && url.includes('/api/patterns/')) {
+      const start = /\/api\/patterns\/(\w+)(?:\?|$)/.exec(url)
+      if (method === 'POST' && start) {
         started += 1
+        kinds.set(started, start[1])
         return answer({ id: started, status: 'running' })
+      }
+      const go = /\/api\/jobs\/(\d+)\/go$/.exec(url)
+      if (method === 'POST' && go) {
+        gone.add(Number(go[1]))
+        return answer({ id: Number(go[1]), status: 'running' })
+      }
+      if (url.startsWith('/api/calls?')) {
+        return answer(Array.from({ length: found }, (_, i) => ({ id: `c${i + 1}` })))
       }
       const job = /\/api\/jobs\/(\d+)$/.exec(url)
       if (job) {
         const id = Number(job[1])
-        return answer(done(id, PLAN, costs[id - 1] ?? null))
+        if (kinds.get(id) !== 'label') return answer(done(id, plan, costs[id - 1] ?? null))
+        return answer(
+          gone.has(id)
+            ? { ...done(id, LABELLED, LABELLED.usd), kind: 'label' }
+            : { ...done(id, null, null), kind: 'label', status: 'waiting', estimate_usd: estimate },
+        )
       }
       throw new Error(`the wizard asked for something this test does not serve: ${url}`)
     }),
@@ -86,6 +145,17 @@ const posted = (fn: string) => {
   expect(match, `expected exactly one POST to ${fn}`).toHaveLength(1)
   return match[0]
 }
+
+/** Every `POST .../go` the browser has made. The only call in the system that lets a model
+ * read a call, so counting them is most of this file's second half. */
+const goes = () => sent.filter((r) => r.method === 'POST' && r.url.endsWith('/go'))
+
+/** All the POSTs to one brain function, however many — `posted` above wants exactly one. */
+const posts = (fn: string) =>
+  sent.filter((r) => r.method === 'POST' && r.url.includes(`/api/patterns/${fn}`))
+
+/** The one button that spends, whichever of its two clicks it is currently offering. */
+const spendButton = () => screen.getByRole('button', { name: /^Read \d+ calls/ })
 
 /** Step 1 with the model and cap chosen, then step 2 with the criterion typed and sent. */
 async function draft({ model = 'sonnet', cap = '2.00', line = 'asked for a person' } = {}) {
@@ -185,5 +255,100 @@ describe('the price line', () => {
 
     expect(screen.getByText(/Each message goes to sonnet/)).toBeTruthy()
     expect(screen.queryByText(/Last message/)).toBeNull()
+  })
+})
+
+describe('the two clicks that spend', () => {
+  /** Through step 2 and the first of the two clicks: priced, parked, nothing read. */
+  async function quoted(options: Parameters<typeof draft>[0] = {}) {
+    const user = await draft(options)
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+    return user
+  }
+
+  beforeEach(() => stubEngine(undefined, { plan: SURE }))
+
+  test('the first click prices the run and sends no go', async () => {
+    await quoted()
+
+    expect(posts('label')).toHaveLength(1)
+    expect(posts('label')[0].body).toMatchObject({
+      model: 'sonnet',
+      max_usd: 2,
+      call_ids: ['c1', 'c2', 'c3'],
+    })
+    // The job is parked with its stdin open, having read nothing and bought nothing. The
+    // click that costs has not happened.
+    expect(goes()).toHaveLength(0)
+  })
+
+  test('the price is on the button before the click that costs and not before the one that is free', async () => {
+    const user = await draft()
+
+    // Nothing has been quoted, so there is no figure to put on it — and the count is what
+    // the settings ask for rather than what the selection turned out to hold.
+    expect(spendButton().textContent).toBe('Read 25 calls')
+
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+
+    expect(spendButton().textContent).toBe('Read 3 calls · up to $0.1094')
+    expect((spendButton() as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  test('a double-click sends exactly one go', async () => {
+    await quoted()
+
+    const button = spendButton()
+    // Both clicks inside one `act`, rather than two awaited `userEvent` clicks. React
+    // flushes a discrete event synchronously, so two separate clicks would find the button
+    // already `disabled` and the test would be asserting that attribute — which is a real
+    // guard but not this one. Batched into a single act, no re-render happens between them
+    // and the second click lands on a button that still looks clickable, which is the
+    // double-click on a slow network the `went` ref was put there for.
+    await act(async () => {
+      fireEvent.click(button)
+      fireEvent.click(button)
+    })
+    await screen.findByText(/2 of 3 labelled calls match/)
+
+    expect(goes()).toHaveLength(1)
+    expect(goes()[0].url).toBe('/api/jobs/2/go')
+  })
+
+  test('a setting changed after the quote takes the price off the button and the next click prices again', async () => {
+    const user = await quoted()
+
+    await user.type(screen.getByLabelText('In a line'), ' who asked twice')
+
+    // The figure on the button was for a criterion that is no longer on screen. A button
+    // that still said $0.11 would be quoting one run and buying another.
+    expect(spendButton().textContent).toBe('Read 25 calls')
+
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+
+    expect(posts('label')).toHaveLength(2)
+    // The first parked job is left alone rather than sent a go it was not priced for. It
+    // bought nothing, and the engine expires it within the half hour.
+    expect(goes()).toHaveLength(0)
+  })
+
+  test('a run that parked without a price shows a dash and offers no go', async () => {
+    // Reachable rather than theoretical: the engine appends the brain's ESTIMATE line to
+    // the job log and parks whether or not that write succeeded, and `estimate_usd` is read
+    // back out of that log. Before S-36 this button read `up to $0.00` and the click behind
+    // it was the go.
+    stubEngine(undefined, { plan: SURE, estimate: null })
+    await quoted()
+
+    expect(spendButton().textContent).toBe('Read 3 calls · up to —')
+    expect((spendButton() as HTMLButtonElement).disabled).toBe(true)
+    expect(goes()).toHaveLength(0)
+
+    // And it says so, rather than leaving a dead button to be read as a slow network.
+    expect(screen.getByText(/parked without a price/)).toBeTruthy()
+    expect(screen.queryByText(/A ceiling, not a forecast/)).toBeNull()
   })
 })

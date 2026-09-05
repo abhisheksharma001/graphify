@@ -27,6 +27,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import { MODELS, Unauthorized } from '../api'
 import type { Assistant, Job, JobStatus, Labelled, Plan, Synthesized } from '../api'
+import { DASH } from '../format'
 import { Cancelled, JobFailed, settle } from '../jobs'
 import PlanTable from './PlanTable'
 
@@ -45,8 +46,10 @@ const DEFAULT_SAMPLE = '25'
 const DEFAULT_CAP = '2.00'
 
 /** Four places, because these are fractions of a cent and rounding one to two would show
- * `$0.00` for a run that cost money. */
-const money = (usd: number) => `$${usd.toFixed(4)}`
+ * `$0.00` for a run that cost money — and a price nobody reported is a dash for the same
+ * reason, which is the dashboard's rule and is no different here for being on a button.
+ * `DASH` comes from `format.ts` so there is one em dash in this codebase and not two. */
+const money = (usd: number | null) => (usd === null ? DASH : `$${usd.toFixed(4)}`)
 
 /** The plan out of a finished `plan` or `clarify` job.
  *
@@ -335,6 +338,12 @@ export default function Wizard({
 
   const ready = plan !== null && plan.confidence >= GATE && plan.expressible
   const capOk = Number(cap) > 0 && Number.isFinite(Number(cap))
+  /** The figure the go would be against. Null means the job parked without a price
+   * reaching its log — the engine's invariant broken, not a run that costs nothing — and a
+   * shown cost is a precondition of the go rather than decoration beside it. Kept apart
+   * from the button so the same null decides both what is drawn and whether it is
+   * clickable, which are one fact and were two. */
+  const priced = live === null ? null : live.job.estimate_usd
 
   return (
     <section className="wizard">
@@ -532,18 +541,27 @@ export default function Wizard({
                 {/* One button, two clicks, and the price is on it before the click that
                     costs. The first starts the job and lets it park on its own quote,
                     having read nothing; the second is the go. Disabled under the gate,
-                    which is a fact about the plan and not about the network. */}
+                    which is a fact about the plan and not about the network — and disabled
+                    again when the quote came back without a figure, because the button that
+                    cannot say what something costs must not be the button that buys it. */}
                 <button
                   type="button"
                   className="go"
                   onClick={live === null ? priceIt : spend}
-                  disabled={!ready || busy !== null}
+                  disabled={!ready || busy !== null || (live !== null && priced === null)}
                 >
                   {live === null
                     ? `Read ${count} calls`
-                    : `Read ${count} calls · up to ${money(live.job.estimate_usd ?? 0)}`}
+                    : `Read ${count} calls · up to ${money(priced)}`}
                 </button>
-                {live !== null && (
+                {live !== null && priced === null && (
+                  <p className="hint">
+                    This run parked without a price, so there is nothing to approve and
+                    nothing has been read. Change anything above to price it again; the
+                    parked job bought nothing and the engine drops it within the half hour.
+                  </p>
+                )}
+                {live !== null && priced !== null && (
                   <p className="hint">
                     A ceiling, not a forecast: output is priced at the most a batch could
                     return, so short calls usually cost a fraction of it. Nothing has been
