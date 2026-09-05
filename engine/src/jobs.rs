@@ -313,11 +313,24 @@ fn split_fraction(rest: &str) -> Option<(u64, u64)> {
 }
 
 /// The price the brain quoted, read back the same way. `None` for a function that does not
-/// quote one, and for a job that died before it got that far.
+/// quote one, for a job that died before it got that far, and for a line that begins like
+/// a quote and does not carry one.
 pub fn estimate(log: &str) -> Option<f64> {
     log.lines()
         .rev()
-        .find_map(|line| line.trim().strip_prefix(ESTIMATE)?.trim().parse().ok())
+        .find_map(|line| price(line.trim().strip_prefix(ESTIMATE)?))
+}
+
+/// The number on an `ESTIMATE` line, if it is one that can be shown to someone.
+///
+/// `f64` will read `nan` and `inf` out of a string quite happily, and serde_json writes
+/// both as `null`, so a quote that parses is not yet a quote the browser can price. A
+/// negative one is worse than either: it parses, it serialises, and it reaches the go
+/// button looking like money. This is the only place either question is asked, so that
+/// what the supervisor parks on and what the API answers with are the same judgement.
+fn price(rest: &str) -> Option<f64> {
+    let usd: f64 = rest.trim().parse().ok()?;
+    (usd.is_finite() && usd >= 0.0).then_some(usd)
 }
 
 // --- the supervisor -------------------------------------------------------------------
@@ -415,10 +428,29 @@ fn converse(
     let mut last = None;
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading the brain's answer")?;
-        if line.starts_with(ESTIMATE) {
+        if let Some(rest) = line.strip_prefix(ESTIMATE) {
+            // Read before anything is written or parked on. A quote nobody can read back
+            // is not a shown cost, and the go is what it stands in front of.
+            price(rest).with_context(|| {
+                // Scrubbed and cut short, because this reason is appended to the job's log
+                // by `finish` and the text it quotes was written by something holding the
+                // keys. Whatever the brain printed here, it was not a price, so there is
+                // no telling what it was.
+                let said: String = spawn
+                    .redact
+                    .scrub(rest.trim())
+                    .chars()
+                    .take(LOG_LINE_CHARS)
+                    .collect();
+                format!("the brain quoted {said:?}, which is not a price")
+            })?;
             // The price goes in the log rather than a column: it is something the brain
-            // said, and `estimate` reads it back from there.
-            append(db, id, &spawn.redact.scrub(&line));
+            // said, and `estimate` reads it back from there. Which is why this one write
+            // is checked where `append` does not bother — if the quote is not on record,
+            // the job that would park on it has nothing to show.
+            lock(db)
+                .append_job_log(id, &spawn.redact.scrub(&line))
+                .context("writing the brain's quote to the job's log")?;
             if let Some(stdin) = stdin.take() {
                 if !park(jobs, db, id)? {
                     return Ok(Outcome::Expired);
