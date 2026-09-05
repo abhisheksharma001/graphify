@@ -1800,5 +1800,42 @@ type checker and by reading: there is still no UI test runner.
 
 ---
 
-**The register is complete through S-33.** Anything after that is a new step appended
+### S-34 — The wizard's model picker reaches the chat ☐
+**PR:** one. **Depends on:** S-33, S-26, S-22.
+**Files:** `brain/src/graphify_brain/cost.py`, `brain/src/graphify_brain/plan.py`,
+`brain/src/graphify_brain/label.py`, `brain/tests/test_plan.py`, `ui/src/api.ts`,
+`ui/src/patterns/Wizard.tsx`. No engine source is expected: the wizard builds the request
+body in the browser and `jobs.rs` forwards it whole.
+**Today:** step 1 of the wizard has a Model select. `model` rides along on the quote, on
+`label` and on `synthesize`, and `ask` takes one too. `plan` and `clarify` ignore it:
+`plan.py` pins `MODEL = "sonnet"` and `plan.baml` declares `client Sonnet` on both
+functions. Until S-33 that was a wrong model on a call nobody was told the price of.
+Now it is worse than that — the chat quotes a price, and it quotes Sonnet's price for a
+call the person asked to be Opus. S-33's own Not-done paragraph is the one that says so.
+**Change:** `plan` and `clarify` take a required `model`, validated against the same list
+`label` and `ask` validate against, and run under `.with_options(client=CLIENTS[model])`
+exactly as `label`, `synthesize` and `ask` already do. Both the ceiling and the charge are
+priced at that model, so the quote, the call and the booked spend are the same model or
+the request is refused. The wizard sends the model it is already holding in step 1.
+
+`CLIENTS` and `_model` move from `label.py` to `cost.py`. This is not tidying: `label.py`
+imports `envelope` from `plan.py`, so `plan.py` cannot import from `label.py` without
+closing a cycle, and the only other way is a second copy of the one list that decides
+which models may be asked for at all. `cost.py` imports nothing from the package and
+already keys `PRICES` by exactly those names, which is the argument for putting the list
+there rather than anywhere else — a model that can be asked for is a model whose spend
+can be counted.
+**Acceptance:** WHEN a person picks a model in step 1 and sends a message in step 2 THEN
+that model SHALL be the model called, AND the USD quoted before the call and the USD
+booked after it SHALL both be that model's rate.
+**Verify:** unit tests over the same seam S-33 built, asserting the client name handed to
+`with_options` and the rate the ceiling was computed at, for each of the three models; one
+live walkthrough picking a model that is not the default.
+**Must not:** fall back to a default when `model` is missing or unknown — the request
+names a model or it is refused, exactly as `label` refuses. Quote one model's rate and
+call another.
+
+---
+
+**The register is complete through S-34.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
