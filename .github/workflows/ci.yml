@@ -62,3 +62,7 @@ jobs:
           cache-dependency-path: ui/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # After the build, not before it: `tsc -b` type-checks the tests along with
+      # everything else, and a test that no longer compiles should say so as a compile
+      # error rather than as a run of one file fewer.
+      - run: pnpm test

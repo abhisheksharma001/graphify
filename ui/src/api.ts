@@ -462,7 +462,8 @@ export const startAsk = (
 // stored calls and that is arithmetic — so re-applying one costs nothing in any mode.
 
 /** The models the brain accepts, spelled the way it spells them — `CLIENTS` in
- * `graphify_brain/label.py`. Sonnet first: it is the one the walkthrough uses. */
+ * `graphify_brain/cost.py`, which is where the price of each of them lives too. Sonnet
+ * first: it is the one the walkthrough uses. */
 export const MODELS = ['sonnet', 'opus', 'gpt'] as const
 
 export type Model = (typeof MODELS)[number]
