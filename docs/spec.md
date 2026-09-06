@@ -2826,6 +2826,46 @@ The banner still polls and nothing pushes. S-40's `eprintln!` wiring is still un
 Nothing prunes the `jobs` or `spend` tables. The 429 still says *"finish or abandon one
 first"* without saying where.
 
+### S-44 — Every route the gate says it covers
+**PR:** one. **Depends on:** S-19, S-42. **Files:** `engine/tests/server.rs`. No engine
+change, no brain, no UI. What changes is whether the one security control in the product
+can be broken without anything going red.
+**Today:** `auth.rs` opens by saying what the gate is for — *"Set it and every `/api/*`
+route but the login itself needs a session cookie"* — and that is true of all twenty-six of
+them. What makes it true is that somebody put each `.route(...)` inside `guarded` rather
+than in the router the login sits on: two builders in the same function, one indent apart,
+and the difference between them is whether a stranger at the port can call it. Nothing
+checks which one a route went into. Two routes have a 401 test between them — `/api/stats`
+and `/api/notices` — and the other twenty-four are behind the gate because they were
+remembered. The ones that would cost most are not the ones anybody would think to test:
+`PUT /api/orgs/{id}/secrets/{name}` writes a provider key, and `POST /api/ask` and
+`POST /api/jobs/{id}/go` are the two clicks in this product that spend money.
+**Change:** nothing in `engine/src`. The claim is true today; what it does not have is a
+way to stay true.
+**Verify:** a test that harvests the routes out of `src/server.rs` instead of listing them.
+`tests/vapi.rs` already reads a source file to hold a Must-never in place, and this reads
+the same way for the same reason: a list written into the test is the router's own list
+kept twice, and forgetting to gate a route and forgetting to add it to a test are one
+forgetting, made once. Every `.route("/api/…", …)` line yields a path and the methods
+declared on it; a path parameter becomes an ordinary segment; `/api/login` is excluded by
+name and nothing else is. With no cookie, every one of them answers 401. None of the
+requests carries a body, so a `Json` extractor turns every write away before its handler is
+reached: this walks the whole API surface and spends nothing, writes nothing, starts
+nothing.
+And the vacuity guard both S-42 and S-43 needed. A harvest that matched nothing would pass
+the first test perfectly, so the same list is run again with a session and must answer
+anything but 401, and the harvest itself must be found to contain the routes that are known
+to be there.
+**Acceptance:** WHEN a password is configured THEN every route the router declares under
+`/api`, except the login, SHALL answer 401 without a session cookie. WHEN a route is added
+outside the gate THEN a test SHALL fail without anyone having written that route's name
+into a test.
+**Must not:** list the routes in the test. Touch the router, the gate, or `auth.rs` — the
+control is correct and this step is about keeping it correct, not improving it. Send a body
+with any harvested request: a test that walks every route in the product must not be able
+to start a job or store a key. Add a logout, or an expiry — sessions dying with the process
+is a decision S-19 took and this is not the step that reopens it.
+
 ---
 
 **The register is complete through S-43.** Anything after that is a new step appended
