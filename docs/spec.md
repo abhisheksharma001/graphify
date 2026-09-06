@@ -2644,7 +2644,42 @@ where — and now there is a banner it could point at, which makes that a smalle
 it was yesterday. `run_blocking` fills a board nobody reads: honest, documented, and still a
 shape that would mislead a reader who found it before the comment.
 
+### S-42 — What a declined job never did [Rust]
+**PR:** one. **Depends on:** S-38, S-39. **Files:** `engine/tests/jobs.rs`. No engine
+source, no brain, no UI: the control this step is about is already written and already
+right, and what is missing is the sentence that says so.
+**Today:** `park` carries a comment — *"Only a go changes the row"* — and nothing checks
+it. Three steps running have called it the last unproven control here and deferred it for
+the same stated reason: that it "needs a clock the test owns", the window in question being
+the millisecond between a decline and the `expired` written over it. That reason is wrong
+twice. It is wrong about the window, because `begin` passes `RUNNING` to `create_job`, so
+every job is `running` from the moment it exists and stays that way for as long as the brain
+takes to quote — not a millisecond, and not a defect either, because `running` is documented
+as *"the job is alive and its subprocess is working"* and it is. And it is wrong about the
+clock, because the claim is not about what the row said at some instant. It is about which
+statements ran, and a database can be asked that directly.
+**Change:** nothing in `engine/src`. A trail on the test side — one table and two triggers
+installed by `boot`'s `fill`, an `AFTER INSERT` and an `AFTER UPDATE OF status` on `jobs` —
+records every status a job is ever written, in order, and the tests assert the whole history
+instead of polling the current one. That is S-39's seam a fourth time and for the opposite
+purpose: `RAISE(ABORT)` makes a write fail, and this makes a write remembered.
+**Acceptance:** WHEN a parked job is turned down THEN its history SHALL be `running`,
+`waiting`, `expired` — `running` exactly once, and before the price was ever shown. WHEN a
+parked job is left to time out THEN its history SHALL be those same three. WHEN a parked job
+is told to go THEN its history SHALL be `running`, `waiting`, `running`, `done`. WHEN a job
+of a kind that never parks runs THEN its history SHALL be `running`, `done`.
+**Verify:** the go case is not decoration and is named as the guard it is — a trail that
+records nothing would pass all three of the others, so the one history that must contain a
+`running` after a `waiting` is what proves the recorder can see one at all. Every new
+assertion broken on purpose once and seen to fail; the file green afterwards.
+**Must not:** add a seam to `engine/src/` for this. The trail belongs in the test file
+because the claim is about statements SQLite already sees, and a production hook that exists
+only so a test can watch is the mock this seam was built to avoid. Do not turn the
+`recv_timeout`/`try_recv` race in `park` into an assertion: a go landing in the channel while
+the wait is timing out does need a clock the test owns, and it is a different thing from the
+control this step closes.
+
 ---
 
-**The register is complete through S-41.** Anything after that is a new step appended
+**The register is complete through S-42.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
