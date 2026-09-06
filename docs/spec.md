@@ -2927,5 +2927,62 @@ S-40's `eprintln!` wiring is still unproven. Nothing prunes the `jobs` or `spend
 
 ---
 
+
+### S-45 — The tables the brain is allowed to write ☐
+**PR:** one. **Depends on:** S-39. **Files:** `brain/src/graphify_brain/db.py`,
+`brain/tests/test_db.py`. No engine change, no UI.
+**Today:** `db.py` opens by saying the brain is a guest in the engine's database and that
+there are two connections and no third — `read_only` for the call data, `read_write` for
+the tables the brain authors. Then it says the part that is not true:
+
+> SQLite has no per-table permission, so "only those tables" is a promise this module
+> makes and cannot enforce. What it can enforce is that the connection the call data
+> arrives on is not this one.
+
+Both halves are wrong. Python's `sqlite3` has `set_authorizer`, which is per-table
+permission and is exactly the thing the module says does not exist. And the weaker promise
+it falls back on — that call data does not arrive on the writable connection — is false for
+three of the four commands that read call data: `label`, `synthesize` and `daily` all pull
+transcripts out of `calls` over `read_write`. Only `ask` honours it, and `ask` is the one
+command that never needed to write anything.
+
+So what the writable connection can reach is the whole file. The brain writes three tables
+— `patterns`, `pattern_labels`, `pattern_matches` — and the connection it writes them on
+can also write `calls` and `tool_calls`, which are a client's call history; `secrets`, which
+is the key store; `jobs` and `spend`, which are the two rows S-39 spent a whole step
+binding into one transaction so that a job could not close without its money landing. A
+second writer in another process is the shape that defeats that, and nothing today would
+stop one. No brain code writes any of them. Nothing says it may not.
+
+The docstring also lists `jobs` among the tables the brain is the author of, and
+`test_read_write_writes_jobs` asserts it can write one. Neither is used: no `INSERT`,
+`UPDATE` or `DELETE` anywhere in `brain/src` names `jobs`. The engine owns that row.
+**Change:** `read_write` installs an authorizer that permits writes only to the three
+tables the brain actually authors and denies every other write. Reads are untouched —
+the brain must go on reading `calls`, `tool_calls` and `patterns` on both connections.
+The list is of what is allowed, not of what is protected: S-44's lesson is that a list of
+things to remember is the thing that gets forgotten, and a deny-by-default list means a
+table added to the engine tomorrow is covered by nobody doing anything, while a brain
+command that grows a genuine need for a fourth table fails loudly the first time it is run
+rather than quietly writing where it should not.
+Correct the module docstring to say what is now true, and drop `jobs` from the list of
+tables the brain authors.
+**Verify:** a write to each of the three permitted tables succeeds. A write to `calls`,
+to `secrets`, to `spend` and to `jobs` is refused, and refused at prepare time with an
+error naming the denial rather than a silent no-op. A `SELECT` from `calls` on the writable
+connection still works, because three commands depend on it. `DROP TABLE` and
+`ALTER TABLE` on an engine table are refused too — denying `DELETE FROM calls` while
+allowing `DROP TABLE calls` would be a control that reads well and holds nothing.
+And the vacuity guard: the permitted set must be reached from the code rather than
+restated in the test, so a set that quietly emptied fails rather than passing everything.
+**Acceptance:** WHEN the brain holds its writable connection THEN a write to any table it
+does not author SHALL fail with an error. WHEN a new table is added to the engine's schema
+THEN it SHALL be protected without any change to the brain.
+**Must not:** put an authorizer on `read_only` — `mode=ro` already refuses every write and
+a second control over the same one is noise. Widen the permitted set to cover a table no
+brain code writes, `jobs` included; a need for one is a step, not a line. Change what any
+command reads. Touch the engine: the engine owns this file and its own writes are none of
+this module's business.
+
 **The register is complete through S-44.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
