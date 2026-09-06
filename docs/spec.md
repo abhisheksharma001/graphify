@@ -2725,7 +2725,50 @@ status and a log and no history between them. The banner still polls and nothing
 S-40's `eprintln!` wiring is still unproven. Nothing prunes the `jobs` or `spend` tables.
 The 429 still says *"finish or abandon one first"* without saying where.
 
+
+### S-43 — The removal and the send are one decision ☐ [Rust]
+**PR:** one. **Depends on:** S-38, S-42. **Files:** `engine/src/jobs.rs`. No brain, no UI,
+and no new API: what changes is the width of one lock and what the module can be asked to
+prove about itself.
+**Today:** `tell` states its invariant in a comment — *"the removal and the send are the
+same decision: whoever takes the sender out of the map is the one call that gets to answer
+this job"* — and then writes it as two. `self.lock().remove(&id)` drops the guard at the end
+of that statement, and the send happens with the map unlocked. `park`'s salvage takes the
+lock in between: on a timeout it takes the sender back and looks in the channel once more,
+so a click that has removed the sender and not yet sent leaves `park` an empty map and an
+empty channel. `park` returns `None`, `supervise` kills the child and writes `expired`, and
+`go_job` has already answered 200 `{"status": "running"}`. Nothing is read and nothing is
+spent — the money is never at risk here — but the analyst is told a run started that never
+did, and the product broke a promise it had already made in an HTTP response. This is the
+race three steps called the only one that needs a clock the test owns. It does not need one
+either. It needs the two statements to be one.
+**Change:** hold a single guard across both, so the map is never seen without a job whose
+verdict has not been sent. The send cannot block under it: the channel holds one and takes
+at most one, because the sender is removed from the map by whoever sends, so there is no
+second send to fill it. That makes `park`'s two outcomes exhaustive — either `park` wins the
+lock, takes the sender, and every later click is refused with the 409 it already returns; or
+the click wins it, and the verdict is in the channel before `park` can look. There is no
+third.
+**Verify:** the first `#[cfg(test)]` module in `engine/src`. The invariant is about a
+private map and a private channel and cannot be reached from `engine/tests/`, and this is
+not the seam S-42 refused: the shipped binary is unchanged, nothing in the production API
+grows a hook, and the module is testing its own inside. The test spins rather than sleeps —
+it looks for the first instant another thread can hold the lock and not find the job, and
+asserts the verdict is already in the channel by then. Under the fix that instant is after
+the send by construction, so the test cannot flake; the two-statement `tell` restored is
+what has to redden it.
+**Acceptance:** WHEN a click takes a parked job out of the waiting map THEN its verdict
+SHALL already be in that job's channel by the first moment any other thread can hold the
+map lock. WHEN `go` returns `true` THEN the parked child SHALL be told to go rather than
+expired. WHEN `park` has given up and taken the sender back THEN a later click SHALL be
+refused rather than accepted and dropped.
+**Must not:** sleep in the test — a window this wide is not waited for, it is spun on, and a
+sleep long enough to be reliable is a test that is slow and still wrong. Do not raise the
+channel's capacity or give a job a second sender: one send per channel is what makes a send
+under a lock safe, and a send that could block under a lock is a deadlock. Do not change
+what `/go` or `/stop` answer the browser; the response was never the thing that was wrong.
+
 ---
 
-**The register is complete through S-42.** Anything after that is a new step appended
+**The register is complete through S-43.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.

@@ -54,3 +54,19 @@ reading `done`. The same `let _ =` covers `finish_job`, so a job whose close fai
 fail — `CREATE TRIGGER t BEFORE INSERT ON spend BEGIN SELECT RAISE(ABORT, 'x'); END;` —
 and run a labelling job through to `done`. The job row shows a cost; `spend_on` returns
 0.0. · Second Must-never: *"Daily modes have a hard USD cap and stop when reached."* · Fixed by S-39 (PR #40).
+
+2026-09-06 · `engine/src/jobs.rs:177` · `tell` takes a parked job's sender out of the map
+and sends it the verdict, and its own comment states an invariant the code does not hold —
+*"the removal and the send are the same decision"*. They are two. `self.lock().remove(&id)`
+drops the guard at the end of that statement, so the send happens with the map unlocked.
+`park` gives up on a timeout by taking the sender back and looking in the channel once more,
+and that salvage runs under the same lock — so a click that has removed the sender but not
+yet sent leaves `park` a map with nothing in it and a channel with nothing in it either.
+`park` returns `None`, `supervise` writes `expired` and kills the child, and `go_job` has
+already answered 200 `{"status": "running"}` (`engine/src/server.rs:891`). The analyst is
+told the run started and it never does. Nothing is read and nothing is spent, so the money
+is safe; what is lost is the answer to a question the product said yes to. · Reproduce: not
+by hand — the window is the handful of instructions between `MutexGuard::drop` and
+`SyncSender::send`. Under contention it is reachable: park a job, race a `go` against a
+reader that takes the lock the instant it is free, and the reader can see the map without
+the job while the channel is still empty. · Fixed by S-43.
