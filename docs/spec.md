@@ -2182,10 +2182,11 @@ still gets as far as the engine before anything says so; that is the right side 
 check to live on and the wrong side for the bug to be found on. And there is still no
 cancel for a parked job, which S-36 left open and this step did not reach.
 
-### S-38 — The second click has a no ☐ [Rust]
+### S-38 — The second click has a no ☑ [Rust] (PR #39, 70bd768)
 **PR:** one. **Depends on:** S-37, S-36, S-33, S-22, S-13.
-**Files:** `engine/src/jobs.rs`, `engine/src/server.rs`, `engine/tests/jobs.rs`,
-`ui/src/api.ts`, `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`,
+**Files (as built):** `engine/src/jobs.rs`, `engine/src/server.rs`,
+`engine/tests/jobs.rs`, `ui/src/api.ts`, `ui/src/index.css`,
+`ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`,
 `docs/backlog/bugs.md`. No brain.
 **Today:** the two-click rule has a yes and no no. S-22 built the park, S-36 made the
 browser refuse to draw a go it cannot price, and S-37 made the engine refuse to park on a
@@ -2233,5 +2234,5 @@ again from the top, because the selection may have moved and S-33 exists for tha
 
 ---
 
-**The register is complete through S-37.** Anything after that is a new step appended
+**The register is complete through S-38.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
