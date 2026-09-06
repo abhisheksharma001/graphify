@@ -3034,7 +3034,7 @@ and the other three still read a client's call history over a writable one — n
 but the same connection. Nothing here touches the engine, which writes every one of these
 tables freely and should.
 
-### S-46 — A session that ends ☐ [Rust]
+### S-46 — A session that ends ☑ [Rust] (PR #47, ab8f4b3)
 **PR:** one. **Depends on:** S-44, whose route harvest is what makes "the gate" mean every
 route rather than the ones somebody remembered. **Files:** `engine/src/auth.rs`,
 `engine/tests/server.rs`. No brain change, no UI.
@@ -3100,5 +3100,63 @@ on purpose is a different want from a credential not being immortal, and a butto
 needs the UI to know whether the gate is on at all, which is a route change and its own
 step. Persist sessions to disk. Make the TTL configurable.
 
-**The register is complete through S-45.** Anything after that is a new step appended
+**Files (as built):** as specified — `engine/src/auth.rs` and `engine/tests/server.rs`.
+267 → 274 engine tests, five of the new ones in `auth.rs` itself: `jobs.rs` had the only
+`#[cfg(test)]` module in `engine/src` before this, and the sweep assertions need to read a
+private map. No brain change, no UI, no new dependency.
+
+**Learned:** *the concession is written to make what is left of it feel safe.* S-45 found a
+module that conceded per-table permission and fell back on a promise nobody rechecked. This
+one concedes durability — "nothing to expire on disk" — and the reader's eye finishes the
+sentence as "nothing to expire". Both are the same move: name the thing you did not do, so
+that the thing you also did not do goes past unread. The tell is a comment that argues a
+trade-off. A comment defending a decision has already decided what the reader will check.
+
+*Two deaths were named so that neither had to be the server's.* "Dies with the browser or
+with the process, whichever comes first" is a complete-sounding sentence about a credential
+that never expired, and it is complete-sounding precisely because it is a list. One clause
+was the browser's doing and the other was a crash or a deploy. Neither was this process
+deciding a token was no longer good, which is the only one of the three that is a control.
+Prose that offers two guarantees and owns neither is worth more suspicion than prose that
+offers none.
+
+*The environment decides whether a security default is real.* The gap here is not that the
+session was long-lived; it is that the process is. S-31's scheduler and the container's
+supercronic are what turn "dies with the process" into "does not die". A comment can be
+accurate on a developer's laptop, where the binary is restarted every few minutes, and be
+false in the only deployment the project ships. Read the lifetime claims against the
+deployment, not against how the thing is run while it is being written.
+
+*The symmetric answer was the wrong one.* Giving the cookie a `Max-Age` matching the TTL is
+what tidiness suggests and it is a regression: `Max-Age` makes a cookie persistent, so it
+would have started surviving the browser close that today ends it. Fixing one end of a
+two-ended thing is not licence to make the ends match. The cookie's code is unchanged here;
+only its comment was wrong.
+
+*The escape hatch a test needs is a hole in what the tests cover.* `with_ttl` exists so a
+test can outlive a session in fifty milliseconds. Every test then used it — which meant no
+test exercised `SESSION_TTL`, and a `new` that quietly handed out a year-long session would
+have left all 273 of them green. Self-review caught it and break 6 proves it: one test goes
+red, and it is the one added afterwards. Any seam opened for testability should be followed
+by asking what now goes untested on the other side of it.
+
+*A break that stops early is not a break that found nothing.* Break 1 first reported 2 red.
+`cargo test` abandons the remaining binaries after one fails, so the integration suite never
+ran and the HTTP test's silence was the runner's, not the code's. Every figure in the PR is
+`--no-fail-fast`. The same mistake in the other direction — a green run that stopped early —
+would not have announced itself at all.
+
+**Not done:** there is no logout, and that is a decision rather than an omission: ending a
+session on purpose is a different want from a credential not being immortal, and a button
+for it needs the UI to know whether the gate is on at all, which is a route change and its
+own step. Nothing pushes, so an expired session is met on the next thing a person does —
+`Notices` swallows its own 401 by design, and an idle tab goes on showing a stale dashboard
+until it is touched. `Instant` is monotonic, so no clock change can lengthen a session, but
+on a platform where it does not advance across suspend a laptop asleep for a day wakes with
+its session intact. The TTL is a constant and not configurable, by Must-not. And the map is
+still bounded only by live sessions and swept only on login or on a request that presents an
+expired token: a process that is signed into once and then left alone holds that one entry
+until the day is out, which is the correct amount of nothing to do about it.
+
+**The register is complete through S-46.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
