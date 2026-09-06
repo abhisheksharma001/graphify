@@ -175,11 +175,15 @@ impl Jobs {
     }
 
     fn tell(&self, id: i64, verdict: Verdict) -> bool {
-        let sender = self.lock().remove(&id);
-        // The removal and the send are the same decision: whoever takes the sender out of
-        // the map is the one call that gets to answer this job, so a second click finds
-        // nothing rather than a second answer.
-        sender.is_some_and(|tx| tx.send(verdict).is_ok())
+        // The removal and the send are the same decision, and one guard is what makes them
+        // one: whoever takes the sender out of the map is the one call that gets to answer
+        // this job, so a second click finds nothing rather than a second answer, and
+        // `park`'s salvage cannot look into the gap between the two and find neither. The
+        // send cannot block under this lock — the channel holds one and takes at most one,
+        // because the sender is removed by whoever sends and there is no second sender to
+        // fill it.
+        let mut waiting = self.lock();
+        waiting.remove(&id).is_some_and(|tx| tx.send(verdict).is_ok())
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<i64, SyncSender<Verdict>>> {
@@ -556,6 +560,9 @@ fn park(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64) -> Result<Option<Verdict>> {
         // Take the sender back before giving up, then look once more. An answer that
         // arrived while the wait was timing out took the sender out of the map under that
         // lock and put its verdict in the channel, and it would be a strange thing to drop.
+        // These two lines are exhaustive because `tell` holds one guard: either this wins
+        // the lock and takes the sender, and every later click is refused, or the click
+        // won it and the verdict is here to be read.
         jobs.lock().remove(&id);
         said = rx.try_recv().ok();
     }
@@ -693,4 +700,99 @@ fn append(db: &Arc<Mutex<Db>>, id: i64, line: &str) {
 /// the same reasoning `server::App::db` gives.
 fn lock(db: &Mutex<Db>) -> MutexGuard<'_, Db> {
     db.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+// --- the map and the channel, under one lock ------------------------------------------
+//
+// The first tests inside `engine/src`, and here rather than in `engine/tests/jobs.rs`
+// because the thing they are about is a private map and a private channel that no server
+// exposes. This is not the seam S-42 refused: nothing here is compiled into the binary and
+// no production call grows a hook — the module is being asked about its own inside.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const ID: i64 = 7;
+
+    /// How long to keep looking, once the click is known to have started. Spins, not
+    /// milliseconds: what this waits for is a lock that is either taken or not, and a
+    /// bound only so a mistake here fails the test instead of wedging CI.
+    const LOOKS: usize = 5_000_000;
+
+    /// The whole step in one probe. A channel that is already full makes `send` block, and
+    /// a blocked send is the gap between the removal and the send held open for as long as
+    /// the test likes — no clock, no race, no luck. Under one guard the click is blocked
+    /// still holding the map, so nobody else can take it; under two it is blocked having
+    /// let the map go, and `park`'s salvage would find neither a sender nor a verdict and
+    /// expire a job that `/go` has already answered 200 for.
+    #[test]
+    fn a_click_that_cannot_finish_does_not_let_go_of_the_map() {
+        let jobs = Arc::new(Jobs::new());
+        let (tx, rx) = sync_channel(1);
+        // The one place in the channel, taken. Nothing in the engine can do this — a job
+        // has one sender and it is removed by whoever sends — which is the same fact that
+        // makes a send under the lock safe there and makes this probe possible here.
+        tx.send(Verdict::No).unwrap();
+        jobs.lock().insert(ID, tx);
+
+        let started = Arc::new(AtomicBool::new(false));
+        let click = thread::spawn({
+            let (jobs, started) = (Arc::clone(&jobs), Arc::clone(&started));
+            move || {
+                started.store(true, Ordering::Release);
+                jobs.go(ID)
+            }
+        });
+
+        while !started.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+        for _ in 0..LOOKS {
+            if let Ok(waiting) = jobs.waiting.try_lock() {
+                assert!(
+                    waiting.contains_key(&ID),
+                    "the map was let go of between the removal and the send"
+                );
+            }
+            std::hint::spin_loop();
+        }
+
+        // Make room, and the click that has been blocked all this time finishes.
+        assert_eq!(rx.recv(), Ok(Verdict::No));
+        assert!(click.join().unwrap(), "the click did not answer the job");
+        assert_eq!(rx.recv(), Ok(Verdict::Go));
+    }
+
+    /// The guard the probe above rests on: the removal really happens. A `tell` that only
+    /// looked the sender up and never took it out would hold the map for the whole of its
+    /// send and pass that test every time, having never let go of anything — so this is
+    /// the test that says a job is answered once and then is nobody's.
+    ///
+    /// The channel is drained between the two clicks on purpose. A second answer has to be
+    /// refused, not merely blocked: with the verdict still sitting in the buffer a `tell`
+    /// that never removed would stall on a full channel instead of failing here, and a
+    /// test that hangs says less than a test that fails.
+    #[test]
+    fn only_the_first_click_answers_a_job() {
+        let jobs = Jobs::new();
+        let (tx, rx) = sync_channel(1);
+        jobs.lock().insert(ID, tx);
+
+        assert!(jobs.go(ID));
+        assert_eq!(rx.try_recv(), Ok(Verdict::Go));
+        assert!(!jobs.go(ID), "a second click answered the job again");
+        assert!(!jobs.stop(ID), "a no answered a job that had already gone");
+        assert!(rx.try_recv().is_err(), "a job was answered twice");
+    }
+
+    /// A job nobody parked is nobody's to answer, which is the `false` `go_job` turns into
+    /// its 409 and the same `false` `park` guarantees once it has taken its sender back.
+    #[test]
+    fn a_job_that_is_not_parked_is_refused() {
+        let jobs = Jobs::new();
+        assert!(!jobs.go(ID));
+        assert!(!jobs.stop(ID));
+    }
 }
