@@ -172,6 +172,7 @@ pub fn router(app: App) -> Router {
         .route("/api/patterns/{id}/apply", post(apply_pattern))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/go", post(go_job))
+        .route("/api/jobs/{id}/stop", post(stop_job))
         .layer(middleware::from_fn_with_state(app.clone(), gate));
 
     Router::new()
@@ -824,6 +825,26 @@ async fn go_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response,
         ));
     }
     Ok(Json(json!({ "id": id, "status": jobs::RUNNING })).into_response())
+}
+
+/// Turn a parked job's price down. The other answer to the same question, and the one the
+/// 429 above has always told people to give without giving them anywhere to give it.
+///
+/// Refuses on exactly the terms `/go` refuses on, because it is the same map and the same
+/// removal: a job that has finished, expired, already gone or already been stopped is not
+/// waiting for an answer, and there is nothing here to say no to. Nothing running is
+/// touched — that job has spent, and stopping it would be a refund the engine cannot give.
+async fn stop_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
+    if !app.jobs.stop(id) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!("job {id} is not waiting for an answer"),
+        ));
+    }
+    // `expired` is what the row will say, and it is not written here: the supervisor owns
+    // that write and has a child to kill first. What is true the moment this returns is
+    // that the slot is nobody's.
+    Ok(Json(json!({ "id": id, "status": jobs::EXPIRED })).into_response())
 }
 
 // --- patterns -------------------------------------------------------------------------
