@@ -64,25 +64,109 @@ fn the_fixture_extracts_the_numbers_the_spec_names() {
 }
 
 #[test]
-fn slim_is_under_10_kb_and_holds_no_duplicates() {
+fn slim_keeps_only_what_it_names() {
     let (c, _) = extract(&fixture(), 1, &transfer_tools()).unwrap();
     let slim = c.slim.unwrap();
-    assert!(slim.len() < 10_240, "slim was {} bytes", slim.len());
+    assert!(slim.len() < 6_144, "slim was {} bytes", slim.len());
 
     let s: Value = serde_json::from_str(&slim).unwrap();
-    for gone in ["messages", "monitor", "transport"] {
+    let top: Vec<&str> = s.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(top, ["analysis", "artifact", "costs", "destination", "transcript"]);
+
+    let art: Vec<&str> = s["artifact"].as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(
+        art,
+        [
+            "assistantActivations",
+            "messages",
+            "performanceMetrics",
+            "recording",
+            "recordingUrl",
+            "stereoRecordingUrl",
+        ]
+    );
+}
+
+/// The reason this file is an allowlist. Vapi adds a field, nobody here hears about it,
+/// and a denylist stores it — which is how `customer` got in. The key below is the shape
+/// of a field released after this code was written; it must not survive on either level.
+#[test]
+fn a_field_nobody_has_heard_of_does_not_survive() {
+    let mut raw = fixture();
+    raw["somethingVapiShippedOnTuesday"] = json!({ "secret": "x" });
+    raw["artifact"]["somethingVapiShippedOnTuesday"] = json!({ "secret": "x" });
+
+    let (c, _) = extract(&raw, 1, &transfer_tools()).unwrap();
+    let s: Value = serde_json::from_str(&c.slim.unwrap()).unwrap();
+
+    assert!(s.get("somethingVapiShippedOnTuesday").is_none(), "top level: {s}");
+    assert!(s["artifact"].get("somethingVapiShippedOnTuesday").is_none(), "artifact: {s}");
+}
+
+/// The caller's number is not one of the 45 columns of `Call`, on purpose. It must not
+/// reach the database through the blob either, and the same goes for the number a call was
+/// forwarded from. `destination` stays: the transfer target is a business number the
+/// analyst is looking at, and `transfer_destination` is already a column beside it.
+#[test]
+fn the_callers_number_does_not_land() {
+    let (c, _) = extract(&fixture(), 1, &transfer_tools()).unwrap();
+    let slim = c.slim.unwrap();
+
+    for gone in ["customer", "forwardedPhoneNumber"] {
+        let s: Value = serde_json::from_str(&slim).unwrap();
+        assert!(s.get(gone).is_none(), "slim still carries {gone}");
+    }
+    assert!(
+        !slim.contains("+15550000000"),
+        "the caller's number is somewhere in the blob: {slim}"
+    );
+}
+
+/// Duplicated, ephemeral and credential-bearing keys were the original nine removals.
+/// They stay gone under the allowlist, which is a different claim: not that they were
+/// named for removal, but that nothing named them for keeping.
+#[test]
+fn the_duplicates_and_the_presigned_urls_stay_out() {
+    let (c, _) = extract(&fixture(), 1, &transfer_tools()).unwrap();
+    let s: Value = serde_json::from_str(&c.slim.unwrap()).unwrap();
+
+    for gone in ["messages", "monitor", "transport", "assistant", "squad"] {
         assert!(s.get(gone).is_none(), "slim still carries {gone}");
     }
     for gone in ["messagesOpenAIFormatted", "variables", "variableValues", "logUrl"] {
         assert!(s["artifact"].get(gone).is_none(), "slim still carries artifact.{gone}");
     }
-    // What the call drawer draws has to survive.
+}
+
+/// An in-progress call has no artifact yet. The blob follows the same rule the columns
+/// follow — absent stays absent — rather than storing an empty object that a reader would
+/// have to tell apart from an artifact that arrived carrying nothing.
+#[test]
+fn a_call_with_no_artifact_gets_no_artifact_key() {
+    let mut raw = fixture();
+    raw.as_object_mut().unwrap().remove("artifact");
+
+    let (c, _) = extract(&raw, 1, &transfer_tools()).unwrap();
+    let s: Value = serde_json::from_str(&c.slim.unwrap()).unwrap();
+
+    assert!(s.get("artifact").is_none(), "slim invented an artifact: {s}");
+    assert!(s.get("analysis").is_some(), "the rest of the blob went with it: {s}");
+}
+
+/// What the blob is for. Everything named here is something no column holds.
+#[test]
+fn slim_keeps_the_drawer_extras() {
+    let (c, _) = extract(&fixture(), 1, &transfer_tools()).unwrap();
+    let s: Value = serde_json::from_str(&c.slim.unwrap()).unwrap();
+
     for kept in ["costs", "analysis", "destination", "transcript"] {
         assert!(s.get(kept).is_some(), "slim dropped {kept}");
     }
     for kept in ["performanceMetrics", "assistantActivations", "recordingUrl", "messages"] {
         assert!(s["artifact"].get(kept).is_some(), "slim dropped artifact.{kept}");
     }
+    assert!(s["artifact"]["messages"].as_array().unwrap().len() > 1);
+    assert!(s["costs"].as_array().unwrap().len() > 1);
 }
 
 #[test]
