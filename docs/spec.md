@@ -2506,7 +2506,7 @@ the `jobs` table or the `spend` table. And the 429's own wording is still *"fini
 abandon one first"* without saying where — true when the queue is genuinely full, and it
 is the sentence a person reads in both cases.
 
-### S-41 — One place the failures are visible
+### S-41 — One place the failures are visible ☑ [Rust] (PR #42, 35cb904)
 
 **PR:** one. **Depends on:** S-40, S-39, S-38.
 **Files:** `engine/src/notices.rs` (new), `engine/src/lib.rs`, `engine/src/server.rs`,
@@ -2592,6 +2592,57 @@ they pass. No websocket and no SSE behind a banner that changes twice a year. Do
 the page on it: a notices request that does not answer leaves the banner as it was and puts
 nothing on the error line — the route being unreachable is not itself news, and that line is
 for requests a person made.
+**Files (as built):** as listed, plus `engine/tests/serve.rs` — the gate test belongs where
+a server with a password already exists, not where one is invented for it. 253 → 258 engine
+tests; `tests/jobs.rs` 54 → 59. 41 → 46 ui tests.
+
+**Learned:**
+
+*The cause decided the storage, and the storage turned out to be the feature.* The board
+could not be a table, because both things that push to it are the database refusing a
+write; that is a constraint, and it was accepted rather than worked around. What fell out
+of it is the part worth keeping: a board that lives for the life of the process cannot go
+stale, because the remedy its own sentence names is a restart and a restart re-runs the
+sweep. So there is no dismiss button, no acknowledged flag, no read-and-unread, and none of
+them are missing. The restart is the dismissal. Half the features this step did not build
+were ruled out by one sentence about where the failure was.
+
+*Clippy's argument limit found the abstraction, and S-39's precedent said which way to go.*
+Adding the board pushed `start` and `finish` to eight arguments each. The cheap answer is
+`#[allow(clippy::too_many_arguments)]`; S-39 had already refused it once, deriving the day
+from `finished_at` rather than passing both. The same answer worked here and is better than
+either: `Records` bundles the row and the board because they are one idea — the two places
+a job's ending is written down — and it names that idea in a file that was carrying it
+implicitly. A lint about argument count is sometimes a lint about a missing noun.
+
+*The third step running that needed no new test harness.* S-39 built the `RAISE(ABORT)`
+trigger seam, S-40 reused it, and this step used two of its triggers unchanged. The
+estimate at the time was a trait-based mock of `Db`; what it took was four lines of SQL.
+The seam has now paid for itself three times, which is the argument for spending a step's
+budget on one rather than on the feature it was in the way of.
+
+*The one hazard in the diff was not in the feature.* Self-review found `finish` pushing to
+the board while still holding the database lock — safe, because nothing anywhere takes the
+board first and the database second, but safe by an invariant nothing had written down. The
+comment is the change; the code was already right. Worth noticing that the review caught a
+lock order and not a missing assertion, which is the kind of thing the tests could not have
+found.
+
+*One break reddened the run without reddening a test, and it is recorded that way.* Break 8
+— rethrowing instead of swallowing a failed notices request — fails CI through an unhandled
+rejection, not an assertion, because the assertion's claim (the page is unaffected) is true
+either way. It is a real red and a weaker one than the other seven, and saying so is worth
+more than a break table with eight tidy rows.
+
+**Not done:** the banner polls, which is the crudest thing that works and is the right
+crudeness for something that changes twice a year; nothing pushes. The `eprintln!` wiring
+S-40 left unproven is still unproven, and the board now covers what that gap actually cost,
+so it is less worth doing than it was. Nothing prunes the `jobs` or `spend` tables. S-38's
+`park`/`running` control is still the last unproven one and still needs a clock the test
+owns. The 429's own wording still says *"finish or abandon one first"* without saying
+where — and now there is a banner it could point at, which makes that a smaller step than
+it was yesterday. `run_blocking` fills a board nobody reads: honest, documented, and still a
+shape that would mislead a reader who found it before the comment.
 
 ---
 
