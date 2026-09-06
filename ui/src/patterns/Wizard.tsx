@@ -304,6 +304,22 @@ export default function Wizard({
       setRun((r) => (r === null || r.of !== settings ? r : { ...r, job: done, labelled }))
     })
 
+  /** The other answer to click two. Turns the quote down: the engine kills the child with
+   * its stdin still open, having read nothing, and the slot the job was holding is free
+   * for the next quote rather than held for the half hour the engine would otherwise wait.
+   */
+  const decline = () =>
+    during('Letting it go…', async () => {
+      if (live === null) return
+      // A refusal here means the job is already gone — it expired while this page sat
+      // open, or the go beat this click to the map. Either way the answer to "stop it" is
+      // that it is stopped, so the wizard goes back rather than reporting a failure to do
+      // something already done.
+      await api.stop(live.job.id).catch(() => {})
+      setRun(null)
+      went.current = false
+    })
+
   /** Save. The brain writes the `patterns` row itself as the last thing `synthesize` does,
    * so this button is the one that creates the pattern — which is why it, too, shows what
    * it costs before it is pressed. */
@@ -554,18 +570,28 @@ export default function Wizard({
                     ? `Read ${count} calls`
                     : `Read ${count} calls · up to ${money(priced)}`}
                 </button>
+                {/* The no. Present whenever there is a quote, including the one that came
+                    back without a price — especially then, since that is the run there is
+                    no way to approve. Not disabled by the gate: declining is the one
+                    answer that is always available and always costs nothing. */}
+                {live !== null && (
+                  <button type="button" className="no" onClick={decline} disabled={busy !== null}>
+                    Not now
+                  </button>
+                )}
                 {live !== null && priced === null && (
                   <p className="hint">
                     This run parked without a price, so there is nothing to approve and
-                    nothing has been read. Change anything above to price it again; the
-                    parked job bought nothing and the engine drops it within the half hour.
+                    nothing has been read. Say “Not now” and price it again; the parked job
+                    bought nothing, and letting it go frees the slot it is holding.
                   </p>
                 )}
                 {live !== null && priced !== null && (
                   <p className="hint">
                     A ceiling, not a forecast: output is priced at the most a batch could
                     return, so short calls usually cost a fraction of it. Nothing has been
-                    read yet, and leaving this page reads nothing.
+                    read yet, and leaving this page reads nothing — though “Not now” hands
+                    the slot back, where leaving holds it for half an hour.
                   </p>
                 )}
                 {live?.job.progress && busy !== null && (

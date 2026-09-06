@@ -999,6 +999,12 @@ thead th {
   padding: 7px 12px;
 }
 
+/* The no, beside the go and quieter than it. The two are one question, so they sit
+ * together; only one of them costs anything, so only one of them is weighted. */
+.wizard button.no {
+  margin-left: 8px;
+}
+
 .wizard button:disabled {
   color: var(--ink-muted);
   border-color: var(--grid);

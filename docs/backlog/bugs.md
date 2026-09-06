@@ -36,4 +36,4 @@ and the back of the browser. So the message names a remedy the product does not 
 engine drops it within the half hour."* Four abandoned quotes — four closed tabs — and
 labelling is refused for up to half an hour, having read nothing and spent nothing. ·
 Reproduce: price a run in the wizard, close the tab without clicking the go, four times.
-The fifth `POST /api/patterns/label` answers 429. · Fixed by S-38.
+The fifth `POST /api/patterns/label` answers 429. · Fixed by S-38 (PR #39).

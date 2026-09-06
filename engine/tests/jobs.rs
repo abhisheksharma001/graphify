@@ -1047,3 +1047,97 @@ async fn a_bad_quote_is_never_parked_on_even_for_a_moment() {
     let (status, why) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
     assert_eq!(status, 409, "a job that never showed a price answered a go: {why}");
 }
+
+// --- the no ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_parked_job_that_is_turned_down_is_killed_unspent() {
+    let server = served(LABELS).await;
+    let id = parked(&server).await;
+
+    let (status, body) = post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], jobs::EXPIRED);
+
+    let gone = until(&server, id, jobs::EXPIRED).await;
+    // The same status a timeout leaves, because it is the same fact: killed having read
+    // nothing. What differs is the sentence, and the sentence is the whole point of not
+    // reusing the timeout's.
+    assert!(
+        gone["log"].as_str().unwrap().contains("the price was turned down"),
+        "{gone}"
+    );
+    assert!(
+        !gone["log"].as_str().unwrap().contains("nobody approved the price in time"),
+        "a job somebody declined in a moment was recorded as one nobody got to: {gone}"
+    );
+    spent_nothing(&server, &gone);
+}
+
+#[tokio::test]
+async fn a_job_turned_down_gives_its_slot_back_at_once() {
+    // The bug this step is for. Four parked jobs are the engine's whole budget, and until
+    // now the only way past that was to wait out `GO_WAIT` — half an hour, in a message
+    // that told the analyst to "abandon one" and gave them nowhere to do it.
+    let server = served(LABELS).await;
+    let mut ids = Vec::new();
+    for _ in 0..jobs::MAX_LIVE {
+        ids.push(parked(&server).await);
+    }
+    let (full, _) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "one more"}),
+    )
+    .await;
+    assert_eq!(full, 429);
+
+    let (stopped, _) = post(&server.url(&format!("/api/jobs/{}/stop", ids[0])), json!({})).await;
+    assert_eq!(stopped, 200);
+    // Waited for, not assumed: the row is what `live_jobs` counts, and the supervisor
+    // writes it after killing the child.
+    until(&server, ids[0], jobs::EXPIRED).await;
+
+    let (again, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "one more"}),
+    )
+    .await;
+    assert_eq!(again, 202, "the freed slot was not free: {body}");
+    until(&server, body["id"].as_i64().unwrap(), jobs::WAITING).await;
+}
+
+#[tokio::test]
+async fn a_stop_and_a_go_are_the_same_decision_asked_twice() {
+    let server = served(LABELS).await;
+
+    // A go, then a no: the run is already reading, and there is nothing left to decline.
+    let going = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{going}/go")), json!({})).await.0, 200);
+    let (late, body) = post(&server.url(&format!("/api/jobs/{going}/stop")), json!({})).await;
+    assert_eq!(late, 409, "a job that had already been told to go accepted a no: {body}");
+    let done = until(&server, going, jobs::DONE).await;
+    assert_eq!(done["cost_usd"], 0.0123, "the no took money off a run that had started");
+
+    // A no, then a go: the child is dead, and the second click finds an empty map.
+    let stopping = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{stopping}/stop")), json!({})).await.0, 200);
+    let (after, why) = post(&server.url(&format!("/api/jobs/{stopping}/go")), json!({})).await;
+    assert_eq!(after, 409, "a job that was turned down answered a go: {why}");
+    let gone = until(&server, stopping, jobs::EXPIRED).await;
+    assert_eq!(gone["cost_usd"], 0.0);
+}
+
+#[tokio::test]
+async fn a_stop_for_a_job_that_is_not_waiting_is_refused_the_way_a_go_is() {
+    let server = served(LABELS).await;
+    let (missing, _) = post(&server.url("/api/jobs/9999/stop"), json!({})).await;
+    assert_eq!(missing, 409);
+
+    // A kind that never parks has nothing to turn down either.
+    let server = served(ANSWERS).await;
+    let (_, body) = post(&server.url("/api/patterns/clarify?org=1"), json!({"criterion": "x"})).await;
+    let id = body["id"].as_i64().unwrap();
+    until(&server, id, jobs::DONE).await;
+    let (status, why) = post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await;
+    assert_eq!(status, 409, "{why}");
+}

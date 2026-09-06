@@ -405,6 +405,11 @@ export const job = (id: number) => get<Job>(`/api/jobs/${id}`)
  * button that sends it carries the price the brain quoted. */
 export const go = (id: number) => send<Started>('POST', `/api/jobs/${id}/go`, null)
 
+/** The no. The other answer to the price the go carries, and the one that gives the
+ * engine's slot back: a parked job otherwise holds it for the half hour the engine waits.
+ * Spends nothing and reads nothing, because the job it stops has done neither. */
+export const stop = (id: number) => send<Started>('POST', `/api/jobs/${id}/stop`, null)
+
 /** One assistant's system prompt. Not in `assistants` above, which is a picker: these run
  * to tens of kilobytes each, and the wizard asks for the one it is planning against only
  * when the analyst has ticked the box. */

@@ -121,6 +121,10 @@ function stubEngine(
         gone.add(Number(go[1]))
         return answer({ id: Number(go[1]), status: 'running' })
       }
+      const stop = /\/api\/jobs\/(\d+)\/stop$/.exec(url)
+      if (method === 'POST' && stop) {
+        return answer({ id: Number(stop[1]), status: 'expired' })
+      }
       if (url.startsWith('/api/calls?')) {
         return answer(Array.from({ length: found }, (_, i) => ({ id: `c${i + 1}` })))
       }
@@ -149,6 +153,13 @@ const posted = (fn: string) => {
 /** Every `POST .../go` the browser has made. The only call in the system that lets a model
  * read a call, so counting them is most of this file's second half. */
 const goes = () => sent.filter((r) => r.method === 'POST' && r.url.endsWith('/go'))
+
+/** Every `POST .../stop` the browser has made. Spends nothing; the point of counting them
+ * is that the slot goes back rather than being held for the half hour the engine waits. */
+const stops = () => sent.filter((r) => r.method === 'POST' && r.url.endsWith('/stop'))
+
+/** The no beside the go. */
+const noButton = () => screen.getByRole('button', { name: 'Not now' })
 
 /** All the POSTs to one brain function, however many — `posted` above wants exactly one. */
 const posts = (fn: string) =>
@@ -350,5 +361,54 @@ describe('the two clicks that spend', () => {
     // And it says so, rather than leaving a dead button to be read as a slow network.
     expect(screen.getByText(/parked without a price/)).toBeTruthy()
     expect(screen.queryByText(/A ceiling, not a forecast/)).toBeNull()
+  })
+
+  test('the no is offered once there is a quote, and not before', async () => {
+    const user = await draft()
+
+    // Nothing is parked yet, so there is nothing to decline: the only button here is the
+    // one that would price the run.
+    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
+
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+    expect((noButton() as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  test('turning a quote down stops the job and leaves the wizard able to price again', async () => {
+    const user = await quoted()
+
+    await user.click(noButton())
+    await screen.findByRole('button', { name: 'Read 25 calls' })
+
+    // The job the analyst walked away from is told so, rather than left parked on a slot
+    // for half an hour. Before S-38 this click did not exist and closing the tab was it.
+    expect(stops()).toHaveLength(1)
+    expect(stops()[0].url).toBe('/api/jobs/2/stop')
+    // And the no is not a quiet yes.
+    expect(goes()).toHaveLength(0)
+
+    // Back where it was before the quote: no price on the button, and no button to decline.
+    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
+
+    // A second quote starts a second job, which is the point of giving the slot back.
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+    expect(posts('label')).toHaveLength(2)
+    expect(goes()).toHaveLength(0)
+  })
+
+  test('a run that parked without a price can still be turned down', async () => {
+    // The run there is no way to approve is the one most worth being able to let go of:
+    // its go is disabled by S-36, so without this button the slot is held to the timer.
+    stubEngine(undefined, { plan: SURE, estimate: null })
+    const user = await quoted()
+    expect((spendButton() as HTMLButtonElement).disabled).toBe(true)
+    expect((noButton() as HTMLButtonElement).disabled).toBe(false)
+
+    await user.click(noButton())
+    await screen.findByRole('button', { name: 'Read 25 calls' })
+    expect(stops()).toHaveLength(1)
+    expect(goes()).toHaveLength(0)
   })
 })

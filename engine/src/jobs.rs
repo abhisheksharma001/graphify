@@ -116,13 +116,23 @@ impl Kind {
     }
 }
 
+/// What a parked job was told. There are two ways for a person to answer a price, and
+/// the engine has always carried only one of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Verdict {
+    /// Go. Read the calls.
+    Go,
+    /// No. Nothing has been read, and nothing will be.
+    No,
+}
+
 /// The jobs that are parked on their go, by id.
 ///
 /// Only the live ones: a job's row says what happened to it, and this says which of them
 /// a `POST /go` can still reach. Empty after a restart, which is correct — the children
 /// died with the engine, and their rows are `waiting` against a process that is gone.
 pub struct Jobs {
-    waiting: Mutex<HashMap<i64, SyncSender<()>>>,
+    waiting: Mutex<HashMap<i64, SyncSender<Verdict>>>,
     /// How long a parked job waits. A field rather than a constant so a test can watch a
     /// job expire without sitting through half an hour of it.
     wait: Duration,
@@ -150,17 +160,28 @@ impl Jobs {
     }
 
     /// Send one job its go. `false` means nothing was parked under that id: a job that has
-    /// finished, one that expired, one of a kind that never waits, or the second of two
-    /// clicks on the same button.
+    /// finished, one that expired, one that was turned down, one of a kind that never
+    /// waits, or the second of two clicks on the same button.
     pub fn go(&self, id: i64) -> bool {
-        let sender = self.lock().remove(&id);
-        // The removal and the send are the same decision: whoever takes the sender out of
-        // the map is the one call that gets to start this job, so a second click finds
-        // nothing rather than a second go.
-        sender.is_some_and(|tx| tx.send(()).is_ok())
+        self.tell(id, Verdict::Go)
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<i64, SyncSender<()>>> {
+    /// Turn one job's price down. Same `false` for the same reasons, and a job that has
+    /// already been told to go is one of them: the go and the no are the same decision
+    /// asked twice, so the second of them finds an empty map either way.
+    pub fn stop(&self, id: i64) -> bool {
+        self.tell(id, Verdict::No)
+    }
+
+    fn tell(&self, id: i64, verdict: Verdict) -> bool {
+        let sender = self.lock().remove(&id);
+        // The removal and the send are the same decision: whoever takes the sender out of
+        // the map is the one call that gets to answer this job, so a second click finds
+        // nothing rather than a second answer.
+        sender.is_some_and(|tx| tx.send(verdict).is_ok())
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<i64, SyncSender<Verdict>>> {
         self.waiting.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -340,8 +361,11 @@ enum Outcome {
     /// It ran to the end of its stdout. The string is the last non-empty line, which is
     /// where the brain puts its result.
     Ran(Option<String>),
-    /// Nobody approved the price, so the child was killed.
+    /// Nobody approved the price in time, so the child was killed.
     Expired,
+    /// Somebody looked at the price and said no, so the child was killed. The same cost as
+    /// `Expired` — nothing — reached faster and on purpose.
+    Declined,
 }
 
 /// Own one child from spawn to row. Runs on its own thread; every failure here ends as a
@@ -376,6 +400,18 @@ fn supervise(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64, spawn: Spawn) {
             0.0,
             spawn.org,
             "nobody approved the price in time, so this was stopped before it read anything",
+        ),
+        // `expired` and not a status of its own: the row already means killed unspent, and
+        // a second word for that would differ only in how fast it arrived. The reason line
+        // is where the difference belongs.
+        Ok(Outcome::Declined) => finish(
+            db,
+            id,
+            EXPIRED,
+            None,
+            0.0,
+            spawn.org,
+            "the price was turned down, so this was stopped before it read anything",
         ),
         Ok(Outcome::Ran(last)) => {
             let ok = matches!(status, Ok(s) if s.success());
@@ -452,10 +488,15 @@ fn converse(
                 .append_job_log(id, &spawn.redact.scrub(&line))
                 .context("writing the brain's quote to the job's log")?;
             if let Some(stdin) = stdin.take() {
-                if !park(jobs, db, id)? {
-                    return Ok(Outcome::Expired);
+                match park(jobs, db, id)? {
+                    Some(Verdict::Go) => go(stdin)?,
+                    // Both of these drop `stdin` unwritten and return, and `supervise`
+                    // kills the child on the way out. It is holding a request it has read
+                    // and a price it has quoted, and it has read no call to make either of
+                    // them cost anything.
+                    Some(Verdict::No) => return Ok(Outcome::Declined),
+                    None => return Ok(Outcome::Expired),
                 }
-                go(stdin)?;
             }
             continue;
         }
@@ -468,23 +509,25 @@ fn converse(
 }
 
 /// Block until this job is told to go, or until nobody has told it for [`GO_WAIT`].
-fn park(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64) -> Result<bool> {
+fn park(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64) -> Result<Option<Verdict>> {
     let (tx, rx) = sync_channel(1);
     jobs.lock().insert(id, tx);
     lock(db).set_job_status(id, WAITING)?;
 
-    let mut went = rx.recv_timeout(jobs.wait).is_ok();
-    if !went {
-        // Take the sender back before giving up, then look once more. A go that arrived
-        // while the wait was timing out took the sender out of the map under that lock and
-        // put its message in the channel, and it would be a strange thing to drop.
+    let mut said = rx.recv_timeout(jobs.wait).ok();
+    if said.is_none() {
+        // Take the sender back before giving up, then look once more. An answer that
+        // arrived while the wait was timing out took the sender out of the map under that
+        // lock and put its verdict in the channel, and it would be a strange thing to drop.
         jobs.lock().remove(&id);
-        went = rx.try_recv().is_ok();
+        said = rx.try_recv().ok();
     }
-    if went {
+    // Only a go changes the row. A no leaves it `waiting` for the moment it takes
+    // `supervise` to write `expired` over it, which is the same moment a timeout takes.
+    if said == Some(Verdict::Go) {
         lock(db).set_job_status(id, RUNNING)?;
     }
-    Ok(went)
+    Ok(said)
 }
 
 /// Say the word, then close stdin so the child knows there is no more of it coming.
