@@ -2373,7 +2373,85 @@ the `spend` table. And the operator only learns about a failed close from stderr
 log nobody is watching; there is no place in the UI where "this job did not close" is
 visible, which is the difference between recording a failure and reporting one.
 
+### S-40 — The sweep that could not run says so [Rust]
+
+**PR:** one. **Depends on:** S-39, S-38, S-22.
+**Files:** `engine/src/server.rs`, `engine/tests/jobs.rs`. No `db.rs`:
+`abandon_live_jobs` already returns the thing this step stops throwing away. No brain, no
+UI.
+
+**Why:** `App::new` clears whatever the last process left live, and the comment above the
+call already states what happens if it does not run — *"Left alone, four abandoned
+`waiting` rows would count against the live cap for ever and no job would ever start
+again."* The line beneath that comment is `let _ = db.abandon_live_jobs(...)`. The one
+operation whose failure this file has already written down as permanent is the one whose
+failure nobody is told about.
+
+It is permanent because `live_jobs` counts rows and not children: `server.rs:667` refuses
+a fifth job by asking the `jobs` table how many read `running` or `waiting`, so four rows
+left by a dead process are four slots gone. They stay gone across restarts, because the
+next boot runs the same sweep against the same database and discards the same error. S-38
+spent a whole step giving a stuck job a way out, and a ghost row has none: `stop` reaches
+the in-memory registry, and a row whose process is gone is in no registry. What the
+operator sees is every plan, clarify, label, synthesize and ask answering 429 with
+*"finish or abandon one first"* — advice that cannot be taken, about jobs that do not
+exist. Everything else goes on working, which is exactly why it would not be noticed.
+
+This is also the last one. Every other `let _ =` in the tree is deliberate and stays:
+opening a browser (`server.rs:137`), `launchctl bootout` before an install that has not
+happened yet (`schedule.rs:224`), killing a child that may already be dead
+(`jobs.rs:387`), joining a logger thread (`jobs.rs:507`), and the three job-log appends
+S-39 documented as best-effort because the log lives in the database that just failed.
+After this step, nothing is being ignored that costs anything.
+
+**Change:** the sweep is checked and what its failure costs is said. A named function does
+it — `sweep_abandoned(&db) -> Option<String>`, returning the sentence the operator needs
+rather than a `Result`, because the thing worth proving here is not that SQLite can fail
+but what the product says when it does. `App::new` prints that sentence to stderr, which
+is where `cli.rs` already sends what the operator has to see, and goes on to serve. The
+sentence names the consequence and not only the error: the rows were not cleared, they
+still count against the limit, and new jobs may be refused until the database is writable
+and graphify is started again.
+
+Serving anyway is the existing policy and it is kept, because it is right. The failure
+costs one feature — the job queue — and charts, sync, patterns and settings all read other
+tables and are unharmed; refusing to boot would turn a partial outage into a total one on
+the evidence of a single `UPDATE`. The comment was right about the policy and wrong only
+in being silent about it.
+
+**Test seam:** the one S-39 built, unchanged. `boot`'s `fill` closure runs before
+`App::new`, so a trigger installed there is already in place when the sweep runs. It must
+fire on a column the sweep writes and S-39's triggers do not: `abandon_live_jobs` sets
+both `status` and `finished_at`, `NO_CLOSE` already takes `finished_at`, so this one takes
+`status` and the two stay separable.
+
+**Acceptance:** WHEN the sweep fails THEN the server SHALL still serve every route that
+does not depend on it. WHEN the sweep fails THEN the operator SHALL be told in one
+sentence that names the consequence — slots held, jobs refused — and not only the SQLite
+error. WHEN the sweep fails THEN the rows it could not clear SHALL still be readable
+through `GET /api/jobs/{id}`, so the old comment's claim that they are "visible in the API
+either way" is proved rather than assumed. WHEN the sweep succeeds THEN nothing SHALL
+change, including the absence of any new output.
+
+**Verify:** engine — `sweep_abandoned` over a `jobs` table that refuses the update,
+asserted to return a sentence naming the live limit; the same database booted into a
+server and asked for `/api/orgs`, asserted 200; a stale row asserted still `running` and
+still readable through the API after that boot; the ordinary case asserted to return
+`None`, with S-22's existing dead-engine sweep test left green. Every new assertion broken
+on purpose once and seen to fail.
+
+**Must not:** refuse to boot — see above; the sweep is one feature's recovery, not the
+product's. Do not retry: S-39's reasoning holds, a database that is refusing writes is not
+fixed by being asked twice. Do not print on success — a line on every restart with a live
+job is noise, and the rows are already visible as `expired`. Do not touch the other
+`let _ =` sites listed above; they are deliberate and the survey exists so that stays
+decided. Do not make `live_jobs` cleverer by cross-checking the registry — a count that
+second-guesses the table is a different feature and a worse one. Do not add a
+`#[cfg(test)]` module to `src/`; there are none, and the library target exists so
+`engine/tests/` can reach what it needs.
+
 ---
 
-**The register is complete through S-39.** Anything after that is a new step appended
-here, or a bug in `docs/backlog/bugs.md` promoted to one.
+**The register is complete through S-39, and S-40 is specified and not yet built.**
+Anything after that is a new step appended here, or a bug in `docs/backlog/bugs.md`
+promoted to one.
