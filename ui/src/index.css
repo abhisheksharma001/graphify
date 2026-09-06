@@ -898,6 +898,43 @@ thead th {
   color: var(--g-llm-error);
 }
 
+/* The notices banner. Bordered rather than filled: it sits above every screen and stays
+ * there until a restart, and a solid block of alarm colour that cannot be dismissed is a
+ * thing people learn to stop reading. The rule on the left is enough to find it. */
+
+.notices {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--g-llm-error);
+  background: var(--wash);
+}
+
+.notices h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--g-llm-error);
+}
+
+.notices ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+}
+
+.notices li + li {
+  margin-top: 4px;
+}
+
+.notices time {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.notices .dropped {
+  margin: 6px 0 0;
+  color: var(--ink-muted);
+}
+
 .login {
   max-width: 320px;
   margin: 15vh auto 0;

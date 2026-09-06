@@ -17,6 +17,7 @@ import CallTable from './CallTable'
 import Dashboard from './Dashboard'
 import FilterBar from './FilterBar'
 import Login from './Login'
+import Notices from './Notices'
 import Settings from './Settings'
 import Patterns from './patterns/Patterns'
 import { initial, SETTLE_MS, toParams } from './filters'
@@ -134,6 +135,10 @@ export default function App() {
         <span className="spacer" />
         {stale && view === 'dashboard' && <span className="hint">loading…</span>}
       </header>
+
+      {/* Above the error line and outside every screen's own state: this one is not about
+          anything the person did, and it is true on all four tabs. */}
+      <Notices />
 
       {error && <p className="error">{error}</p>}
 

@@ -8,6 +8,7 @@ pub mod db;
 pub mod ended_reason;
 pub mod extract;
 pub mod jobs;
+pub mod notices;
 pub mod queries;
 pub mod rules;
 pub mod schedule;

@@ -13,6 +13,7 @@ use crate::ask;
 use crate::auth::{self, Auth};
 use crate::db::Db;
 use crate::jobs::{self, Jobs, Kind};
+use crate::notices::Notices;
 use crate::queries::{self, Filters};
 use crate::rules;
 use crate::secrets::{self, Secrets};
@@ -54,6 +55,9 @@ pub struct App {
     /// The brain jobs that are parked on their go. Shared, because the thread holding a
     /// child and the handler that wakes it are on opposite sides of the process.
     jobs: Arc<Jobs>,
+    /// What has gone wrong that nobody would otherwise see. Held here rather than in the
+    /// database because both things that push to it are the database refusing a write.
+    notices: Arc<Notices>,
     /// The brain binary to spawn. Read from the environment once here rather than at each
     /// spawn, so a test can point one server at a fake without touching the environment
     /// every other test in the process is also reading.
@@ -97,8 +101,14 @@ impl App {
         // into all of them on the evidence of a single `UPDATE`. The rows it could not
         // touch stay readable through the API, which is the one thing that keeps this
         // honest rather than merely quiet.
+        //
+        // Both channels, and neither is redundant: stderr is where an operator running this
+        // in a terminal is already looking, and the board is the only one that reaches the
+        // person who has a browser open and no terminal at all.
+        let notices = Arc::new(Notices::new());
         if let Some(said) = sweep_abandoned(&db) {
             eprintln!("{said}");
+            notices.push(said);
         }
         App {
             db: Arc::new(Mutex::new(db)),
@@ -106,6 +116,7 @@ impl App {
             auth: Arc::new(auth),
             vapi_base: vapi::DEFAULT_BASE.to_string(),
             jobs: Arc::new(Jobs::new()),
+            notices,
             brain: jobs::binary_from_env(),
         }
     }
@@ -125,6 +136,15 @@ impl App {
     pub fn with_vapi_base(mut self, base: impl Into<String>) -> Self {
         self.vapi_base = base.into();
         self
+    }
+
+    /// The two places a job's ending goes. Handed out as one because `jobs` takes them as
+    /// one, for the reason written there.
+    fn records(&self) -> jobs::Records<'_> {
+        jobs::Records {
+            db: &self.db,
+            notices: &self.notices,
+        }
     }
 
     /// A poisoned lock means some other handler panicked mid-statement. The database is
@@ -201,6 +221,10 @@ pub fn router(app: App) -> Router {
         .route("/api/patterns", get(list_patterns))
         .route("/api/patterns/{id}", put(update_pattern))
         .route("/api/patterns/{id}/apply", post(apply_pattern))
+        // Not a job route, though both of the things that push to it are job failures:
+        // this is the whole product's "something went wrong where you could not see it",
+        // and the banner that reads it is on every screen.
+        .route("/api/notices", get(list_notices))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/go", post(go_job))
         .route("/api/jobs/{id}/stop", post(stop_job))
@@ -247,6 +271,16 @@ async fn login(State(app): State<App>, Json(body): Json<LoginBody>) -> Result<Re
         Json(json!({ "ok": true })),
     )
         .into_response())
+}
+
+/// What has gone wrong that stderr alone would have kept from the person at the browser.
+///
+/// `dropped` is not decoration. The board is bounded, and a database refusing every write
+/// fails every close, so a response that showed twenty notices and said nothing about the
+/// twenty-first would be doing the small quiet lie this whole run of steps has been about.
+async fn list_notices(State(app): State<App>) -> Result<Response, ApiError> {
+    let (notices, dropped) = app.notices.all();
+    Ok(Json(json!({ "notices": notices, "dropped": dropped })).into_response())
 }
 
 async fn list_orgs(State(app): State<App>) -> Result<Response, ApiError> {
@@ -705,7 +739,15 @@ fn spawn(app: &App, kind: Kind, org: i64, body: &Value) -> Result<Response, ApiE
             ));
         }
     }
-    let id = jobs::start(&app.jobs, &app.db, &app.secrets, &app.brain, kind, org, body)?;
+    let id = jobs::start(
+        &app.jobs,
+        app.records(),
+        &app.secrets,
+        &app.brain,
+        kind,
+        org,
+        body,
+    )?;
     // 202: the row exists and the child is starting. Everything after this is read through
     // `GET /api/jobs/{id}`.
     Ok((StatusCode::ACCEPTED, Json(json!({ "id": id, "status": jobs::RUNNING }))).into_response())

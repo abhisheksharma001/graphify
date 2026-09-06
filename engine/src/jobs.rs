@@ -23,6 +23,7 @@
 //! have to guess at what a key looks like.
 
 use crate::db::Db;
+use crate::notices::Notices;
 use crate::secrets::{self, Secret, Secrets};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
@@ -237,21 +238,44 @@ impl Redact {
     }
 }
 
+/// The two places a job's ending is written down: the row, and — for the case where the
+/// row cannot be written — the board that says so.
+///
+/// One argument rather than two because they are one idea and because they travel
+/// together through every layer of this file. `run_blocking` is the only caller that
+/// supplies a board nobody will read, and it says why.
+#[derive(Clone, Copy)]
+pub struct Records<'a> {
+    pub db: &'a Arc<Mutex<Db>>,
+    pub notices: &'a Arc<Notices>,
+}
+
 /// Start one brain function and return the new job's id. Returns as soon as the row is
 /// written; the work happens on a thread of its own.
 pub fn start(
     jobs: &Arc<Jobs>,
-    db: &Arc<Mutex<Db>>,
+    records: Records,
     secrets: &Secrets,
     binary: &str,
     kind: Kind,
     org: i64,
     request: &Value,
 ) -> Result<i64> {
-    let (id, spawn) = begin(db, secrets, binary, kind, org, request)?;
+    let (id, spawn) = begin(records.db, secrets, binary, kind, org, request)?;
     let jobs = Arc::clone(jobs);
-    let db = Arc::clone(db);
-    thread::spawn(move || supervise(&jobs, &db, id, spawn));
+    let notices = Arc::clone(records.notices);
+    let db = Arc::clone(records.db);
+    thread::spawn(move || {
+        supervise(
+            &jobs,
+            Records {
+                db: &db,
+                notices: &notices,
+            },
+            id,
+            spawn,
+        )
+    });
     Ok(id)
 }
 
@@ -263,7 +287,10 @@ pub fn start(
 /// down with it.
 ///
 /// No `Jobs` map: this is only ever used for a kind that does not park, so there is
-/// nothing for a `POST /go` to reach and nothing to put in one.
+/// nothing for a `POST /go` to reach and nothing to put in one. No notice board either,
+/// and for a plainer reason: this is `graphify sync` on a schedule, there is no browser
+/// attached to the process, and a board it takes with it when it exits is one nobody could
+/// ever read. What that operator sees is stderr, which `cli` already prints.
 pub fn run_blocking(
     db: &Arc<Mutex<Db>>,
     secrets: &Secrets,
@@ -273,7 +300,16 @@ pub fn run_blocking(
     request: &Value,
 ) -> Result<i64> {
     let (id, spawn) = begin(db, secrets, binary, kind, org, request)?;
-    supervise(&Jobs::new(), db, id, spawn);
+    let notices = Arc::new(Notices::new());
+    supervise(
+        &Jobs::new(),
+        Records {
+            db,
+            notices: &notices,
+        },
+        id,
+        spawn,
+    );
     Ok(id)
 }
 
@@ -370,14 +406,15 @@ enum Outcome {
 
 /// Own one child from spawn to row. Runs on its own thread; every failure here ends as a
 /// `failed` job carrying the reason, because a thread has nowhere else to put one.
-fn supervise(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64, spawn: Spawn) {
+fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
+    let db = records.db;
     let mut child = match command(&spawn).spawn() {
         Ok(child) => child,
         Err(e) => {
             // The common one, and worth naming precisely: the brain is not installed, or
             // `GRAPHIFY_BRAIN` points at something that is not there.
             let said = format!("could not start {}: {e}", spawn.binary);
-            finish(db, id, FAILED, None, 0.0, spawn.org, &said);
+            finish(records, id, FAILED, None, 0.0, spawn.org, &said);
             return;
         }
     };
@@ -391,9 +428,9 @@ fn supervise(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64, spawn: Spawn) {
     let status = child.wait();
 
     match outcome {
-        Err(e) => finish(db, id, FAILED, None, 0.0, spawn.org, &format!("{e:#}")),
+        Err(e) => finish(records, id, FAILED, None, 0.0, spawn.org, &format!("{e:#}")),
         Ok(Outcome::Expired) => finish(
-            db,
+            records,
             id,
             EXPIRED,
             None,
@@ -405,7 +442,7 @@ fn supervise(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64, spawn: Spawn) {
         // a second word for that would differ only in how fast it arrived. The reason line
         // is where the difference belongs.
         Ok(Outcome::Declined) => finish(
-            db,
+            records,
             id,
             EXPIRED,
             None,
@@ -415,7 +452,7 @@ fn supervise(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64, spawn: Spawn) {
         ),
         Ok(Outcome::Ran(last)) => {
             let ok = matches!(status, Ok(s) if s.success());
-            classify(db, id, &spawn, ok, last.as_deref())
+            classify(records, id, &spawn, ok, last.as_deref())
         }
     }
 }
@@ -554,7 +591,7 @@ fn drain(db: &Arc<Mutex<Db>>, id: i64, stderr: ChildStderr, redact: &Redact) {
 }
 
 /// Turn an exit status and a last line into a finished row.
-fn classify(db: &Arc<Mutex<Db>>, id: i64, spawn: &Spawn, ok: bool, last: Option<&str>) {
+fn classify(records: Records, id: i64, spawn: &Spawn, ok: bool, last: Option<&str>) {
     // Scrubbed here as well as in the log: a result the brain printed goes into a column
     // the browser reads, and it was written by something that had the keys.
     let last = last.map(|text| spawn.redact.scrub(text));
@@ -562,12 +599,12 @@ fn classify(db: &Arc<Mutex<Db>>, id: i64, spawn: &Spawn, ok: bool, last: Option<
     if !ok {
         // The brain's own complaint is already in the log — this is the stderr it wrote on
         // the way down — so there is nothing to add but the verdict.
-        finish(db, id, FAILED, last, 0.0, spawn.org, "");
+        finish(records, id, FAILED, last, 0.0, spawn.org, "");
         return;
     }
     let Some(text) = last else {
         finish(
-            db,
+            records,
             id,
             FAILED,
             None,
@@ -582,10 +619,10 @@ fn classify(db: &Arc<Mutex<Db>>, id: i64, spawn: &Spawn, ok: bool, last: Option<
         // report it. `plan` and `clarify` do not, and are unmetered until they do.
         Ok(value) => {
             let usd = value.get("usd").and_then(Value::as_f64).unwrap_or(0.0);
-            finish(db, id, DONE, Some(text), usd, spawn.org, "");
+            finish(records, id, DONE, Some(text), usd, spawn.org, "");
         }
         Err(e) => finish(
-            db,
+            records,
             id,
             FAILED,
             Some(text),
@@ -605,7 +642,7 @@ fn classify(db: &Arc<Mutex<Db>>, id: i64, spawn: &Spawn, ok: bool, last: Option<
 /// at the next boot, and it is the one thing this must never be: a `done` row carrying a
 /// cost that no ledger counted, which would raise the day's cap by exactly that much.
 fn finish(
-    db: &Arc<Mutex<Db>>,
+    records: Records,
     id: i64,
     status: &str,
     output: Option<&str>,
@@ -617,18 +654,32 @@ fn finish(
     // instant, and taking them from separate calls is how a job that finishes at midnight
     // books its cost against one day and closes on another.
     let now = crate::now();
-    let db = lock(db);
+    let db = lock(records.db);
     if !note.is_empty() {
         let _ = db.append_job_log(id, note);
     }
     if let Err(e) = db.finish_job(id, status, output, usd, org, &now) {
-        // Both ways of saying so are best-effort, because the thing that failed is the
-        // database and the log lives in it. stderr is where `cli` already sends what the
-        // operator has to see, and it is the one of the two that does not depend on the
-        // part that is broken. Neither is scrubbed and neither needs to be: this error
-        // comes from SQLite about its own statement, not from the brain about its output,
-        // which is the difference S-37 had to learn the hard way.
-        let said = format!("could not close this job out: {e:#}");
+        // What it costs, and not only what failed. The row is still `running`, which is
+        // truthful and is also one of the four live slots, and nothing frees it before the
+        // next boot's sweep. S-40's lesson, applied where it is now due: this sentence is
+        // read by a person on the notices board, and an operator told that a statement
+        // failed has not been told that a slot is gone until a restart.
+        let said = format!(
+            "could not close this job out: {e:#}. It stays `running` and holds one of \
+             the {MAX_LIVE} job slots until graphify is started again."
+        );
+        // The board is pushed with the database lock still held, which is safe in the one
+        // direction it has to be: nothing anywhere takes the board first and the database
+        // second, because the only other reader of the board is a handler that reads it
+        // and nothing else.
+        //
+        // Three ways of saying so, and only the first is not best-effort. The board is in
+        // memory, so it is the one that does not depend on the part that is broken; stderr
+        // is where `cli` already sends what the operator has to see; the log lives in the
+        // database that just refused a write. None is scrubbed and none needs to be: this
+        // error comes from SQLite about its own statement, not from the brain about its
+        // output, which is the difference S-37 had to learn the hard way.
+        records.notices.push(format!("job {id}: {said}"));
         eprintln!("job {id}: {said}");
         let _ = db.append_job_log(id, &said);
     }
