@@ -26,3 +26,14 @@ button. · Reproduce: a brain that prints any of those four lines and then waits
 `{"estimate_usd":null}`, and `"-5".parse::<f64>()` is `Ok(-5.0)`. · Fixed by S-37
 (PR #38, dcb266d), except the discarded write error, which is now checked at the quote and
 still discarded in `drain` where a dropped stderr line is all it costs.
+
+2026-09-06 · `engine/src/server.rs:670` · The engine refuses a fifth job with *"4 jobs are
+already running or waiting for a go; finish or abandon one first"*, and there is no way to
+abandon one. A parked labelling job holds its slot until `GO_WAIT` expires it, which is
+thirty minutes (`engine/src/jobs.rs:66`), and the only inputs the wizard offers are the go
+and the back of the browser. So the message names a remedy the product does not have, and
+`ui/src/patterns/Wizard.tsx:558` tells the analyst the same thing more plainly: *"the
+engine drops it within the half hour."* Four abandoned quotes — four closed tabs — and
+labelling is refused for up to half an hour, having read nothing and spent nothing. ·
+Reproduce: price a run in the wizard, close the tab without clicking the go, four times.
+The fifth `POST /api/patterns/label` answers 429. · Fixed by S-38.

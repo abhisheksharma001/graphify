@@ -2182,6 +2182,55 @@ still gets as far as the engine before anything says so; that is the right side 
 check to live on and the wrong side for the bug to be found on. And there is still no
 cancel for a parked job, which S-36 left open and this step did not reach.
 
+### S-38 — The second click has a no ☐ [Rust]
+**PR:** one. **Depends on:** S-37, S-36, S-33, S-22, S-13.
+**Files:** `engine/src/jobs.rs`, `engine/src/server.rs`, `engine/tests/jobs.rs`,
+`ui/src/api.ts`, `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`,
+`docs/backlog/bugs.md`. No brain.
+**Today:** the two-click rule has a yes and no no. S-22 built the park, S-36 made the
+browser refuse to draw a go it cannot price, and S-37 made the engine refuse to park on a
+price it cannot read — all three about the click that spends. None of them is about the
+person who looks at the figure and decides against it. That person's only move is to close
+the tab, and closing the tab does nothing: the job stays `waiting`, holding one of the
+engine's four slots, until `GO_WAIT` kills it half an hour later. The engine already knows
+this is wrong and says so twice. `POST /api/patterns/label` refuses the fifth job with
+*"finish or abandon one first"*, naming a remedy that does not exist; and the wizard's own
+hint tells the analyst that "the engine drops it within the half hour", which is the
+product asking someone to wait out a timer rather than offering them a button. Four closed
+tabs is a labelling feature that is refused for thirty minutes having read nothing.
+**Change:** the parked job's channel carries a verdict rather than a signal. `Jobs::go`
+sends the yes it always sent; a new `Jobs::stop` sends a no, and both take the sender out
+of the map under the same lock, so a go and a stop race the way two gos already do — one
+of them wins and the other finds nothing. `park` reports which of the three happened, and
+a no ends the same way a timeout does: the child is killed with its stdin still open, it
+has read nothing, and the row is `expired` — whose own definition is already *"killed
+unspent. Not a failure: there is nothing wrong with walking away from a quote."* Only the
+reason line differs, because "nobody approved the price in time" is not what happened when
+somebody declined it in four seconds. `POST /api/jobs/{id}/stop` mirrors `/go` exactly,
+409 and all, and the wizard grows a second button beside the go that calls it and puts the
+step back where it was before the quote.
+**Acceptance:** WHEN a parked job is sent a stop THEN it SHALL end `expired` with a reason
+saying it was turned down, SHALL book no spend, and SHALL free its slot at once. WHEN a
+stop names a job that is not parked THEN it SHALL answer 409, as `/go` does. WHEN a go and
+a stop reach the same job THEN exactly one SHALL take effect. WHEN the analyst declines a
+quote in the wizard THEN the run SHALL return to the state it was in before the quote, and
+a new quote SHALL be startable without waiting.
+**Verify:** engine — a parked job stopped and seen to reach `expired` with nothing booked
+on the row, the day, or the ledger; a stop against a finished job answered 409; a stop
+after a go, and a go after a stop, each refused; `live_jobs` seen to fall back below
+`MAX_LIVE` immediately after a stop, which is the whole point of the step. UI — the
+decline button asserted to appear only while a job is parked, to call the route, and to
+leave the wizard able to price again; and asserted **not** to be the button that spends.
+Every new assertion broken on purpose once and seen to fail.
+**Must not:** add a `stopped` status. `expired` is documented as a walk-away that cost
+nothing, which is exactly what this is; a second status that every reader would treat
+identically and that differs only in how fast it arrived is a column for a sentence, and
+the reason line is where that sentence belongs. Do not make the stop kill anything but a
+parked job — a `running` job has already spent, and stopping it would be a refund the
+engine cannot give. Do not touch the brain, which never learns the difference: it is
+killed with its stdin open either way. Do not add a resume; a declined quote is priced
+again from the top, because the selection may have moved and S-33 exists for that reason.
+
 ---
 
 **The register is complete through S-37.** Anything after that is a new step appended
