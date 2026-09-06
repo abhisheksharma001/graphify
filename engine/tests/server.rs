@@ -8,6 +8,7 @@ use regex::Regex;
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::{Mutex, MutexGuard};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
@@ -56,13 +57,22 @@ async fn serve_with(
     vapi_base: Option<String>,
     fill: impl FnOnce(&mut Db, i64),
 ) -> Server {
+    serve_auth(Auth::new(password.map(str::to_string)), vapi_base, fill).await
+}
+
+/// The same, for a test that needs the gate built a particular way rather than merely
+/// handed a password.
+async fn serve_auth(
+    auth: Auth,
+    vapi_base: Option<String>,
+    fill: impl FnOnce(&mut Db, i64),
+) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let mut db = Db::open(dir.path().join("graphify.db")).unwrap();
     let org = db.create_org("acme").unwrap();
     fill(&mut db, org);
 
     let store = Secrets::open(dir.path().join(".secret")).unwrap();
-    let auth = Auth::new(password.map(str::to_string));
     let mut app = App::new(db, store, auth);
     if let Some(base) = vapi_base {
         app = app.with_vapi_base(base);
@@ -220,6 +230,27 @@ async fn logging_in_with_no_password_configured_is_refused() {
         .unwrap();
 
     assert_eq!(res.status().as_u16(), 400);
+}
+
+/// `auth.rs` lets go of a session after `SESSION_TTL`, and its own tests prove that `allows`
+/// does. This proves the gate in front of the API is the thing calling it, and that what a
+/// person meets on the far side is the ordinary 401 — the same status the UI already answers
+/// by showing the login form, which is why an expiring session needs no new UI.
+#[tokio::test]
+async fn a_session_expires_out_from_under_a_real_request() {
+    let ttl = Duration::from_millis(200);
+    let s = serve_auth(Auth::new(Some("hunter2".into())).with_ttl(ttl), None, ten_calls).await;
+    let http = reqwest::Client::new();
+    let session = sign_in(&http, &s, "hunter2").await;
+
+    assert_eq!(ask(&http, &s, "GET", "/api/stats", Some(&session)).await, 200);
+    tokio::time::sleep(ttl * 2).await;
+
+    assert_eq!(
+        ask(&http, &s, "GET", "/api/stats", Some(&session)).await,
+        401,
+        "an expired session still opened the API"
+    );
 }
 
 #[tokio::test]
