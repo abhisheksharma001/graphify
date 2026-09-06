@@ -9,7 +9,7 @@ use graphify::auth::Auth;
 use graphify::db::Db;
 use graphify::jobs;
 use graphify::secrets::Secrets;
-use graphify::server::{router, App};
+use graphify::server::{router, sweep_abandoned, App};
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -1159,6 +1159,12 @@ const NO_SPEND: &str = "CREATE TRIGGER no_spend BEFORE INSERT ON spend
 const NO_CLOSE: &str = "CREATE TRIGGER no_close BEFORE UPDATE OF finished_at ON jobs
    BEGIN SELECT RAISE(ABORT, 'the row is not writable'); END;";
 
+/// Every write of `status` refuses. At boot that is only the sweep, because nothing has
+/// run yet — and it is a different column from `NO_CLOSE`'s, so the two stay separable
+/// even though the close writes both.
+const NO_SWEEP: &str = "CREATE TRIGGER no_sweep BEFORE UPDATE OF status ON jobs
+   BEGIN SELECT RAISE(ABORT, 'the queue is not writable'); END;";
+
 /// The job log refuses to be written, which is what S-37's one checked write is for.
 const NO_LOG: &str = "CREATE TRIGGER no_log BEFORE UPDATE OF log ON jobs
    BEGIN SELECT RAISE(ABORT, 'the log is not writable'); END;";
@@ -1269,4 +1275,75 @@ async fn a_quote_that_cannot_be_recorded_fails_the_job_instead_of_parking_it() {
     assert_ne!(job["status"], jobs::WAITING);
     assert_eq!(job["cost_usd"], 0.0);
     assert_eq!(ledger(&server), 0.0);
+}
+
+// --- and when the sweep at boot is the thing that fails ---------------------------------
+
+/// A database holding one abandoned job, and nothing else. No server: these two are about
+/// what the sweep returns, and a server would only hide it by calling it first.
+fn left_behind(dir: &TempDir) -> Db {
+    let db = Db::open(dir.path().join("graphify.db")).unwrap();
+    db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+        .unwrap();
+    db
+}
+
+#[test]
+fn a_sweep_that_cannot_run_says_what_it_costs_and_not_only_what_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = left_behind(&dir);
+    db.conn().execute_batch(NO_SWEEP).unwrap();
+
+    let said = sweep_abandoned(&db).expect("a sweep that could not run said nothing at all");
+    assert!(
+        said.contains("the queue is not writable"),
+        "the operator cannot tell what went wrong: {said:?}"
+    );
+    assert!(
+        said.contains(&jobs::MAX_LIVE.to_string()) && said.contains("refused"),
+        "the operator is told a statement failed but not that the queue is gone: {said:?}"
+    );
+}
+
+#[test]
+fn an_ordinary_sweep_clears_the_slots_and_says_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = left_behind(&dir);
+
+    assert_eq!(sweep_abandoned(&db), None);
+    assert_eq!(db.live_jobs(jobs::RUNNING, jobs::WAITING).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_sweep_that_cannot_run_does_not_stop_the_rest_of_the_product() {
+    let dir = tempfile::tempdir().unwrap();
+    let brain = fake(dir.path(), LABELS);
+    let server = boot(dir, &brain, GO_WAIT, |db, _| {
+        for _ in 0..jobs::MAX_LIVE {
+            db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+                .unwrap();
+        }
+        db.conn().execute_batch(NO_SWEEP).unwrap();
+    })
+    .await;
+
+    // What the failure costs, in full: the queue is held by rows nobody can reach, and the
+    // 429 tells the operator to abandon one of them. That is the sentence's claim, proved.
+    let (status, refused) = post(
+        &server.url("/api/patterns/plan?org=1"),
+        json!({"criterion": "x"}),
+    )
+    .await;
+    assert_eq!(status, 429, "{refused}");
+
+    // And what it does not cost. Everything reading another table is unharmed, which is
+    // why booting anyway is the right policy rather than a convenient one.
+    let (status, orgs) = get(&server.url("/api/orgs")).await;
+    assert_eq!(status, 200, "{orgs}");
+
+    // The rows the sweep could not clear are still readable, which is what the comment on
+    // the call has claimed since S-22 and nothing checked.
+    let (status, stale) = get(&server.url("/api/jobs/1")).await;
+    assert_eq!(status, 200, "{stale}");
+    assert_eq!(stale["status"], jobs::WAITING);
 }

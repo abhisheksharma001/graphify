@@ -60,15 +60,46 @@ pub struct App {
     brain: String,
 }
 
+/// Clear whatever the last process left live, and hand back what the operator has to be
+/// told if it could not be done.
+///
+/// Returns the sentence rather than a `Result` because the sentence is the part worth
+/// proving. That SQLite can refuse an `UPDATE` is not in doubt; what matters is that the
+/// person running this finds out the queue has been disabled, and finds it out in words
+/// that say so rather than in a rusqlite error about a statement they did not write.
+///
+/// Nothing here is scrubbed and nothing needs to be, on S-37's rule: this error comes from
+/// SQLite about the engine's own statement, and carries no key, no brain output and no
+/// operator text.
+pub fn sweep_abandoned(db: &Db) -> Option<String> {
+    match db.abandon_live_jobs(jobs::RUNNING, jobs::WAITING, jobs::EXPIRED, &crate::now()) {
+        Ok(_) => None,
+        Err(e) => Some(format!(
+            "could not clear the jobs left behind by the last run: {e:#}. They still count \
+             against the limit of {}, so new jobs may be refused until this database is \
+             writable and graphify is started again.",
+            jobs::MAX_LIVE
+        )),
+    }
+}
+
 impl App {
     pub fn new(db: Db, secrets: Secrets, auth: Auth) -> Self {
         // Whatever was running or waiting belonged to a process that is gone, and its
         // children went with it. Left alone, four abandoned `waiting` rows would count
-        // against the live cap for ever and no job would ever start again.
+        // against the live cap for ever and no job would ever start again — `live_jobs`
+        // counts rows and not children, and the next boot runs this same sweep against the
+        // same database, so a failure here does not heal on a restart.
         //
-        // Best effort: a sweep that cannot run is not a reason to refuse to serve, and the
-        // rows it did not touch are visible in the API either way.
-        let _ = db.abandon_live_jobs(jobs::RUNNING, jobs::WAITING, jobs::EXPIRED, &crate::now());
+        // Said and not obeyed: serving is still right, because what is lost is the job
+        // queue and not the product — charts, sync, patterns and settings read other
+        // tables and are unharmed — and refusing to boot would turn one feature's outage
+        // into all of them on the evidence of a single `UPDATE`. The rows it could not
+        // touch stay readable through the API, which is the one thing that keeps this
+        // honest rather than merely quiet.
+        if let Some(said) = sweep_abandoned(&db) {
+            eprintln!("{said}");
+        }
         App {
             db: Arc::new(Mutex::new(db)),
             secrets: Arc::new(secrets),
