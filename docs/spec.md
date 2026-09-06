@@ -70,17 +70,38 @@ next sync without a model call.
   de-duplicated `slim` JSON for the call drawer, never the 137 KB raw. Prompts live once
   per assistant version. See "Slimming rule".
 
+- **D-13 An agent analyst platform, Vapi first.** The product is analytics for AI agents,
+  not a Vapi dashboard. Vapi is the first connector and not the subject: other voice
+  platforms follow, and whether the unit ever widens from a call to a session — text and
+  chat agents, n8n runs, assistants with no audio at all — is **left open here and not
+  foreclosed**. What that costs today is already known and small. Three files are the
+  connector — `vapi.rs` (the read-only HTTP client), `extract.rs` (their JSON to a row),
+  `ended_reason.rs` (their vocabulary to the eleven groups of D-11) — and everything
+  downstream reads the normalised row instead: `queries.rs`, `rules.rs`, the whole UI, the
+  whole brain, none of which know where a call came from. `calls` is a generic call record,
+  `orgs.provider` already exists and is already carried on `Org`, and `secrets` is keyed
+  `(org_id, name)`, so a second provider's key is another name and not a schema change.
+  **The constraint this puts on every step: no new provider assumption may enter
+  `queries.rs`, the UI, or the brain.** Anything Vapi-shaped belongs in one of the three
+  files above, and anything a chart needs belongs in a column whose meaning is normalised —
+  `ended_reason` beside `ended_group` is the pattern. No provider trait until there is a
+  second provider to shape it against; one implementation shapes an abstraction wrong.
+
 ## Must never (every step inherits these)
-- Send anything but GET to Vapi.
+- Send anything but GET to a provider. Vapi is the one there is (`vapi.rs`, enforced by a
+  test that greps the source); every connector after it inherits this.
 - Call a model without a shown cost and an explicit go (`--yes` / click). Daily modes
   have a hard USD cap and stop when reached.
 - Download or store audio. Recording URL only.
 - Return a key to the browser, print one to a log, or write one to the DB in clear.
 - Render a missing value as 0. NULL → "—".
+- Put a provider's vocabulary or JSON shape anywhere but `vapi.rs`, `extract.rs` and
+  `ended_reason.rs`. Downstream reads normalised columns only (D-13).
 
 ## Deliberately does not do (v1)
 - No scoring / evals / "was this call good".
-- No Retell, ElevenLabs, other providers (schema has `provider`, code has one).
+- No Retell, ElevenLabs, other providers (schema has `provider`, code has one). This is
+  a v1 scope line, not the shape of the product — see D-13.
 - No webhook receiver. No placing test calls (v2). No chat history for Ask.
 - No squad handoff tracking: a squad is shown as its member assistants.
 
