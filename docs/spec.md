@@ -2644,7 +2644,7 @@ where — and now there is a banner it could point at, which makes that a smalle
 it was yesterday. `run_blocking` fills a board nobody reads: honest, documented, and still a
 shape that would mislead a reader who found it before the comment.
 
-### S-42 — What a declined job never did [Rust]
+### S-42 — What a declined job never did ☑ [Rust] (PR #43, 9b302af)
 **PR:** one. **Depends on:** S-38, S-39. **Files:** `engine/tests/jobs.rs`. No engine
 source, no brain, no UI: the control this step is about is already written and already
 right, and what is missing is the sentence that says so.
@@ -2678,6 +2678,52 @@ only so a test can watch is the mock this seam was built to avoid. Do not turn t
 `recv_timeout`/`try_recv` race in `park` into an assertion: a go landing in the channel while
 the wait is timing out does need a clock the test owns, and it is a different thing from the
 control this step closes.
+**Files (as built):** as specified — `engine/tests/jobs.rs` and nothing else. 258 → 262
+engine tests; `tests/jobs.rs` 59 → 63.
+
+**Learned:**
+
+*A deferral note is quoted forward, not re-derived, and this one had been wrong since it
+was written.* Three steps carried *"it needs a clock the test owns"* into their Not-done
+without anyone reading `begin` again. Both halves were wrong. The window it named — a
+declined job marked `running` for a millisecond — does not exist, because `park` writes
+`running` on the go and on nothing else; the `running` a declined job really has is the one
+every job is born with, it lasts as long as the brain takes to quote, and it is exactly what
+the word is documented to mean. And no clock was needed, because the claim was never about
+what the row said at an instant. The cost of the mistake was three steps of a debt that took
+one to close, and the lesson is cheap: before doing a deferred thing, re-read the code the
+deferral was about rather than the sentence about it.
+
+*A claim about timing is usually a claim about statements.* "Never `running` again after the
+price is shown" cannot be polled at all — sampling can fail to see a state and prove
+nothing — but it is exact as a question about which writes happened, and SQLite already sees
+every one of them. Turning the first form into the second is what removed the clock, the
+flake, and the seam in `engine/src` all at once.
+
+*The seam's fourth use inverted its sign.* S-39 built `RAISE(ABORT)` to make a write fail;
+S-40 and S-41 reused it for that. This step used the same trigger mechanism to make a write
+*remembered* instead. Four lines of SQL either way, and the second use was not anticipated
+when the first was built, which is the ordinary argument for a seam made of the database's
+own features rather than of a trait the code has to carry.
+
+*Three of the four assertions are about something not being there, which is why the fourth
+is the load-bearing one.* A trail that recorded nothing passes "no `running` after the
+`waiting`" every time. Break 3 — a go that never writes `running` — is what proves the
+recorder can see one, and it is the reason the go case is in the file at all.
+
+*The broadest break was the most informative.* Break 4 made jobs born `waiting` and
+reddened eighteen tests, not four. That number is the finding: the initial `running` is
+load-bearing across the whole file, which is precisely the fact the original deferral note
+had missed.
+
+**Not done:** the `recv_timeout`/`try_recv` race in `park` — a go landing in the channel
+while the wait is timing out — is untouched, and it is the one thing here that really does
+need a clock the test owns. It is what the register should have been pointing at for three
+steps, and now it is the only unproven control left. The trail is test-side and nothing in
+the product records a job's transitions, so an operator looking at a real job still has a
+status and a log and no history between them. The banner still polls and nothing pushes.
+S-40's `eprintln!` wiring is still unproven. Nothing prunes the `jobs` or `spend` tables.
+The 429 still says *"finish or abandon one first"* without saying where.
 
 ---
 
