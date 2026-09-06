@@ -1141,3 +1141,132 @@ async fn a_stop_for_a_job_that_is_not_waiting_is_refused_the_way_a_go_is() {
     let (status, why) = post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await;
     assert_eq!(status, 409, "{why}");
 }
+
+// --- when the database is the thing that fails ----------------------------------------
+//
+// S-37 and S-38 both ended saying a control here was right and unproven, and both named
+// the same missing thing: a `Db` that can be told to fail. It did not need building.
+// SQLite can be told to fail by SQL — a `RAISE(ABORT)` trigger makes one table's writes
+// return a real `rusqlite::Error` on the real path — and `boot` already hands a test the
+// database before the server starts.
+
+/// The ledger refuses to be written.
+const NO_SPEND: &str = "CREATE TRIGGER no_spend BEFORE INSERT ON spend
+   BEGIN SELECT RAISE(ABORT, 'the ledger is not writable'); END;";
+
+/// The close refuses to be written. `finished_at` is only ever set by the close, so this
+/// stops that one statement and leaves every other write to `jobs` alone.
+const NO_CLOSE: &str = "CREATE TRIGGER no_close BEFORE UPDATE OF finished_at ON jobs
+   BEGIN SELECT RAISE(ABORT, 'the row is not writable'); END;";
+
+/// The job log refuses to be written, which is what S-37's one checked write is for.
+const NO_LOG: &str = "CREATE TRIGGER no_log BEFORE UPDATE OF log ON jobs
+   BEGIN SELECT RAISE(ABORT, 'the log is not writable'); END;";
+
+/// A server over a database that has been sabotaged before it booted.
+async fn served_but_broken(body: &str, sql: &'static str) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let brain = fake(dir.path(), body);
+    boot(dir, &brain, GO_WAIT, |db, _| {
+        db.conn().execute_batch(sql).unwrap();
+    })
+    .await
+}
+
+/// Poll one job until its log says `needle`. The failures below are quiet by design — the
+/// row does not move — so the log is what says the engine got there and gave up.
+async fn until_log(server: &Server, id: i64, needle: &str) -> Value {
+    let url = server.url(&format!("/api/jobs/{id}"));
+    for _ in 0..1500 {
+        let (status, body) = get(&url).await;
+        assert_eq!(status, 200, "{body}");
+        if body["log"].as_str().is_some_and(|l| l.contains(needle)) {
+            return body;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (_, body) = get(&url).await;
+    panic!("no {needle:?} in the log after 30s: {body}");
+}
+
+/// What the org has actually been charged today.
+fn ledger(server: &Server) -> f64 {
+    server.db().spend_on(&graphify::now()[..10], 1).unwrap()
+}
+
+#[tokio::test]
+async fn a_cost_that_cannot_be_booked_does_not_leave_a_done_job() {
+    let server = served_but_broken(LABELS, NO_SPEND).await;
+    let id = parked(&server).await;
+    let (status, body) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+
+    // The brain ran and the money is gone. What must not happen is the row saying so while
+    // the ledger does not, because the cap is the ledger and nothing else.
+    let job = until_log(&server, id, "could not close this job out").await;
+    assert_ne!(job["status"], jobs::DONE, "a done row with no spend: {job}");
+    assert_eq!(job["status"], jobs::RUNNING);
+    assert_eq!(job["cost_usd"], 0.0, "the row carries a cost: {job}");
+    assert_eq!(ledger(&server), 0.0);
+}
+
+#[tokio::test]
+async fn a_close_that_cannot_be_written_does_not_book_the_spend_either() {
+    let server = served_but_broken(LABELS, NO_CLOSE).await;
+    let id = parked(&server).await;
+    let (status, body) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+
+    // The mirror of the one above, and the reason the two writes share a transaction: a
+    // ledger that runs ahead of the rows is a cap that closes early, which is the same
+    // fault pointing the other way.
+    let job = until_log(&server, id, "could not close this job out").await;
+    assert_ne!(job["status"], jobs::DONE);
+    assert_eq!(
+        ledger(&server),
+        0.0,
+        "money was booked against a job that never closed"
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_close_moves_the_row_and_the_ledger_together_every_time() {
+    let server = served(LABELS).await;
+
+    for run in 1..=2 {
+        let id = parked(&server).await;
+        let (status, body) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        let done = until(&server, id, jobs::DONE).await;
+        assert_eq!(done["cost_usd"], 0.0123);
+
+        // The day's total, not the job's: the booking still adds to what is there, which
+        // is the half of `add_spend` that moving it into the transaction could have lost.
+        let want = 0.0123 * f64::from(run);
+        assert!(
+            (ledger(&server) - want).abs() < 1e-9,
+            "after {run} runs the ledger says {}",
+            ledger(&server)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_quote_that_cannot_be_recorded_fails_the_job_instead_of_parking_it() {
+    let server = served_but_broken(LABELS, NO_LOG).await;
+    let (status, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "asked for a human", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    let id = body["id"].as_i64().unwrap();
+
+    // S-37's control, proved at last. The price lives in the log, so a log that cannot be
+    // written is a quote that is not on record, and a job must not park on a price nobody
+    // can be shown. It fails instead, and it fails without spending.
+    let job = until(&server, id, jobs::FAILED).await;
+    assert_ne!(job["status"], jobs::WAITING);
+    assert_eq!(job["cost_usd"], 0.0);
+    assert_eq!(ledger(&server), 0.0);
+}
