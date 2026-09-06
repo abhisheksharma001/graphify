@@ -3284,7 +3284,7 @@ stops cron quietly. And nothing checks the mode of the file while the process is
 is read once at startup, and a `chmod` an hour later is seen at the next restart.
 
 
-### S-48 — What a denylist keeps [Rust]
+### S-48 — What a denylist keeps ☑ [Rust] (PR #49, 047c6c3)
 **PR:** one. **Depends on:** nothing. D-12 decided this shape and S-11 built it.
 **Files:** `engine/src/extract.rs`, `engine/tests/extract.rs`, `docs/spec.md`. No brain
 change, no UI.
@@ -3372,5 +3372,48 @@ and a migration that rewrites stored rows is its own step with its own risks. Pa
 not collect. Touch `vapi.rs` or `ended_reason.rs` — the provider's vocabulary belongs in
 all three files and only this one is wrong about it.
 
-**The register is complete through S-47.** Anything after that is a new step appended
+
+**Files (as built):** `engine/src/extract.rs` (+45/−26), `engine/tests/extract.rs` (+87/−5),
+`docs/spec.md` (D-12 slimming rule). 274 → 282 engine tests, clippy clean, CI 4/4. Seven
+breaks, one to four red each: keep `customer` (2); copy the whole artifact (4); drop the
+prompt hashing (1); copy the whole top level (4); drop `transcript` (2); let an empty
+artifact stand in for a missing one (1); keep `forwardedPhoneNumber` (2).
+
+**Learned:** (a) *a denylist over somebody else's JSON puts them in charge of your storage
+policy.* Nine removals, each individually well argued, and the thing that decides what
+graphify keeps is still Vapi's release notes. The nine comments are not wrong; the shape
+they sit in cannot be made right by adding a tenth. (b) *The comment that names the risk is
+evidence the risk was understood, not evidence it was handled.* `variables` and
+`variableValues` were removed **because they carry caller PII**, in those words, four lines
+above a `customer` key holding the caller's number. Knowing the category and catching every
+member of it are different jobs, and the first one reads like the second. (c) *A design
+choice defended by a benefit is only as good as the benefit.* The docstring argues for
+removals so that "a new Vapi field shows up in the drawer by default" — the drawer has never
+read this blob, `ui/src` does not contain the word, and `CallDetail` has no such field. The
+argument was sound and its premise was not there, which is harder to notice than an argument
+that is simply wrong. (d) *When the written decision and the code disagree, what lives in
+the gap is everything neither of them names.* D-12 was a keep list on paper and a denylist
+in Rust from the day it was written; nobody had to make a mistake for `customer` to land.
+(e) *A test written in the shape of the code it tests inherits the code's blind spot.* Nine
+"is_none" and eight "is_some" assertions, and the tenth key is invisible to both. The test
+that catches this one adds a key the allowlist has never heard of — it asserts about the
+absence of a name rather than about a name. (f) *The by-name assertion and the by-value
+assertion catch different breaks.* `s.get("customer").is_none()` and
+`!slim.contains("+15550000000")` look redundant; break 2 reds only the second, because the
+number is inside `artifact.variables` too.
+
+**Not done:** `sync` fetches only calls newer than the newest stored one, so nothing
+re-extracts what is already in the database — a blob written before this change keeps its
+`customer` key until retention purges the row, and rewriting stored rows is a migration with
+its own risks and its own step. `slim` still crosses the wire on every call detail and is
+drawn by nothing; after this change everything in it is drawer-shaped and none of it is PII,
+so taking it out of the response is a product decision rather than a cleanup. `destination`
+stays and holds a phone number — the transfer target, a business number already normalised
+into `transfer_destination` beside it, named by the spec's keep list. Nothing checks that the
+allowlist and the `Call` columns do not drift into duplicating each other; `transcript` is in
+both today, deliberately, and a second one would go unnoticed. And the allowlist means a
+genuinely useful new Vapi field needs a line of code added by someone who looked at it, which
+is the cost and also the point.
+
+**The register is complete through S-48.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
