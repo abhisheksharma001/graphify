@@ -2826,7 +2826,7 @@ The banner still polls and nothing pushes. S-40's `eprintln!` wiring is still un
 Nothing prunes the `jobs` or `spend` tables. The 429 still says *"finish or abandon one
 first"* without saying where.
 
-### S-44 — Every route the gate says it covers
+### S-44 — Every route the gate says it covers ☑ (PR #45, 92216f9)
 **PR:** one. **Depends on:** S-19, S-42. **Files:** `engine/tests/server.rs`. No engine
 change, no brain, no UI. What changes is whether the one security control in the product
 can be broken without anything going red.
@@ -2866,7 +2866,66 @@ with any harvested request: a test that walks every route in the product must no
 to start a job or store a key. Add a logout, or an expiry — sessions dying with the process
 is a decision S-19 took and this is not the step that reopens it.
 
+**Files (as built):** as specified — `engine/tests/server.rs` and nothing else. 265 → 267
+engine tests.
+
+**Learned:**
+
+*The checklist worked as a search, and this time the claim was true.* Reading a module's own
+sentences as a list of promises turned up three kinds, not two. False since it was written
+(S-43's `tell`). True and enforced by something (`vapi.rs`'s Must-never, held by a test that
+greps the source; `secrets.rs`'s `expose`, held by being one word to grep for). And true and
+held by nothing but memory, which is what `auth.rs`'s opening sentence was. The useful axis
+is not whether a claim is true — most are — but what is holding it up, and for the one
+security control in the product the answer was "somebody remembered, twenty-six times".
+
+*A list written into a test is the same forgetting, twice.* The obvious version of this step
+is a test with twenty-six routes in it, and it is worth almost nothing: the mistake it is
+meant to catch is somebody adding a route and not thinking about the gate, and that person
+is not going to add it to the test either. Deriving the list from the source is the only
+version that covers the route which does not exist yet — which is the only route this step
+is actually for.
+
+*A no-body request is a safe probe for a whole API surface.* The gate is a layer and the
+body is an extractor, so the order is gate, then extractor, then handler: a request with no
+body is refused by `Json` before anything runs, and the gate has already had its say. That
+is what makes it possible to walk every route in a product whose routes store provider keys
+and spend money, and spend nothing. Same shape as S-43's blocked send — the property that
+makes the code safe is the property that makes the probe constructible.
+
+*A guard with one assertion has one way to be fooled.* The vacuity guard here has two halves
+and the breaks proved both were load-bearing: a verb pattern that stopped matching `post`
+tripped the count and not the names, and path parameters left unsubstituted tripped the names
+and not the count. Neither would have been caught by the other.
+
+*Break 1's status code is the finding.* Moving `POST /api/jobs/{id}/go` outside the gate did
+not produce a 200 — it produced a 409, the route's own refusal, reached and answered for a
+caller with no session. An ungated route is not primarily a data leak; it is code running for
+a stranger. That one is a click on somebody else's parked job.
+
+**Not done:** the harvest is a regular expression over one file's shape. A route reached some
+other way — a `nest`, a second `merge`, a macro — would not be harvested, every test here
+would stay green, and nothing would say so. The count and the names catch a pattern that
+stopped matching what it used to; they cannot catch a route the pattern was never written to
+see. That is the honest residue, and it is the same class as S-43's break 4: a test knows
+what it looked at, not what exists.
+
+Sessions are still unbounded and never expire — every login adds a token to a `HashSet` that
+only a restart empties, and there is no logout — which is S-19's decision, deliberately not
+reopened here.
+
+One more claim came out of the checklist unresolved, worth a step of its own rather than a
+line in this one: `db.rs:691` says `unchecked_transaction` is safe because "nothing else in
+the tree opens a transaction", and three other helpers do. They take `&mut self` and the
+`Db` is behind a mutex, so no nesting is reachable and the code is right — but that is not
+the reason the comment gives, and a comment that gives the wrong reason is the thing this run
+of steps keeps finding.
+
+The rest stands: `park`'s salvage is still unreachable without a race. The trail is still
+test-side and nothing in the product records a job's transitions. The banner still polls.
+S-40's `eprintln!` wiring is still unproven. Nothing prunes the `jobs` or `spend` tables.
+
 ---
 
-**The register is complete through S-43.** Anything after that is a new step appended
+**The register is complete through S-44.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
