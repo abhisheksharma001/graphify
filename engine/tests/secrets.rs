@@ -57,6 +57,16 @@ impl Fixture {
     }
 }
 
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+fn chmod(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
 /// The spec's acceptance case, both halves.
 #[test]
 fn a_stored_key_is_absent_from_the_database_file_and_shows_only_its_tail() {
@@ -292,22 +302,79 @@ fn a_different_key_cannot_read_the_store() {
 
 /// A key file must never exist readable, not even for the instant before a chmod.
 #[test]
-fn the_key_file_is_created_private_and_reused() {
+fn the_key_file_is_created_private() {
     let _guard = env_lock();
     clear_env();
     let f = fixture();
 
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = std::fs::metadata(&f.key_path).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    let mode = mode_of(&f.key_path);
+    assert_eq!(mode, 0o600, "mode was {mode:o}");
+}
 
-    // Re-opening must reuse the same key, or every restart would orphan every secret.
+/// Re-opening must reuse the same key, or every restart would orphan every secret.
+#[test]
+fn the_key_file_is_reused_so_a_restart_still_reads_the_store() {
+    let _guard = env_lock();
+    clear_env();
+    let f = fixture();
+
     f.secrets.set(&f.db, Some(1), "vapi", PLAIN).unwrap();
     let again = Secrets::open(&f.key_path).unwrap();
     assert_eq!(
         again.get(&f.db, Some(1), "vapi").unwrap().unwrap().expose(),
         PLAIN
     );
+}
+
+/// Creating it private is half the job. Nothing graphify does loosens this file — 0600
+/// survives any umask — so a loose one arrived from outside: a tar or zip that carried no
+/// modes, a `docker cp`, a hand that ran `chmod -R`. Reading it anyway leaves "the mode is
+/// the protection" true for one instant of the file's life and false for all the rest.
+#[test]
+fn a_key_file_anyone_else_can_touch_is_refused() {
+    let _guard = env_lock();
+    clear_env();
+    let f = fixture();
+
+    // Group-writable and other-executable are in this list beside the obvious 0644.
+    // Whoever can rewrite the key can put in one they know and wait for the next key to be
+    // typed into Settings, which is a compromise that reads no byte of the current store.
+    for loose in [0o644, 0o640, 0o604, 0o620, 0o601, 0o666] {
+        chmod(&f.key_path, loose);
+        let err = Secrets::open(&f.key_path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&format!("{loose:03o}")), "mode {loose:o}: {msg}");
+        assert!(msg.contains("chmod 600"), "mode {loose:o}: {msg}");
+        assert!(msg.contains("rotate"), "mode {loose:o}: {msg}");
+    }
+
+    // The other side of the check, and not only the mode this file writes for itself: 0400
+    // is an operator who went further than graphify did. A check spelled `mode != 0o600`
+    // passes every case above and refuses that one.
+    for tight in [0o600, 0o400] {
+        chmod(&f.key_path, tight);
+        assert!(
+            Secrets::open(&f.key_path).is_ok(),
+            "mode {tight:o} is private and was refused"
+        );
+    }
+}
+
+/// The environment path reads no file, so there is no mode to consult. A loose `.secret`
+/// sitting beside the database must not stop a run that never opens it — that is the way
+/// through for a filesystem which cannot hold a mode at all.
+#[test]
+fn graphify_secret_does_not_consult_the_file_at_all() {
+    let _guard = env_lock();
+    clear_env();
+    let f = fixture();
+    chmod(&f.key_path, 0o666);
+
+    std::env::set_var("GRAPHIFY_SECRET", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+    let opened = Secrets::open(&f.key_path);
+    std::env::remove_var("GRAPHIFY_SECRET");
+
+    assert!(opened.is_ok(), "{:#}", opened.unwrap_err());
 }
 
 #[test]

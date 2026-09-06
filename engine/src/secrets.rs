@@ -231,10 +231,14 @@ fn decode_key(b64: &str) -> Result<Vec<u8>> {
     Ok(key)
 }
 
-/// Read the key file, or make one. Unix only, deliberately: the mode is the protection,
-/// and graphify ships in a Linux container.
+/// Read the key file, or make one. Unix only, deliberately: the mode is the protection, and
+/// graphify ships in a Linux container. Which means reading the mode on the way in as well
+/// as setting it on the way out — nothing here can loosen this file, so a loose one got
+/// that way somewhere else, and a mode enforced only at creation protects one instant of
+/// the file's life.
 fn file_key(path: &Path) -> Result<Vec<u8>> {
     if path.exists() {
+        check_private(path)?;
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         return decode_key(raw.trim()).with_context(|| format!("{} is corrupt", path.display()));
@@ -260,4 +264,36 @@ fn file_key(path: &Path) -> Result<Vec<u8>> {
         .write_all(B64.encode(key).as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(key.to_vec())
+}
+
+/// Refuse a key file that anyone but its owner can touch. The rule is the one OpenSSH
+/// applies to a private key — any group or other bit at all, not readability alone.
+/// Whoever can rewrite this file can put in a key they know and wait for the next API key
+/// to be typed into Settings, which is a compromise that reads no byte of the current store.
+///
+/// This refuses rather than repairing. A `chmod` from here would fix the file and take with
+/// it the only sign that the key had ever been readable, turning "rotate everything" into a
+/// silent tidy-up. A mode can be tightened; a key that has already been read cannot be
+/// un-read, and only a person can decide what to do about that.
+fn check_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata(path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+
+    if mode & 0o077 != 0 {
+        let p = path.display();
+        bail!(
+            "{p} is mode {mode:03o}: the key every stored API key is encrypted under is \
+             reachable by more than its owner.\n  \
+             chmod 600 {p}\n  \
+             then rotate every key in Settings — tightening the mode does not un-share what \
+             was already readable.\n  \
+             If this filesystem cannot hold a mode, set GRAPHIFY_SECRET instead; that path \
+             reads no file."
+        );
+    }
+    Ok(())
 }
