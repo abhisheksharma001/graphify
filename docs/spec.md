@@ -3279,5 +3279,94 @@ variable. The check fires when the store is opened, so on the scheduled daily ru
 stops cron quietly. And nothing checks the mode of the file while the process is running: it
 is read once at startup, and a `chmod` an hour later is seen at the next restart.
 
+
+### S-48 — What a denylist keeps [Rust]
+**PR:** one. **Depends on:** nothing. D-12 decided this shape and S-11 built it.
+**Files:** `engine/src/extract.rs`, `engine/tests/extract.rs`, `docs/spec.md`. No brain
+change, no UI.
+
+**Today:** `extract.rs` opens by stating what it does with the provider's JSON:
+
+> Raw Vapi call JSON -> one `calls` row, its `tool_calls` rows, and the slim JSON kept for
+> the call drawer. **Raw never lands: `slim` is the only blob written.**
+
+`slim` is written as a denylist, and says so, with a reason:
+
+> The D-12 slim: drop what is duplicated, ephemeral, or a credential, keep what the call
+> drawer draws. Written as removals so a new Vapi field shows up in the drawer by default
+> instead of being silently dropped.
+
+It clones the raw call, removes five top-level keys and four under `artifact`, and hashes
+the system prompt. The nine removals are each individually well argued — the comments name
+`messages` as a duplicate of `artifact.messages`, `monitor` as URLs that are dead by sync
+time, `logUrl` as presigned, and `variables`/`variableValues` as **caller PII**. That last
+one is the point. Whoever wrote this knew that caller PII inside the blob was a thing to
+take out.
+
+What lands is therefore not "slim". It is raw, minus nine named keys. Everything else Vapi
+sends lands verbatim, and so does everything Vapi adds next month, unread by anybody. In
+the repository's own fixture the survivors include:
+
+> `"customer": {"number": "+15550000000"}`
+
+The caller's phone number, in clear, four lines below the comment that says caller PII was
+removed. It arrives under a key nobody put on the list. `forwardedPhoneNumber` is beside
+it. There is no `customer_number` among the 45 columns of `Call` — graphify deliberately
+does not parse the caller's number out as data — and it is stored anyway, and
+`GET /api/calls/{id}` serialises the blob whole to the browser.
+
+The reason the denylist was chosen does not exist. "A new Vapi field shows up in the drawer
+by default" describes a drawer that reads `slim`; `ui/src` does not contain the word.
+`CallDetail` in `ui/src/api.ts` has no `slim` field. The drawer draws normalised columns.
+The blob is stored, sent over the wire on every call detail, and drawn by nothing — so the
+benefit is hypothetical and the cost is already paid.
+
+The test is the denylist again, in assertions:
+
+> `slim_is_under_10_kb_and_holds_no_duplicates`
+
+It asserts the nine removals are gone and that eight named keys survive, under the comment
+`// What the call drawer draws has to survive.` A test shaped like the code it tests cannot
+see the tenth key, and neither can the code.
+
+And the spec has said the other thing all along. "Slimming rule (D-12)" is written as a
+keep list — *"Keep `costs[]`, `performanceMetrics`, `analysis`, `destination`,
+`assistantActivations`, `recording` URLs (URLs only)"* — and gives a size, ≈ 6 KB, that the
+test loosened to 10 KB. The decision on paper is an allowlist. The code is a denylist. What
+sits between them is every key neither list names.
+
+**Change:** build `slim` by naming what is kept, so the blob's contents are a decision
+graphify makes rather than one Vapi's release notes make. Keep, at the top level:
+`analysis`, `costs`, `destination`, `transcript`, and `artifact`. Keep, under `artifact`:
+`messages` (system prompt still replaced by its hash), `performanceMetrics`,
+`assistantActivations`, `recordingUrl`, `stereoRecordingUrl`, `recording`. That is the
+spec's keep list plus the one key the old test additionally named. Everything the old code
+kept by accident goes: `customer` and `forwardedPhoneNumber`, which are PII with no column;
+`id`, `status`, `type`, the four timestamps, `endedReason`, `cost`, `costBreakdown`,
+`summary`, `assistantId`, `assistantVersion`, `phoneNumberId` and the top-level recording
+URLs, every one of which is already a column; `orgId`, `maxDurationSeconds`,
+`phoneCallProvider`, `phoneCallProviderId`, `phoneCallProviderBypassEnabled`,
+`phoneCallTransport`, and `artifact.nodes`, `artifact.scorecards`, `artifact.transfers`,
+which nothing in the engine, the brain or the UI reads. Correct both comments: the module
+header says what is kept rather than what never lands, and `slim`'s docstring drops the
+argument for removals. Update the D-12 slimming rule to say allowlist in as many words.
+
+**Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`, CI green. A test
+adds a key the allowlist has never heard of to the fixture — the shape of a Vapi field
+released after this code was written — and asserts it does not survive. A test asserts
+`customer` and `forwardedPhoneNumber` are gone by name. The kept list still survives, the
+system prompt is still a hash, and the blob is under 6 KB rather than under 10.
+
+**Must not:** widen the allowlist to keep something no code reads because it looks useful.
+The cost of this shape is that a genuinely wanted new field needs a line of code, and that
+is the whole point of it. Stop sending `slim` to the browser — after this change everything
+in it is drawer-shaped and none of it is PII, and removing a field from a response is a
+product decision, not a cleanup. Rewrite the blobs already in the database: `sync` fetches
+only calls newer than the newest stored one, so nothing re-extracts what is already there,
+and a migration that rewrites stored rows is its own step with its own risks. Parse
+`customer.number` into a column instead, or add any new column: this step removes, it does
+not collect. Touch `vapi.rs` or `ended_reason.rs` — the provider's vocabulary belongs in
+all three files and only this one is wrong about it.
+
 **The register is complete through S-47.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
