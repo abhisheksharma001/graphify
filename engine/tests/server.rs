@@ -4,6 +4,8 @@ use graphify::auth::Auth;
 use graphify::db::{Call, Db, ToolCall};
 use graphify::secrets::Secrets;
 use graphify::server::{router, App};
+use regex::Regex;
+use reqwest::Method;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 use tokio::sync::{Mutex, MutexGuard};
@@ -1017,4 +1019,136 @@ async fn a_keep_days_above_the_cap_is_refused() {
         .await
         .unwrap();
     assert_eq!(missing.status().as_u16(), 404);
+}
+
+/// The router's own list of `/api` routes, read out of the source rather than written down
+/// here. A list in this file would be the list `router` already keeps, kept twice — and
+/// forgetting to put a route behind the gate and forgetting to add it to a test are not two
+/// mistakes, they are one mistake made once. `tests/vapi.rs` reads a source file to hold a
+/// Must-never in place for the same reason.
+const SERVER_RS: &str = include_str!("../src/server.rs");
+
+/// Every `(method, path)` the router declares under `/api`, with the login left out: it is
+/// the one route a caller with no session has to be able to reach, and a gate in front of
+/// it would lock everyone out for good. A path parameter becomes an ordinary segment — what
+/// is being asked is which builder a route went into, and no handler is reached to care what
+/// the segment says.
+fn declared_api_routes() -> Vec<(String, String)> {
+    let line = Regex::new(r#"(?m)^\s*\.route\("(/api[^"]*)",(.*)$"#).unwrap();
+    let verb = Regex::new(r"\b(get|post|put|patch|delete)\(").unwrap();
+    let param = Regex::new(r"\{[^}]+\}").unwrap();
+
+    let mut routes = Vec::new();
+    for route in line.captures_iter(SERVER_RS) {
+        if &route[1] == "/api/login" {
+            continue;
+        }
+        let path = param.replace_all(&route[1], "1").into_owned();
+        for method in verb.captures_iter(&route[2]) {
+            routes.push((method[1].to_uppercase(), path.clone()));
+        }
+    }
+    routes
+}
+
+async fn ask(
+    http: &reqwest::Client,
+    s: &Server,
+    verb: &str,
+    path: &str,
+    session: Option<&str>,
+) -> u16 {
+    let mut req = http.request(Method::from_bytes(verb.as_bytes()).unwrap(), s.url(path));
+    if let Some(cookie) = session {
+        req = req.header("cookie", cookie);
+    }
+    req.send().await.unwrap().status().as_u16()
+}
+
+/// The session cookie a correct password hands out, ready to be sent back.
+async fn sign_in(http: &reqwest::Client, s: &Server, password: &str) -> String {
+    let res = http
+        .post(s.url("/api/login"))
+        .json(&json!({ "password": password }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 200, "the password was refused");
+    res.headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+/// `auth.rs` says every `/api/*` route but the login needs a session cookie, and the only
+/// thing making that so is that each `.route(...)` was written into `guarded` rather than
+/// into the router the login sits on — two builders in one function, one indent apart. This
+/// is the thing that notices when a route goes into the wrong one.
+///
+/// The routes that would cost most are not the ones anybody thinks to test:
+/// `PUT /api/orgs/1/secrets/1` stores a provider key, and `POST /api/ask` and
+/// `POST /api/jobs/1/go` are the two clicks in this product that spend money.
+///
+/// No request here carries a body, so every write is turned away by its `Json` extractor
+/// before the handler behind it runs. This walks the whole API surface and starts nothing.
+#[tokio::test]
+async fn every_api_route_is_behind_the_gate() {
+    let s = serve_with(Some("hunter2"), None, ten_calls).await;
+    let http = reqwest::Client::new();
+
+    for (verb, path) in declared_api_routes() {
+        let status = ask(&http, &s, &verb, &path, None).await;
+        assert_eq!(status, 401, "{verb} {path} answered without a session");
+    }
+}
+
+/// What the test above is worth rests entirely on the harvest, and a regex that matched
+/// nothing would pass it perfectly. So the same list again, with a session, answering
+/// anything but 401 — which says those 401s came from the gate and not from the routes
+/// being absent — and a count and four names, which say the harvest read the router rather
+/// than a comment about it. The four are not the coverage; the harvest is. They are here so
+/// that a pattern which quietly stopped matching `post` or path parameters is a failure
+/// rather than a shorter list nobody counted.
+#[tokio::test]
+async fn the_harvest_finds_the_router_and_a_session_opens_it() {
+    let routes = declared_api_routes();
+
+    assert!(
+        routes.len() >= 26,
+        "harvested {} routes, which is fewer than the router had when this was written",
+        routes.len()
+    );
+    for wanted in [
+        ("GET", "/api/stats"),
+        ("POST", "/api/ask"),
+        ("POST", "/api/jobs/1/go"),
+        ("PUT", "/api/orgs/1/secrets/1"),
+    ] {
+        assert!(
+            routes.iter().any(|(v, p)| (v.as_str(), p.as_str()) == wanted),
+            "the harvest missed {wanted:?}"
+        );
+    }
+    assert!(
+        !routes.iter().any(|(_, p)| p == "/api/login"),
+        "the login was harvested, and a gate in front of it locks everyone out for good"
+    );
+
+    // `secrets.status` reads the environment for a key that may be set there rather than
+    // stored, and the suite shares one.
+    let _env = env_lock().await;
+    clear_env();
+    let s = serve_with(Some("hunter2"), None, ten_calls).await;
+    let http = reqwest::Client::new();
+    let session = sign_in(&http, &s, "hunter2").await;
+
+    for (verb, path) in routes {
+        let status = ask(&http, &s, &verb, &path, Some(&session)).await;
+        assert_ne!(status, 401, "{verb} {path} refused a session the gate had issued");
+    }
 }
