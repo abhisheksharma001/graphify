@@ -2928,7 +2928,7 @@ S-40's `eprintln!` wiring is still unproven. Nothing prunes the `jobs` or `spend
 ---
 
 
-### S-45 — The tables the brain is allowed to write ☐
+### S-45 — The tables the brain is allowed to write ☑ (PR #46, dae03f8)
 **PR:** one. **Depends on:** S-39. **Files:** `brain/src/graphify_brain/db.py`,
 `brain/tests/test_db.py`. No engine change, no UI.
 **Today:** `db.py` opens by saying the brain is a guest in the engine's database and that
@@ -2984,5 +2984,55 @@ brain code writes, `jobs` included; a need for one is a step, not a line. Change
 command reads. Touch the engine: the engine owns this file and its own writes are none of
 this module's business.
 
-**The register is complete through S-44.** Anything after that is a new step appended
+**Files (as built):** as specified — `brain/src/graphify_brain/db.py` and
+`brain/tests/test_db.py`. 185 → 188 brain tests. No engine change, no UI, no new
+dependency: `set_authorizer` is in the standard library.
+
+**Learned.**
+
+*The comment named the tool it said did not exist.* "SQLite has no per-table permission"
+is true of SQLite's SQL and false of the API this module is already holding. The sentence
+was not a lie about the code, it was a lie about the platform — and that is the kind that
+survives review longest, because nobody rereads a claim about somebody else's software.
+S-44 found a claim held up by nothing; this one was held up by a fact that was not one.
+
+*The fallback promise is where the rot was.* When a module says "what it can enforce is
+X" it has already conceded the thing it wanted, and X is written to make the concession
+feel safe. Nobody checks X. Here X — that call data does not arrive on the writable
+connection — was false for three of the four commands that read call data, and had been
+since `label` was written. The weaker claim in a sentence is the one to check first.
+
+*Allow-lists fail in the right direction; deny-lists fail in the direction nobody
+watches.* The permitted set is three names. Had it been a list of tables to protect, it
+would have needed `secrets` and `spend` and `calls` and `tool_calls` and `orgs` and
+`jobs` and every table added after — and the one that gets forgotten is the one added
+last. As written, a new engine table is protected by nobody doing anything, and a brain
+command that genuinely needs a fourth table fails on its first run.
+
+*A break that turns nothing red is a finding about the code, not about the break.*
+Removing `SQLITE_DROP_TABLE` and `SQLITE_ALTER_TABLE` from the checked set left the suite
+green. Instrumenting the authorizer to find out why showed that `SQLITE_ALTER_TABLE`
+reports the *database* name as its first argument, not the table's — so that entry never
+obeyed the rule its own comment stated, and was denying on `"main" not in AUTHORED` by
+accident. Both are gone; a `DROP` and an `ALTER` are still refused through the row
+actions SQLite raises for them. The step went looking for a false comment and produced
+one of its own on the way, which is the whole argument for running the breaks before the
+review rather than after.
+
+*Break 1 is the coverage figure this step actually has.* Emptying the permitted set turned
+eighteen tests red across `daily`, `synth` and `label` — the authorizer is on the live
+command path, not beside it. Two tests asserting a refusal would have proved far less.
+
+**Not done.** The permitted set covers row writes. Schema DDL is refused only as a
+consequence — `sqlite_master` is not a table the brain authors — so the protection is
+real but indirect, and a future SQLite that routed some DDL differently would loosen it
+silently; the test is what would notice. `read_only` is untouched by design. The harvest
+guard reads SQL out of string literals with a regex, so a table name built at runtime is
+invisible to it, and the same sentence S-44 earned applies: a test knows what it looked
+at, not what exists. `ask` is still the only brain command whose connection is read-only,
+and the other three still read a client's call history over a writable one — narrower now,
+but the same connection. Nothing here touches the engine, which writes every one of these
+tables freely and should.
+
+**The register is complete through S-45.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
