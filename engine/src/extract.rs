@@ -1,5 +1,6 @@
 //! Raw Vapi call JSON -> one `calls` row, its `tool_calls` rows, and the slim JSON kept
-//! for the call drawer. Raw never lands: `slim` is the only blob written.
+//! beside them. Raw never lands, and `slim` is the only blob written: it is built by
+//! naming what is kept, so a key nobody here has heard of is not stored.
 //!
 //! Every Vapi field is optional in practice — an in-progress call has an empty artifact,
 //! and analysis fields only appear once the call ends. A field that is not there stays
@@ -224,32 +225,60 @@ fn seconds_between(from: Option<&str>, to: Option<&str>) -> Option<f64> {
     Some((to - from).num_milliseconds() as f64 / 1000.0)
 }
 
-/// The D-12 slim: drop what is duplicated, ephemeral, or a credential, keep what the call
-/// drawer draws. Written as removals so a new Vapi field shows up in the drawer by
-/// default instead of being silently dropped.
+/// The D-12 slim: what no column holds and the call drawer might want, and nothing else.
+///
+/// An allowlist, not a set of removals. The blob is written to the database and served
+/// whole by `GET /api/calls/{id}`, so a denylist would make Vapi's release notes the thing
+/// that decides what graphify stores — which is how `customer.number` used to land here,
+/// under a key that four lines of careful removals never named.
+///
+/// The price is that a genuinely useful new field needs a line added below, by someone who
+/// looked at it. That is the point of it.
 fn slim(raw: &Value) -> Value {
-    let mut out = raw.clone();
-    let Some(o) = out.as_object_mut() else {
+    /// Everything else is a column already, or is PII, or is read by nothing.
+    const TOP: [&str; 4] = ["analysis", "costs", "destination", "transcript"];
+    /// `recording`, `recordingUrl` and `stereoRecordingUrl` are URLs. No audio is fetched
+    /// or stored, by Must-never; the URL is the whole of what is kept.
+    const ARTIFACT: [&str; 6] = [
+        "assistantActivations",
+        "messages",
+        "performanceMetrics",
+        "recording",
+        "recordingUrl",
+        "stereoRecordingUrl",
+    ];
+
+    let mut out = json!({});
+    let Some(raw) = raw.as_object() else {
+        return Value::Null;
+    };
+    for k in TOP {
+        if let Some(v) = raw.get(k) {
+            out[k] = v.clone();
+        }
+    }
+
+    // Absent stays absent, the same rule the columns follow: a call with no artifact gets
+    // no `artifact` key rather than an empty object standing in for one.
+    let Some(src) = raw.get("artifact") else {
         return out;
     };
-    // `messages` duplicates `artifact.messages`; `assistant`/`squad` are stored once per
-    // version; `monitor` holds live listen/control URLs that are dead by sync time.
-    for k in ["messages", "monitor", "transport", "assistant", "squad"] {
-        o.remove(k);
-    }
-    if let Some(a) = o.get_mut("artifact").and_then(Value::as_object_mut) {
-        // `messagesOpenAIFormatted` is the same transcript again; `variables` and
-        // `variableValues` carry caller PII; `logUrl` is a presigned URL.
-        for k in ["messagesOpenAIFormatted", "variables", "variableValues", "logUrl"] {
-            a.remove(k);
-        }
-        for m in a.get_mut("messages").and_then(Value::as_array_mut).into_iter().flatten() {
-            if str_at(m, &["role"]).as_deref() == Some("system") {
-                let sha = sha256_hex(&str_at(m, &["message"]).unwrap_or_default());
-                *m = json!({ "role": "system", "prompt_sha256": sha });
-            }
+    let mut artifact = json!({});
+    for k in ARTIFACT {
+        if let Some(v) = src.get(k) {
+            artifact[k] = v.clone();
         }
     }
+    // The system prompt is stored once per assistant version; here it is a hash, so a
+    // drawer can tell two calls apart by which prompt answered them without carrying it.
+    for m in artifact.get_mut("messages").and_then(Value::as_array_mut).into_iter().flatten() {
+        if str_at(m, &["role"]).as_deref() == Some("system") {
+            let sha = sha256_hex(&str_at(m, &["message"]).unwrap_or_default());
+            *m = json!({ "role": "system", "prompt_sha256": sha });
+        }
+    }
+    out["artifact"] = artifact;
+
     out
 }
 

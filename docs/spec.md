@@ -176,13 +176,17 @@ dashboard(org_id INTEGER PK, config JSON)      -- which charts are enabled, orde
   a call to the prompt version. `GET /squad` returned `[]` on the probe org.
 
 ### Slimming rule (D-12)
-Raw call 137 KB → stored `slim` ≈ 6 KB: keep `artifact.messages` with the system
-message content replaced by `{"role":"system","prompt_sha256":…}`; drop top-level
-`messages`, `messagesOpenAIFormatted`, `variables`/`variableValues`, `monitor`,
-`transport`, presigned URLs, `assistant`/`squad` inline copies. Keep `costs[]`,
-`performanceMetrics`, `analysis`, `destination`, `assistantActivations`, `recording`
-URLs (URLs only). Assistant stored once per `(id, version)` with the prompt; calls
-reference it by `assistant_version`.
+Raw call 137 KB → stored `slim` ≈ 6 KB. **An allowlist, not a set of removals** (S-48):
+the blob holds what no column holds, and a key nobody has named is not stored — otherwise
+the provider's release notes decide what graphify keeps. Top level: `analysis`, `costs`,
+`destination`, `transcript`. Under `artifact`: `messages` with the system message content
+replaced by `{"role":"system","prompt_sha256":…}`, `performanceMetrics`,
+`assistantActivations`, and `recording`/`recordingUrl`/`stereoRecordingUrl` (URLs only,
+never audio). Nothing else survives — not the duplicated transcripts, the presigned
+`logUrl`, the `monitor`/`transport` URLs dead by sync time, the inline `assistant`/`squad`
+copies, the `variables`/`variableValues`, nor `customer`/`forwardedPhoneNumber`, which are
+caller PII with no column and no reader. Assistant stored once per `(id, version)` with the
+prompt; calls reference it by `assistant_version`.
 
 ## Rule DSL (what SynthesizeRule must return)
 ```json
