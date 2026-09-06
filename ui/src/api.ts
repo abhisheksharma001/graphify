@@ -7,6 +7,15 @@
 // Nothing in this file talks to Vapi. The browser never holds a key: `/api` is the only
 // origin it knows, and the engine is the only thing that ever calls Vapi.
 
+/** Something that went wrong where nobody would have seen it. The engine keeps these in
+ * memory for the life of the process, because both of the things that raise one are the
+ * database refusing a write — so there is no table they could have been kept in.
+ *
+ * `dropped` is how many the engine could not keep. It is on the screen for the same reason
+ * it is in the response: a bound that loses things quietly is the bug, not the fix. */
+export type Notice = { at: string; text: string }
+export type Notices = { notices: Notice[]; dropped: number }
+
 /** A 401. Distinct from any other failure because it has its own answer: sign in. */
 export class Unauthorized extends Error {}
 
@@ -162,6 +171,8 @@ const put = <T>(path: string, params: URLSearchParams, body: unknown) =>
   send<T>('PUT', `${path}?${params}`, body)
 
 export const orgs = () => get<Org[]>('/api/orgs')
+
+export const notices = () => get<Notices>('/api/notices')
 
 export const createOrg = (name: string) => send<Org>('POST', '/api/orgs', { name })
 

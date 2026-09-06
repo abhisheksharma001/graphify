@@ -101,6 +101,9 @@ async fn the_page_loads_without_a_session_but_the_data_does_not() {
 
     assert_eq!(get(&server, "/").await.0, 200);
     assert_eq!(get(&server, "/api/stats?org=1").await.0, 401);
+    // Including the notices board. A notice quotes SQLite about the operator's own
+    // database, which is not something a stranger at the port gets to read.
+    assert_eq!(get(&server, "/api/notices").await.0, 401);
 }
 
 /// Only meaningful once a build exists. Until then it asserts nothing, which is honest:

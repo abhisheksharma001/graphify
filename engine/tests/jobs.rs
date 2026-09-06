@@ -8,6 +8,7 @@
 use graphify::auth::Auth;
 use graphify::db::Db;
 use graphify::jobs;
+use graphify::notices::Notices;
 use graphify::secrets::Secrets;
 use graphify::server::{router, sweep_abandoned, App};
 use serde_json::{json, Value};
@@ -1346,4 +1347,107 @@ async fn a_sweep_that_cannot_run_does_not_stop_the_rest_of_the_product() {
     let (status, stale) = get(&server.url("/api/jobs/1")).await;
     assert_eq!(status, 200, "{stale}");
     assert_eq!(stale["status"], jobs::WAITING);
+}
+
+// --- and where the person at the browser finds out ---------------------------------------
+
+/// The board, read the way the banner reads it.
+async fn notices(server: &Server) -> (Vec<Value>, i64) {
+    let (status, body) = get(&server.url("/api/notices")).await;
+    assert_eq!(status, 200, "{body}");
+    (
+        body["notices"].as_array().unwrap().clone(),
+        body["dropped"].as_i64().unwrap(),
+    )
+}
+
+/// Every notice's text, joined, for the assertions that only care that something was said.
+fn said(notices: &[Value]) -> String {
+    notices
+        .iter()
+        .map(|n| n["text"].as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_board_keeps_what_it_can_and_counts_what_it_could_not() {
+    let board = Notices::new();
+    for n in 0..Notices::KEEP + 3 {
+        board.push(format!("notice {n}"));
+    }
+
+    let (kept, dropped) = board.all();
+    assert_eq!(kept.len(), Notices::KEEP);
+    // Newest first, and the three that fell off are the three oldest.
+    assert_eq!(kept[0].text, format!("notice {}", Notices::KEEP + 2));
+    assert_eq!(dropped, 3, "the bound lost three notices in silence");
+}
+
+#[test]
+fn a_board_nothing_has_happened_to_says_nothing() {
+    let (kept, dropped) = Notices::new().all();
+    assert!(kept.is_empty());
+    assert_eq!(dropped, 0);
+}
+
+#[tokio::test]
+async fn a_sweep_that_cannot_run_is_on_the_board_and_not_only_on_stderr() {
+    // A row for the sweep to fail on. The trigger fires per row, so a database with
+    // nothing left behind is one where the sweep succeeds by having nothing to do.
+    let dir = tempfile::tempdir().unwrap();
+    let brain = fake(dir.path(), LABELS);
+    let server = boot(dir, &brain, GO_WAIT, |db, _| {
+        db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+            .unwrap();
+        db.conn().execute_batch(NO_SWEEP).unwrap();
+    })
+    .await;
+
+    // S-40 wrote this sentence and sent it where nobody was looking. This is the whole
+    // point of the step: the person who has the tab open can now read it.
+    let (kept, dropped) = notices(&server).await;
+    assert_eq!(kept.len(), 1, "the boot said nothing: {kept:?}");
+    assert!(
+        said(&kept).contains(&jobs::MAX_LIVE.to_string()),
+        "the notice names the error but not the cost: {kept:?}"
+    );
+    assert_eq!(dropped, 0);
+}
+
+#[tokio::test]
+async fn a_close_that_cannot_be_written_is_on_the_board_and_says_what_it_holds() {
+    let server = served_but_broken(LABELS, NO_CLOSE).await;
+    let id = parked(&server).await;
+    let (status, body) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    until_log(&server, id, "could not close this job out").await;
+
+    let (kept, _) = notices(&server).await;
+    let text = said(&kept);
+    assert!(
+        text.contains(&format!("job {id}")),
+        "the notice does not say which job: {kept:?}"
+    );
+    // The consequence, which this sentence did not carry before it had a reader: the row
+    // is still live and one of the four slots is gone until a restart.
+    assert!(
+        text.contains("running") && text.contains(&jobs::MAX_LIVE.to_string()),
+        "the operator is told a write failed but not that a slot is held: {kept:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_nothing_has_gone_wrong_on_has_an_empty_board() {
+    let server = served(LABELS).await;
+    let id = parked(&server).await;
+    let (status, body) = post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await;
+    assert_eq!(status, 200, "{body}");
+    until(&server, id, jobs::DONE).await;
+
+    // A job that ran, was paid for and closed leaves nothing to say. A banner that appears
+    // on an ordinary afternoon is a banner nobody reads on the day it matters.
+    let (kept, dropped) = notices(&server).await;
+    assert!(kept.is_empty(), "an ordinary run said something: {kept:?}");
+    assert_eq!(dropped, 0);
 }
