@@ -53,4 +53,4 @@ reading `done`. The same `let _ =` covers `finish_job`, so a job whose close fai
 `running` and keeps holding one of `MAX_LIVE` slots. · Reproduce: make the `spend` insert
 fail — `CREATE TRIGGER t BEFORE INSERT ON spend BEGIN SELECT RAISE(ABORT, 'x'); END;` —
 and run a labelling job through to `done`. The job row shows a cost; `spend_on` returns
-0.0. · Second Must-never: *"Daily modes have a hard USD cap and stop when reached."*
+0.0. · Second Must-never: *"Daily modes have a hard USD cap and stop when reached."* · Fixed by S-39 (PR #40).

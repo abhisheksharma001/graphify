@@ -2232,7 +2232,7 @@ engine cannot give. Do not touch the brain, which never learns the difference: i
 killed with its stdin open either way. Do not add a resume; a declined quote is priced
 again from the top, because the selection may have moved and S-33 exists for that reason.
 
-### S-39 — A cost that is not counted ☐ [Rust]
+### S-39 — A cost that is not counted ☑ [Rust] (PR #40, e96a59e)
 
 **PR:** one. **Depends on:** S-38, S-37, S-22, S-13, D-8.
 **Files:** `engine/src/db.rs`, `engine/src/jobs.rs`, `engine/tests/jobs.rs`. No brain, no UI.
@@ -2294,6 +2294,63 @@ swallowed writes in the tree: `server.rs:71`'s `abandon_live_jobs` is the recove
 for this failure and deserves its own reading, not a rider on this one. Do not make
 `spend_on` fail closed when it suspects a gap; it cannot suspect one, and a cap that
 refuses to spend on a hunch is a different feature.
+**Files (as built):** `engine/src/db.rs`, `engine/src/jobs.rs`, `engine/tests/jobs.rs`. No
+brain, no UI. 246 → 250 engine tests; `tests/jobs.rs` 47 → 51.
+
+**Learned:**
+
+*The comment was the bug report, for the second step running.* S-38 found a missing feature
+by reading the strings the product printed at people. This one was found by reading a doc
+comment the code printed at itself: *"the spend is written before the status, so a job that
+reads `done` is a job whose cost has already been counted."* The ordering it describes is
+real and deliberate, and the two `let _ =` beneath it make the conclusion false. A comment
+that states an invariant is a claim that can be checked against the lines under it, and
+checking it is cheaper than deriving the invariant from scratch. Both of the last two steps
+came out of somewhere the codebase had already written down what it was supposed to do.
+
+*One writer, one reader, and a discarded error between them.* What made this a Must-never
+break rather than a reporting bug is that the `spend` table has exactly one writer
+(`jobs.rs`) and exactly one reader (`sync.rs:222`, the daily cap). Nothing else would ever
+notice the gap, so nothing else would ever correct it, and the failure mode is a cap that
+is silently higher than the operator set — the quietest possible form of the second
+Must-never. Counting the writers and readers of a piece of state is a fast way to tell a
+wrong number from an unsafe one.
+
+*The fault seam did not need building, and had been priced as a step twice.* S-37 said
+proving its checked write needed "a `Db` that can be told to fail, which is a step of its
+own and touches every handler that swallows a write," and S-38 repeated it. Both were
+wrong about the size. SQLite can be told to fail by SQL — `CREATE TRIGGER … BEFORE INSERT
+ON spend BEGIN SELECT RAISE(ABORT, …); END;` fails one table's writes on a real connection
+with a real `rusqlite::Error` on the real path — and `boot`'s `fill` closure already handed
+a test the database before the server started. The seam was one statement in a hook that
+had existed since S-22. Twice an estimate was made by imagining the shape of the solution
+(a trait, a mock, every call site) rather than by asking what the smallest thing that could
+produce the failure was, and twice it came out an order of magnitude high.
+
+*Ordering two writes is not the same as making them one.* The original code had the right
+idea — spend first, status second, so a crash between them leaves the ledger ahead rather
+than behind — and that reasoning only holds if the first write cannot fail on its own.
+Inside a transaction the invariant needs no reasoning at all: both land or neither does,
+and nobody maintaining this has to remember which order was the safe one.
+
+*A green break is not always an untested control.* Break 5 dropped the `cost_usd > 0.0`
+guard and nothing reddened, which looks like the finding S-37 and S-38 both ended on. It
+is not: a zero-dollar spend row changes no sum, no `spend_on`, and no cap, so the guard
+saves a pointless row and guards nothing. The distinction matters, because "unproven
+control" is a debt and "untested optimisation" is not, and treating the second as the first
+is how a test suite fills up with assertions about things that cannot go wrong.
+
+**Not done:** `server.rs:71`'s `let _ = db.abandon_live_jobs(...)` is still swallowed, and
+it is now the recovery path for the failure this step created a truthful state for — a row
+left `running` is only rescued if that sweep works, and if it does not the job holds one of
+`MAX_LIVE` slots forever, which is the bug S-38 fixed arriving by another road. It has a
+seam now, so it is a small step rather than a large one. S-38's other unproven control —
+`park` marking a declined job `running` for the millisecond before `finish` overwrites it —
+is untouched, because that one needs a clock the test owns rather than a database that can
+fail; it is the last of the two, and it is the smaller. Nothing prunes the `jobs` table or
+the `spend` table. And the operator only learns about a failed close from stderr and a job
+log nobody is watching; there is no place in the UI where "this job did not close" is
+visible, which is the difference between recording a failure and reporting one.
 
 ---
 
