@@ -2506,7 +2506,94 @@ the `jobs` table or the `spend` table. And the 429's own wording is still *"fini
 abandon one first"* without saying where — true when the queue is genuinely full, and it
 is the sentence a person reads in both cases.
 
+### S-41 — One place the failures are visible
+
+**PR:** one. **Depends on:** S-40, S-39, S-38.
+**Files:** `engine/src/notices.rs` (new), `engine/src/lib.rs`, `engine/src/server.rs`,
+`engine/src/jobs.rs`, `engine/tests/jobs.rs`, `ui/src/api.ts`, `ui/src/Notices.tsx` (new),
+`ui/src/Notices.test.tsx` (new), `ui/src/App.tsx`, `ui/src/index.css`. Not `sync.rs`: the
+daily keeps the signature it has, for the reason below.
+
+**Why:** two steps running have ended on the same unfinished sentence. S-39 made a failed
+close say so and S-40 made a failed sweep say so, and both say so to stderr — which is
+nowhere, in a product whose whole shape is a browser tab somebody left open. The person who
+needs to know that the queue is held by rows from a dead run is the person looking at the
+screen, and what that person is shown instead is a 429 saying *"finish or abandon one
+first"* about jobs that do not exist.
+
+They are one class, not two. Both are the database refusing a write to `jobs`, and that
+settles where a notice can live: **a notice about a failed write cannot be written to the
+database that failed the write.** There is no table for this. The board is in memory and
+lasts as long as the process.
+
+Which has a second consequence, and it is the good one. Notices do not survive a restart —
+and that is right rather than a limitation, because the remedy the sweep's own sentence
+names *is* a restart, and a restart re-runs the sweep, which either clears the rows and the
+notice is gone truthfully or fails again and the notice comes back. A board that cannot go
+stale needs no dismiss button. The restart is the dismiss button.
+
+The one thing that makes any of this reachable: both failures are *write* failures. Login,
+charts and this route all read, so they all still answer while the queue is dead. That is
+why the notice can be shown at all, and it is the same asymmetry S-40 leaned on when it
+decided to serve anyway.
+
+**Change:** `notices.rs` holds `Notices`, a `Mutex<VecDeque<Notice>>` with `push(&self,
+text)` and `all(&self) -> (Vec<Notice>, usize)` — the kept list newest first, and how many
+were dropped. `Notice` is `{ at, text }` and nothing else: no id, no severity, no source. A
+database refusing every write closes every job with a failure, so the board is bounded at
+twenty and reports what it dropped rather than truncating in silence; a swallowed count is
+the exact thing this register has spent three steps taking out of the tree.
+
+`App` gains `notices: Arc<Notices>`. `App::new` pushes the sweep sentence as well as
+printing it. `start` takes the handle and hands it to `supervise` and on to `finish`, which
+pushes the close failure. `run_blocking` keeps its signature and makes its own board, the
+way it already makes its own `Jobs`: it is `graphify sync` on a schedule, no browser is
+attached to that process, nobody can read a board it takes with it when it exits, and
+`cli.rs` already prints what that operator sees.
+
+`GET /api/notices` goes behind the same gate as everything else and answers
+`{"notices": [...], "dropped": n}`.
+
+The close's own sentence gains the consequence S-40 says it should have had, because it is
+being put in front of a person now: *"could not close this job out: {e}"* names the error
+and not the cost. The cost is that the job stays `running`, holds one of the four slots,
+and holds it until a restart sweeps it.
+
+On the UI side, `Notices` is a banner under the header and above the error line, on every
+screen, because an outage is not a property of the screen you happen to be on. It polls
+every thirty seconds: a close that fails while somebody is watching has to arrive without a
+reload, and the condition is not urgent to the second — it lasts until a restart either way.
+
+**Test seam:** S-39's triggers, a third time and unchanged. `NO_SWEEP` for the boot notice,
+`NO_CLOSE` for the job notice. Nothing new is needed, which is the third step in a row that
+has been true.
+
+**Acceptance:** WHEN the sweep fails THEN `GET /api/notices` SHALL answer with a notice
+naming the consequence and not only the error. WHEN a close fails THEN a notice SHALL name
+the job and what holding it costs. WHEN neither has failed THEN the route SHALL answer an
+empty list and a zero. WHEN more notices arrive than the board keeps THEN the response SHALL
+say how many it did not keep. WHEN there are notices THEN the banner SHALL be on screen
+whichever screen is showing, and what was dropped SHALL be on it. A notice SHALL never carry
+a key or a line the brain wrote.
+
+**Verify:** engine — the board's cap and its dropped count directly; a server booted over a
+`jobs` table that refuses `status` writes, then asked for `/api/notices`; a job run to a
+close that refuses `finished_at`, then the same route; a clean boot asserted empty. ui — the
+banner with none, with one, and with more than the board kept. Every new assertion broken on
+purpose once and seen to fail.
+
+**Must not:** put the board in the database; that is the one storage the failure has already
+taken away. No dismiss, no acknowledge, no read-and-unread — the condition is true until it
+is not, and the restart ends it. No severity levels, no notice ids, no source field, and no
+third caller: two failures have a mechanism, and a general place to log anything is a
+different product and a worse one. Nothing the brain wrote and no secret goes into a notice;
+both producers pass rusqlite's own words about the engine's own statements, and that is all
+they pass. No websocket and no SSE behind a banner that changes twice a year. Do not fail
+the page on it: a notices request that does not answer leaves the banner as it was and puts
+nothing on the error line — the route being unreachable is not itself news, and that line is
+for requests a person made.
+
 ---
 
-**The register is complete through S-40.** Anything after that is a new step appended
+**The register is complete through S-41.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
