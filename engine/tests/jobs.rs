@@ -1451,3 +1451,102 @@ async fn a_server_that_nothing_has_gone_wrong_on_has_an_empty_board() {
     assert!(kept.is_empty(), "an ordinary run said something: {kept:?}");
     assert_eq!(dropped, 0);
 }
+
+// --- and what the row was, all the way along ------------------------------------------
+//
+// The seam a fourth time, and for the opposite purpose. `RAISE(ABORT)` above makes one
+// write fail; this makes every write remembered. `park` says *"Only a go changes the row"*
+// and nothing checked it, and three steps deferred checking it on the grounds that it
+// needed a clock the test owns. It does not. When the row said something is not the claim
+// — which statements ran is — and a database can be asked that directly.
+
+/// Every status a job is ever written, in the order it was written.
+const TRAIL: &str = "CREATE TABLE trail (n INTEGER PRIMARY KEY, job INTEGER NOT NULL,
+                       status TEXT NOT NULL);
+   CREATE TRIGGER trail_born AFTER INSERT ON jobs
+     BEGIN INSERT INTO trail (job, status) VALUES (new.id, new.status); END;
+   CREATE TRIGGER trail_moved AFTER UPDATE OF status ON jobs
+     BEGIN INSERT INTO trail (job, status) VALUES (new.id, new.status); END;";
+
+/// A server whose every status write is written down as well as applied.
+async fn watched(body: &str, wait: Duration) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let brain = fake(dir.path(), body);
+    boot(dir, &brain, wait, |db, _| {
+        db.conn().execute_batch(TRAIL).unwrap();
+    })
+    .await
+}
+
+fn trail(server: &Server, id: i64) -> Vec<String> {
+    let db = server.db();
+    let mut ask = db
+        .conn()
+        .prepare("SELECT status FROM trail WHERE job = ?1 ORDER BY n")
+        .unwrap();
+    let mut rows = ask.query([id]).unwrap();
+    let mut seen = Vec::new();
+    while let Some(row) = rows.next().unwrap() {
+        seen.push(row.get::<_, String>(0).unwrap());
+    }
+    seen
+}
+
+#[tokio::test]
+async fn a_job_that_is_turned_down_was_running_once_and_only_before_its_price() {
+    let server = watched(LABELS, GO_WAIT).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 200);
+    until(&server, id, jobs::EXPIRED).await;
+
+    // The whole history, not a poll of the current status: the claim is that `running`
+    // never comes back after the price is shown, and only a history can say never. The
+    // one `running` here is the span between the process starting and the quote landing,
+    // which is what `running` is documented to mean and is not the one in question.
+    assert_eq!(
+        trail(&server, id),
+        ["running", "waiting", "expired"],
+        "a job that was turned down read something"
+    );
+}
+
+#[tokio::test]
+async fn a_job_nobody_answered_in_time_has_the_history_of_one_turned_down() {
+    let server = watched(LABELS, Duration::from_millis(200)).await;
+    let (_, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "asked for a human"}),
+    )
+    .await;
+    let id = body["id"].as_i64().unwrap();
+    until(&server, id, jobs::EXPIRED).await;
+
+    // Identical, which is the point S-38 made in prose when it refused to add a `stopped`
+    // status: walking away and being walked away from are the same fact about the row, and
+    // the reason line is the only place they differ.
+    assert_eq!(trail(&server, id), ["running", "waiting", "expired"]);
+}
+
+#[tokio::test]
+async fn a_job_told_to_go_is_written_running_a_second_time() {
+    // The guard the other three rest on. A trail that recorded nothing would pass every
+    // assertion above, because every one of them is about something not being there.
+    let server = watched(LABELS, GO_WAIT).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    until(&server, id, jobs::DONE).await;
+
+    assert_eq!(trail(&server, id), ["running", "waiting", "running", "done"]);
+}
+
+#[tokio::test]
+async fn a_kind_that_never_parks_is_running_and_then_finished() {
+    let server = watched(ANSWERS, GO_WAIT).await;
+    let (_, body) = post(&server.url("/api/patterns/clarify?org=1"), json!({"criterion": "x"})).await;
+    let id = body["id"].as_i64().unwrap();
+    until(&server, id, jobs::DONE).await;
+
+    // No `waiting` anywhere, because nothing ever asked: `clarify` is handed its request
+    // and its end-of-file together and has no go to block on.
+    assert_eq!(trail(&server, id), ["running", "done"]);
+}
