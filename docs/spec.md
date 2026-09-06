@@ -2232,7 +2232,70 @@ engine cannot give. Do not touch the brain, which never learns the difference: i
 killed with its stdin open either way. Do not add a resume; a declined quote is priced
 again from the top, because the selection may have moved and S-33 exists for that reason.
 
+### S-39 — A cost that is not counted ☐ [Rust]
+
+**PR:** one. **Depends on:** S-38, S-37, S-22, S-13, D-8.
+**Files:** `engine/src/db.rs`, `engine/src/jobs.rs`, `engine/tests/jobs.rs`. No brain, no UI.
+
+**Why:** `finish` closes every job out, and the comment above it states the invariant its
+ordering exists to hold: *"the spend is written before the status, so a job that reads
+`done` is a job whose cost has already been counted against its org."* The ordering is
+right and the next three lines throw it away — `let _ = db.add_spend(...)` and then `let _
+= db.finish_job(...)`, unconditionally. A failed spend does not stop the status being
+written, so the row reads `done`, carries its `cost_usd`, and the ledger never hears about
+it. That would be a wrong figure on a report if the `spend` table were read by a report.
+It is read by one caller: `sync.rs:222` computes `let left = opts.cap_usd -
+db.spend_on(&now()[..10], org.id)?`, which is the whole of the daily cap. One line writes
+that table and one line reads it, and the write's error is discarded. So a lost spend
+means every later run that day sizes itself against a ledger that is short, and the hard
+USD cap is exceeded by exactly the money already spent — quietly, with the job that spent
+it reading `done` and looking correct. That is the second Must-never, and the same
+discarded error also leaves a job whose close fails sitting `running`, holding one of
+`MAX_LIVE` slots that S-38 just went to the trouble of handing back.
+
+**Change:** one database call closes a job. `Db::finish_job` grows the booking it was
+always paired with and does both writes inside a transaction, so *done implies booked*
+holds by construction rather than by the order of two statements that can fail
+separately — either the ledger and the row both move or neither does. `finish` checks the
+result. A close that fails leaves the row exactly as it was, which is `running`: an
+unfinished job is a truthful thing to be, it is swept to `expired` by
+`abandon_live_jobs` at the next boot, and it is never a `done` that nobody paid for. The
+failure is reported the only two ways left when the database is the thing that is broken —
+appended to the job's log on a best-effort basis, and printed to stderr, which is where
+`cli.rs` already sends what the operator needs to see.
+
+**Test seam:** none is built. A trait-shaped `Db` that can be told to fail was named as a
+step of its own in S-37 and again in S-38, and it is not needed: SQLite can be told to
+fail by SQL. `CREATE TRIGGER … BEFORE INSERT ON spend BEGIN SELECT RAISE(ABORT, …); END;`
+makes exactly one table's writes fail, on a real connection, with a real `rusqlite::Error`
+on the real path — and `serve_with(brain, fill)` already hands a test the `Db` before the
+server boots. The fault is one statement in a closure the harness already has.
+
+**Acceptance:** WHEN the spend write fails THEN the job SHALL NOT be recorded `done`, and
+the row SHALL carry no cost the ledger has not counted. WHEN the spend write succeeds and
+the status write fails THEN neither SHALL be visible, so the ledger never runs ahead of the
+row either. WHEN a job is closed normally THEN the ledger and the row SHALL move together
+and `spend_on` SHALL report the cost, as today. WHEN any close fails THEN the reason SHALL
+reach the operator.
+
+**Verify:** engine — a labelling job run to completion against a `spend` table that
+refuses inserts, asserted to leave a row that is not `done` and a `spend_on` of 0.0, with
+the two never disagreeing; the mirror case, a `jobs` table that refuses the close, asserted
+to leave `spend_on` at 0.0 rather than booked-and-unrecorded; the ordinary path asserted
+unchanged, both figures present; and S-37's checked log write finally proved with the same
+trigger on `jobs`, retiring the "right and unproven" note that step and S-38 both carry.
+Every new assertion broken on purpose once and seen to fail.
+
+**Must not:** add a retry. A database that is refusing writes is not fixed by being asked
+twice, and a retry loop inside `finish` holds the `Db` mutex while it sleeps, which stops
+every other handler. Do not invent a status for this — S-38's lesson stands, and `running`
+is already the true word for a job that was not closed. Do not widen to the other
+swallowed writes in the tree: `server.rs:71`'s `abandon_live_jobs` is the recovery path
+for this failure and deserves its own reading, not a rider on this one. Do not make
+`spend_on` fail closed when it suspects a gap; it cannot suspect one, and a cap that
+refuses to spend on a hunch is a different feature.
+
 ---
 
-**The register is complete through S-38.** Anything after that is a new step appended
+**The register is complete through S-39.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.

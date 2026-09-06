@@ -37,3 +37,20 @@ engine drops it within the half hour."* Four abandoned quotes — four closed ta
 labelling is refused for up to half an hour, having read nothing and spent nothing. ·
 Reproduce: price a run in the wizard, close the tab without clicking the go, four times.
 The fifth `POST /api/patterns/label` answers 429. · Fixed by S-38 (PR #39).
+
+2026-09-06 · `engine/src/jobs.rs:615` · `finish` books a job's cost with `let _ =
+db.add_spend(...)` and then writes the job's status regardless. Its own doc comment states
+the invariant the ordering was written for — *"the spend is written before the status, so
+a job that reads `done` is a job whose cost has already been counted against its org"* —
+and the discarded error is what breaks it: a failed `add_spend` still reaches
+`finish_job`, so the row says `done` and carries `cost_usd`, and the ledger never hears
+about it. That one line is the only writer of the `spend` table, and `sync.rs:222` — `let
+left = opts.cap_usd - db.spend_on(&now()[..10], org.id)?;` — is the only reader the daily
+cap has. So a lost spend is not a lost figure on a report: every later run that day
+computes its remaining budget from a ledger that is short, and the hard USD cap is
+exceeded by exactly the money that was already spent, silently, with the row that spent it
+reading `done`. The same `let _ =` covers `finish_job`, so a job whose close fails is left
+`running` and keeps holding one of `MAX_LIVE` slots. · Reproduce: make the `spend` insert
+fail — `CREATE TRIGGER t BEFORE INSERT ON spend BEGIN SELECT RAISE(ABORT, 'x'); END;` —
+and run a labelling job through to `done`. The job row shows a cost; `spend_on` returns
+0.0. · Second Must-never: *"Daily modes have a hard USD cap and stop when reached."*
