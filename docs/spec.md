@@ -53,8 +53,9 @@ next sync without a model call.
 - **D-5 Retention: 14 days hard cap** (`keep_days` ≤ 14, default 14), plus optional
   `max_calls` per org. Both configurable, neither can exceed 14 days.
 - **D-6 Keys live server-side, added in the UI.** Stored encrypted in SQLite with a
-  secret from `GRAPHIFY_SECRET` or auto-generated `data/.secret` (mode 0600). Env vars
-  override. The API never returns a key, only `set: true, last4`.
+  secret from `GRAPHIFY_SECRET` or auto-generated `data/.secret` (mode 0600, and refused
+  on read if any group or other bit is set — S-47). Env vars override. The API never
+  returns a key, only `set: true, last4`.
 - **D-7 Multi-org.** Every data table has `org_id`. UI has an org switcher.
 - **D-8 Pattern modes:** `free` (default, zero spend), `hybrid` (rule prefilters, cheap
   model confirms new candidates, daily cap), `full` (model reads every new call, daily
@@ -3158,7 +3159,7 @@ still bounded only by live sessions and swept only on login or on a request that
 expired token: a process that is signed into once and then left alone holds that one entry
 until the day is out, which is the correct amount of nothing to do about it.
 
-### S-47 — A key file nobody looks at twice
+### S-47 — A key file nobody looks at twice ☑ [Rust] (PR #48, 2261e29)
 **PR:** one. **Depends on:** nothing; S-12 built this file and S-46 is only its neighbour.
 **Files:** `engine/src/secrets.rs`, `engine/tests/secrets.rs`. No brain change, no UI.
 **Today:** `secrets.rs` holds the key that every stored API key is encrypted under. It
@@ -3226,5 +3227,57 @@ already the escape hatch and a second one would be the one people reach for. Che
 file's owner — a file owned by someone else and mode 0600 cannot be read at all, so the
 open already fails on its own.
 
-**The register is complete through S-46.** Anything after that is a new step appended
+**Files (as built):** as specified — `engine/src/secrets.rs` and `engine/tests/secrets.rs`.
+274 → 277 engine tests: one from splitting the test whose name outran its assertions, two
+new. No brain change, no UI, no new dependency.
+
+**Learned:** *the careful sentence is what makes the careless one feel answered.* "0600 at
+creation, not chmod afterwards: a key must never exist readable, even for the instant
+between the two calls" is a genuinely good comment about a genuinely small window. Sitting
+above it was a claim about the file's whole life. A reader who has just watched a function
+close a microsecond-wide hole does not then ask whether it closed a month-wide one; the
+demonstrated care is taken as evidence for the general claim. S-45 conceded one thing to
+make the rest feel safe and S-46 named two deaths so neither had to be the server's; this
+one performs rigour at one scale to borrow credit at another.
+
+*A test's name is a claim, and the "and" in it is the load-bearing word.*
+`the_key_file_is_created_private_and_reused` asserted the mode in its first half and a
+round-trip in its second. Both halves were correct. The name is what merged them, so the
+suite read as though privacy was checked on reuse. Two things joined by "and" in a test name
+are worth reading as two tests, and if they are two tests they should be two tests.
+
+*Refusing and repairing are different products.* Tightening the mode from inside the process
+is the friendlier-looking fix and it deletes the evidence: a key that was world-readable for
+a month needs rotating, not chmodding, and the only person who can decide that is the one
+who would never have found out. Where a security check can either fix a state or report it,
+fixing it silently is a decision to withhold the finding.
+
+*Refusing needs somewhere to go.* A hard failure on startup is only defensible because
+`GRAPHIFY_SECRET` already exists, reads no file, and is already passed through in
+`docker-compose.yml`. It was not built for this and it is what makes this affordable. The
+check was worth writing partly because the escape hatch was already there — a refusal with
+no way past it would have had to be a warning instead.
+
+*Where a check sits decides what it means.* Break 6 was first written one line too early —
+the mode consulted before the branch that knows the file exists — and that is 150 red, not
+1, because a first run has nothing to stat. The same three lines are "refuse a loose key" in
+one place and "refuse to ever start" in the other.
+
+*The positive case has to test more than the value the code writes for itself.* Self-review
+caught that the only accepted mode under test was 0600, the exact mode this file creates. A
+check spelled `mode != 0o600` would have gone green on all seven other tests while refusing
+an operator who had gone further and used 0400. This is the same shape as S-46's break 6: a
+test suite that only exercises what the code produces cannot tell "correct" from "narrow".
+
+**Not done:** the directory the file sits in is unchecked, by Must-not — a readable directory
+hands out no bytes of the file, and walking up a path is a much larger question. The owner is
+unchecked: a file owned by someone else at 0600 cannot be read anyway, so the open fails on
+its own. With `GRAPHIFY_SECRET` set, a loose `.secret` beside the database goes unmentioned,
+which is right while it decrypts nothing in use and wrong the moment somebody unsets the
+variable. The check fires when the store is opened, so on the scheduled daily run it lands in
+`schedule.log` rather than on S-41's notice board — a loose key file stops `serve` loudly and
+stops cron quietly. And nothing checks the mode of the file while the process is running: it
+is read once at startup, and a `chmod` an hour later is seen at the next restart.
+
+**The register is complete through S-47.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
