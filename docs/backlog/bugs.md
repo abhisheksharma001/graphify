@@ -69,4 +69,4 @@ is safe; what is lost is the answer to a question the product said yes to. · Re
 by hand — the window is the handful of instructions between `MutexGuard::drop` and
 `SyncSender::send`. Under contention it is reachable: park a job, race a `go` against a
 reader that takes the lock the instant it is free, and the reader can see the map without
-the job while the channel is still empty. · Fixed by S-43.
+the job while the channel is still empty. · Fixed by S-43 (PR #44, 45fec76).

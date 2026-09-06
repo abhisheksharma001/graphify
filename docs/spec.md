@@ -2726,7 +2726,7 @@ S-40's `eprintln!` wiring is still unproven. Nothing prunes the `jobs` or `spend
 The 429 still says *"finish or abandon one first"* without saying where.
 
 
-### S-43 — The removal and the send are one decision ☐ [Rust]
+### S-43 — The removal and the send are one decision ☑ [Rust] (PR #44, 45fec76)
 **PR:** one. **Depends on:** S-38, S-42. **Files:** `engine/src/jobs.rs`. No brain, no UI,
 and no new API: what changes is the width of one lock and what the module can be asked to
 prove about itself.
@@ -2767,6 +2767,64 @@ sleep long enough to be reliable is a test that is slow and still wrong. Do not 
 channel's capacity or give a job a second sender: one send per channel is what makes a send
 under a lock safe, and a send that could block under a lock is a deadlock. Do not change
 what `/go` or `/stop` answer the browser; the response was never the thing that was wrong.
+**Verify (as built):** not that. The first test built was the one specified — two threads
+run at each other and the map is watched for the first instant it can be held without the
+job in it — and it was wrong in the way a racing test usually is. It caught the restored bug
+three runs in five at five thousand rounds, and the reshaping that was supposed to buy more
+attempts bought fewer: long-lived threads and a turnstile made each round *slower*, because
+a thread hammering `try_lock` starves the thread trying to `lock`. A hundred thousand rounds
+did not finish inside two minutes. What shipped instead has no race in it at all. The
+channel is filled before the click, so `send` blocks, and a blocked send is the gap between
+the removal and the send held open for as long as the test likes: under one guard the click
+is blocked still holding the map, so nobody can take it, and under two it is blocked having
+let it go. Deterministic both ways, and 0.16s.
+**Files (as built):** as specified — `engine/src/jobs.rs` and nothing else. 262 → 265 engine
+tests, all three of them the first `#[cfg(test)]` module in `engine/src`.
+
+**Learned:**
+
+*A comment that states an invariant is a claim, and this one had been false since it was
+written.* S-42 found a comment that was true and unchecked; this found the other kind.
+`tell` said the removal and the send were the same decision and then wrote them as two
+statements, and the guard between them lived and died inside the first. The two steps
+together say something about where to look in a file: the sentences a module writes about
+itself are the shortest list of things it has promised, and they are worth reading as a
+checklist rather than as prose.
+
+*The window was never the problem; the ordering was.* Three steps deferred this as needing
+"a clock the test owns", and the second one to look at it found there was nothing to time.
+The claim is about which statements run while a lock is held, and a lock is not a duration.
+Turning the question from *when* to *while* is what removed the clock, the flake and the
+race in one go — the same move S-42 made when it turned *when* into *which*.
+
+*A blocked operation is a held-open gap.* The probe cannot be built out of speed, because
+the gap it is about is fifty nanoseconds wide and any test that tries to arrive inside it is
+a coin toss. It can be built out of a `send` that cannot complete: the channel is full, the
+click is stuck mid-`tell`, and the question "can anyone else hold the map right now" is
+answerable at leisure. The construction is only possible because production guarantees the
+opposite — one sender per job, one send per channel — which is the same fact that makes the
+send under a lock safe. The invariant and the probe for it come from the same sentence.
+
+*A racing test is not a slow deterministic test; it is a different and worse thing.* Three
+runs in five is not a break demonstration, and the instinct to fix it by buying more rounds
+was wrong twice over: it made the test slower per round, and it would still only have been
+probably-right. The measurement that mattered was five runs of the break rather than one.
+
+*The vacuity guard earned its place again.* A `tell` that never removed anything would hold
+the map for its whole send and pass the probe every time, having never let go of what it
+never took. Break 3 reddens only `only_the_first_click_answers_a_job`, which is exactly the
+shape S-42 saw: the assertions about something not being there need one assertion that the
+apparatus can see something being there.
+
+**Not done:** break 4 — deleting `park`'s salvage outright — reddens nothing in the whole
+suite, and it is not fixed here. The salvage is load-bearing: without it a verdict that won
+the lock sits unread in the channel and the job expires anyway. But it only ever runs in the
+race it exists for, so nothing can force it without one, and that is the honest description
+of the half of this control that is still unproven — not a clock problem, a reachability
+one. The trail is still test-side and nothing in the product records a job's transitions.
+The banner still polls and nothing pushes. S-40's `eprintln!` wiring is still unproven.
+Nothing prunes the `jobs` or `spend` tables. The 429 still says *"finish or abandon one
+first"* without saying where.
 
 ---
 
