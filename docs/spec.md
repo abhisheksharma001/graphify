@@ -3158,5 +3158,73 @@ still bounded only by live sessions and swept only on login or on a request that
 expired token: a process that is signed into once and then left alone holds that one entry
 until the day is out, which is the correct amount of nothing to do about it.
 
+### S-47 — A key file nobody looks at twice
+**PR:** one. **Depends on:** nothing; S-12 built this file and S-46 is only its neighbour.
+**Files:** `engine/src/secrets.rs`, `engine/tests/secrets.rs`. No brain change, no UI.
+**Today:** `secrets.rs` holds the key that every stored API key is encrypted under. It
+creates that key file carefully, and says so:
+
+> Read the key file, or make one. Unix only, deliberately: the mode is the protection, and
+> graphify ships in a Linux container.
+
+and at the creation itself:
+
+> 0600 at creation, not chmod afterwards: a key must never exist readable, even for the
+> instant between the two calls.
+
+Both are true and the second is unusually careful — it closes a window measured in
+microseconds. What neither says is that the mode is looked at exactly once, in the branch
+that creates the file, and never again in the branch that reads it. `file_key` opens with
+`if path.exists()`, reads the bytes, decodes them, and returns. There is no `metadata` call
+on that path. A key file that is 0644 is used exactly as willingly as one that is 0600.
+
+"The mode is the protection" is a claim about the file's whole life, sitting on a function
+that enforces it for one instant of that life. The careful sentence about the gap between
+two syscalls is what makes the sentence about the following months feel already answered.
+
+Nothing graphify does loosens the file — 0600 survives any umask, so it takes something
+from outside: a restore from a tar or zip that carried no modes, a `docker cp`, a copy onto
+a filesystem that has no modes to carry, a backup script, a hand that ran `chmod -R`. On a
+shared machine that is the whole store readable by everyone with an account, and the
+database beside it is no longer protected by being encrypted, because the thing it is
+encrypted under is next to it and world-readable.
+
+The test that would catch this exists and is named as though it does:
+
+> `the_key_file_is_created_private_and_reused`
+
+Its first half asserts `mode & 0o777 == 0o600`. Its second half re-opens the file and
+asserts the key still decrypts. Created is checked for privacy; reused is checked only for
+correctness. The name joins the two words with an "and" that the assertions do not.
+**Change:** on the read path, refuse a key file that any group or other bit is set on —
+`mode & 0o077 != 0`, which is the rule OpenSSH applies to a private key, and refuses a
+group-writable file as well as a readable one: whoever can rewrite the key can swap in one
+they know and wait for the next key to be typed into Settings.
+
+The refusal names three things, because two of them are not optional. `chmod 600` fixes the
+file. Rotating every stored key is what fixes the exposure, since tightening a mode does not
+un-share what was already readable. And `GRAPHIFY_SECRET` is the way through for a
+filesystem that cannot hold a mode at all — that path reads no file, it is already in
+`docker-compose.yml`, and it means this check never leaves an operator with nowhere to go.
+
+Correct the two comments to say what is true, and split the test whose name outruns its
+assertions into one about creation and one about reuse.
+**Verify:** a key file at 0600 opens as it always did. One at 0644, 0640, 0604, 0620 or
+0666 is refused, and the message names the path and the chmod. The refusal happens on the
+second open and not the first, because the first is what wrote the file. `GRAPHIFY_SECRET`
+is unaffected: no file is read, so no mode is consulted, and a loose file lying beside the
+database does not stop a run that never opens it.
+**Acceptance:** WHEN the key file has any group or other permission bit THEN opening the
+store SHALL fail with a message naming the path, the chmod and the need to rotate. WHEN
+`GRAPHIFY_SECRET` supplies the key THEN the file's mode SHALL NOT be consulted.
+**Must not:** chmod the file back to 0600 and carry on. It is the helpful-looking answer
+and it destroys the only evidence that the key was exposed, turning a "rotate everything"
+into a silent repair. Check the mode of the directory the file sits in — a readable
+directory does not hand out the file's bytes, and walking up a path is a different and much
+larger question. Make the check configurable or add a flag to skip it: `GRAPHIFY_SECRET` is
+already the escape hatch and a second one would be the one people reach for. Check the
+file's owner — a file owned by someone else and mode 0600 cannot be read at all, so the
+open already fails on its own.
+
 **The register is complete through S-46.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
