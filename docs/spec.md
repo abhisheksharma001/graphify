@@ -3034,5 +3034,71 @@ and the other three still read a client's call history over a writable one — n
 but the same connection. Nothing here touches the engine, which writes every one of these
 tables freely and should.
 
+### S-46 — A session that ends ☐ [Rust]
+**PR:** one. **Depends on:** S-44, whose route harvest is what makes "the gate" mean every
+route rather than the ones somebody remembered. **Files:** `engine/src/auth.rs`,
+`engine/tests/server.rs`. No brain change, no UI.
+**Today:** `auth.rs` is the optional password gate, and it opens by explaining what it
+chose not to build:
+
+> Sessions live in memory only. A restart logs everyone out, which for a dashboard is the
+> right trade: no session table to leak, and nothing to expire on disk.
+
+The trade is real and the reasoning is sound, but the last clause does the thing S-45 was
+about: it answers a narrower question than the one it appears to have answered. There is
+nothing to expire *on disk*. There is very much something to expire in memory, and nothing
+does. `sessions` is a `HashSet<String>` that is only ever inserted into; `allows` is a
+`contains`; no entry is removed by anything, ever.
+
+`set_cookie` then states the consequence as though it were a guarantee:
+
+> No `Max-Age`: the session dies with the browser or with the process, whichever comes
+> first.
+
+The first of those two deaths is not one the server takes part in. `Max-Age` is absent, so
+the *cookie* is dropped when the browser closes — true, and it is the browser doing it. The
+*session* is the token in the server's set, and it survives. Anything that ever held that
+cookie's value holds a working credential until the process stops: a copy taken off a
+shared machine, a value read out of a proxy log or a shell history, a screenshot of
+devtools. Two deaths are named so that "it dies" feels covered, and neither of them is the
+server letting go of the credential.
+
+That the process is long-lived is what makes this a hole rather than a technicality. S-31
+built a scheduler and the container runs it under supercronic; graphify is meant to be a
+daemon that stays up for weeks. "Dies with the process" is, in the deployment this project
+actually ships, "does not die".
+**Change:** `sessions` becomes a map from token to the instant it was issued. `allows`
+refuses one older than `SESSION_TTL` and drops it on the way past. `login` sweeps expired
+entries before inserting, so the set is bounded by the sessions that are live rather than
+by every login the process has ever served.
+
+The expiry is absolute — measured from login, not from last use. An idle timeout is the
+more usual choice and here it would be theatre: `Notices` polls from every screen every 30
+seconds, so a tab left open renews a sliding session forever, and the timeout would fire
+only for a browser that was closed, which is the case the cookie already covers.
+
+`SESSION_TTL` is one day. The day is already this product's unit — the sync, the spend cap
+and the schedule all run on it — and a dashboard signed into in the morning should not ask
+again before evening.
+Correct both comments to say what is true: the cookie dies with the browser, the session
+dies at its TTL or with the process.
+**Verify:** a session works before its TTL and is refused after it, through a real route
+and not only through `allows`. The refusal is the ordinary 401 the gate already returns, so
+the UI's existing `Unauthorized` path shows the login form with no new UI code. An expired
+token is *gone* from the set rather than merely refused, and a login sweeps the expired
+entries of sessions nobody came back for — otherwise the map still grows without bound and
+only the credential was fixed. A gate with no password configured is unaffected: there is
+no session to expire and every request still passes.
+**Acceptance:** WHEN a session is older than `SESSION_TTL` THEN the API SHALL answer 401
+and the token SHALL no longer be held. WHEN no password is configured THEN nothing about
+this SHALL change.
+**Must not:** put `Max-Age` on the cookie to match the TTL. It reads like the tidy
+symmetric answer and it is a regression: `Max-Age` makes the cookie persistent, so it would
+begin surviving a browser close that today ends it, and the shared-machine case gets worse
+in exchange for looking neat. Renew a session on use. Add a logout route — ending a session
+on purpose is a different want from a credential not being immortal, and a button for it
+needs the UI to know whether the gate is on at all, which is a route change and its own
+step. Persist sessions to disk. Make the TTL configurable.
+
 **The register is complete through S-45.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
