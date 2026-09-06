@@ -662,20 +662,46 @@ impl Db {
         Ok(())
     }
 
-    /// Close a job out: its final status, whatever it printed, and what it cost.
+    /// Close a job out and book what it cost, in one transaction.
+    ///
+    /// The two statements are one fact. A job that reads `done` with a cost on it is a
+    /// claim that the org's ledger has already counted that money, and `sync` sizes the
+    /// day's remaining budget by subtracting that ledger from the cap — so a row that
+    /// closes without its spend landing is a hard cap quietly raised by the amount that
+    /// went missing. Ordering the writes was not enough, because the first of them can
+    /// fail and the second still run. Inside a transaction they move together or not at
+    /// all, and the invariant holds without anyone having to remember it.
+    ///
+    /// The only helper here that runs more than one statement, for that reason.
     pub fn finish_job(
         &self,
         id: i64,
         status: &str,
         output: Option<&str>,
         cost_usd: f64,
+        org_id: i64,
         finished_at: &str,
     ) -> Result<()> {
-        self.conn.execute(
+        // The ledger is keyed by day and the row by the instant, and they are the same
+        // moment: taking the date off the timestamp is what keeps them from being two.
+        let day = finished_at.get(..10).unwrap_or(finished_at);
+        // Unchecked because the borrow checker cannot see what is true here: every caller
+        // holds the `Db` behind a mutex and nothing else in the tree opens a transaction,
+        // so there is no nesting for the checked form to prevent.
+        let tx = self.conn.unchecked_transaction()?;
+        if cost_usd > 0.0 {
+            tx.execute(
+                "INSERT INTO spend (day, org_id, usd) VALUES (?1, ?2, ?3)
+                   ON CONFLICT(day, org_id) DO UPDATE SET usd = usd + excluded.usd",
+                params![day, org_id, cost_usd],
+            )?;
+        }
+        tx.execute(
             "UPDATE jobs SET status = ?2, output = ?3, cost_usd = ?4, finished_at = ?5
               WHERE id = ?1",
             params![id, status, output, cost_usd, finished_at],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -708,8 +734,10 @@ impl Db {
         )?)
     }
 
-    /// Book what a job cost against the org that asked for it, on the day it finished.
-    /// Added to whatever is already there: the cap in D-8 is a day's total, not a job's.
+    /// Book money against an org on a day, added to whatever is already there: the cap in
+    /// D-8 is a day's total, not a job's. A job's own cost does not come through here —
+    /// `finish_job` books it in the same transaction that closes the row, because the two
+    /// are one fact. This is the plain entry point, for a ledger written on its own.
     pub fn add_spend(&self, day: &str, org_id: i64, usd: f64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO spend (day, org_id, usd) VALUES (?1, ?2, ?3)

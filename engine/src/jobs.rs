@@ -596,8 +596,14 @@ fn classify(db: &Arc<Mutex<Db>>, id: i64, spawn: &Spawn, ok: bool, last: Option<
     }
 }
 
-/// Close the row out and book what it cost. The spend is written before the status, so a
-/// job that reads `done` is a job whose cost has already been counted against its org.
+/// Close the row out and book what it cost, which is one write and not two: a job that
+/// reads `done` is a job whose cost has already been counted against its org, and
+/// `finish_job` holds that in a transaction rather than in the order of two statements.
+///
+/// A close that fails leaves the row untouched, which is to say `running`. That is the
+/// truthful state for a job whose ending was never recorded, `abandon_live_jobs` sweeps it
+/// at the next boot, and it is the one thing this must never be: a `done` row carrying a
+/// cost that no ledger counted, which would raise the day's cap by exactly that much.
 fn finish(
     db: &Arc<Mutex<Db>>,
     id: i64,
@@ -607,14 +613,25 @@ fn finish(
     org: i64,
     note: &str,
 ) {
+    // One reading of the clock, not two. The ledger is keyed by the day and the row by the
+    // instant, and taking them from separate calls is how a job that finishes at midnight
+    // books its cost against one day and closes on another.
+    let now = crate::now();
     let db = lock(db);
     if !note.is_empty() {
         let _ = db.append_job_log(id, note);
     }
-    if usd > 0.0 {
-        let _ = db.add_spend(&crate::now()[..10], org, usd);
+    if let Err(e) = db.finish_job(id, status, output, usd, org, &now) {
+        // Both ways of saying so are best-effort, because the thing that failed is the
+        // database and the log lives in it. stderr is where `cli` already sends what the
+        // operator has to see, and it is the one of the two that does not depend on the
+        // part that is broken. Neither is scrubbed and neither needs to be: this error
+        // comes from SQLite about its own statement, not from the brain about its output,
+        // which is the difference S-37 had to learn the hard way.
+        let said = format!("could not close this job out: {e:#}");
+        eprintln!("job {id}: {said}");
+        let _ = db.append_job_log(id, &said);
     }
-    let _ = db.finish_job(id, status, output, usd, &crate::now());
 }
 
 fn append(db: &Arc<Mutex<Db>>, id: i64, line: &str) {
