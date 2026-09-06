@@ -2373,7 +2373,7 @@ the `spend` table. And the operator only learns about a failed close from stderr
 log nobody is watching; there is no place in the UI where "this job did not close" is
 visible, which is the difference between recording a failure and reporting one.
 
-### S-40 — The sweep that could not run says so [Rust]
+### S-40 — The sweep that could not run says so ☑ [Rust] (PR #41, c261fd6)
 
 **PR:** one. **Depends on:** S-39, S-38, S-22.
 **Files:** `engine/src/server.rs`, `engine/tests/jobs.rs`. No `db.rs`:
@@ -2449,9 +2449,64 @@ decided. Do not make `live_jobs` cleverer by cross-checking the registry — a c
 second-guesses the table is a different feature and a worse one. Do not add a
 `#[cfg(test)]` module to `src/`; there are none, and the library target exists so
 `engine/tests/` can reach what it needs.
+**Files (as built):** `engine/src/server.rs`, `engine/tests/jobs.rs`. No `db.rs`, no
+brain, no UI. 250 → 253 engine tests; `tests/jobs.rs` 51 → 54.
+
+**Learned:**
+
+*The comment was the bug report, for the third step running.* S-38 read the strings the
+product printed at people, S-39 read a doc comment the code printed at itself, and this one
+read the comment above the call — which named the exact consequence of the failure on the
+very next line it then discarded. Three steps out of one habit. What the habit actually is:
+a comment that states a consequence is a claim, and the code beneath it either upholds the
+claim or it does not, and checking which is cheaper than deriving the consequence from
+scratch. The codebase had already done the hard thinking each time; it just had not
+finished the sentence.
+
+*A survey is what makes a step complete rather than arbitrary.* Before writing this, every
+`let _ =` in the tree was listed: eight of them, and after this one, seven that are
+deliberate — a browser that will not open, a `launchctl bootout` for something not yet
+installed, a child that may already be dead, a logger thread being joined, and three
+job-log appends whose log lives in the database that just failed. Without that list this
+step is "fix one more swallowed error and probably find another next week." With it, the
+step has an end: nothing is being ignored that costs anything. The survey took one `grep`
+and it is written into the spec so it stays decided.
+
+*Returning the sentence instead of the `Result` is what made the report testable.* The
+easy shape is `Result<usize>` at the call site and a `format!` inside `App::new`, and then
+the only thing a test can reach is that SQLite failed — which was never in doubt. Moving
+the sentence into a named function put the part that actually matters, what the operator
+is told, somewhere an assertion can read it. Break 2 proves the difference: a version that
+prints the rusqlite error and nothing else passes every behavioural test and fails the one
+that asks whether anyone would understand it.
+
+*The failure had to be tested for what it costs, not only for what it breaks.* The boot
+test asserts three things at once — the 429 arrives, `/api/orgs` still answers, and the
+rows the sweep could not clear are still readable. Together they are the argument for the
+policy: the queue is gone, the product is not, and the state is inspectable. Any one of
+them alone would have been a weaker test of a decision that was really about proportion.
+
+*Break 5 reddened a test from S-22.* Pointing the sweep at a status that does not exist
+broke the new assertions and the eighteen-step-old `a_job_left_running_by_a_dead_engine_
+does_not_block_the_next_one`. That is the useful signal that the new tests are not a
+restatement of the old one: S-22 proves the sweep works, S-40 proves what happens when it
+does not, and only a break that removes the sweep entirely hits both.
+
+**Not done:** the wiring itself is unproven. The tests reach `sweep_abandoned` and they
+reach the server, but nothing asserts that `App::new` actually prints — capturing an
+in-process `eprintln!` from an integration test is not worth what it would cost, and break
+3 shows the boot test catches a wrong policy there, which is the part that matters. The
+report still only reaches stderr: there is no place in the UI where "the queue is held by
+rows from a dead run" is visible, which is S-39's unfinished sentence arriving again and is
+now the same gap for two different failures — it wants one notice mechanism, not two
+messages. S-38's last unproven control, `park` marking a declined job `running` for the
+millisecond before `finish` overwrites it, is still untouched; it needs a clock the test
+owns rather than a database that can fail, and it is now the only one left. Nothing prunes
+the `jobs` table or the `spend` table. And the 429's own wording is still *"finish or
+abandon one first"* without saying where — true when the queue is genuinely full, and it
+is the sentence a person reads in both cases.
 
 ---
 
-**The register is complete through S-39, and S-40 is specified and not yet built.**
-Anything after that is a new step appended here, or a bug in `docs/backlog/bugs.md`
-promoted to one.
+**The register is complete through S-40.** Anything after that is a new step appended
+here, or a bug in `docs/backlog/bugs.md` promoted to one.
