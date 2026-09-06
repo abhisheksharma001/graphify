@@ -3415,5 +3415,96 @@ both today, deliberately, and a second one would go unnoticed. And the allowlist
 genuinely useful new Vapi field needs a line of code added by someone who looked at it, which
 is the cost and also the point.
 
+### S-49 — The one rule, kept in one file ☐ [Rust]
+**PR:** one. **Depends on:** nothing. The first **Must never** has been in force since S-2.
+**Files:** `engine/tests/outbound.rs` (new), `engine/tests/vapi.rs`, `docs/spec.md`. No
+engine source change, no brain change, no UI.
+
+**Today:** the first Must-never is a rule about the whole program, and says so:
+
+> Send anything but GET to a provider. Vapi is the one there is (`vapi.rs`, enforced by a
+> test that greps the source); **every connector after it inherits this.**
+
+All of that enforcement is this:
+
+```rust
+/// The one rule this whole file exists to keep: Vapi is read-only, forever.
+#[test]
+fn the_client_can_only_send_get() {
+    let src = include_str!("../src/vapi.rs");
+    for verb in [".post(", ".patch(", ".delete(", ".put("] {
+        assert!(!src.contains(verb), "vapi.rs must never call {verb}");
+    }
+    assert!(src.contains(".get("), "vapi.rs stopped making requests at all");
+}
+```
+
+A denylist of four literal strings, read out of one hardcoded file. Three holes, and the
+rule holds today only because nobody has yet written the code that walks through them.
+
+**The canary is vacuous.** The last line exists to catch the case where the guard passes
+because there is nothing left to guard. It looks for `.get(` — and `vapi.rs:144` is
+`row.get("createdAt")`, a `serde_json::Value` lookup with no HTTP anywhere near it. Delete
+the entire client, keep that one line of JSON parsing, and the canary is still green. It
+proves the file contains the three characters `.g`, `e`, `t`.
+
+**The verbs are spellings, not methods.** `reqwest` sends a POST by at least three routes
+that contain none of the four strings: `http.request(Method::POST, url)`,
+`RequestBuilder::method`, and `http.execute(Request::new(Method::POST, url))`. A function
+in `vapi.rs` that no test exercises could use any of them and this test would pass, which
+is precisely the case the guard is for — the wiremock tests below it cover the code paths
+they call, and the grep is supposed to be the belt for the ones they do not.
+
+**And it is one file.** `include_str!("../src/vapi.rs")` is the whole scope. Any other
+module that picks up `reqwest` is unguarded — not weakly guarded, not guarded — and D-13
+says a second connector is where this product is going. The spec's own sentence, *"every
+connector after it inherits this"*, describes an inheritance that nothing implements: add
+`engine/src/retell.rs` tomorrow with a `.post(` in it and the suite stays green.
+
+Nothing is wrong in the shipped engine. `reqwest` is named in exactly one file, every
+request in it is `http.get(url)`, and the wiremock tests all mount `method("GET")`. The
+defect is in the guard: what is checked is the text of one file, and what the rule says is
+the behaviour of the program.
+
+**Change:** replace the file-text denylist with two guards that fail for different
+reasons, in a new `engine/tests/outbound.rs` — the rule is no longer about `vapi.rs`, so
+the test that keeps it should not live in `vapi.rs`'s file either.
+
+The first is an allowlist over the source tree. `CONNECTORS` names the files permitted to
+reach out — `vapi.rs`, and nothing else today. Every `.rs` file under `engine/src` is read
+(walked from `CARGO_MANIFEST_DIR`, so a new file is in scope the moment it exists, and a
+new subdirectory does not slip past); any file not on the list that names an HTTP client
+fails, with a message saying to put it on the list and inherit the rule. Each file that
+*is* on the list must name no way of sending anything but a GET — the four verbs, plus
+`.head(`, `.request(`, `.execute(` and `Method::`, which the narrow scope makes safe to
+forbid: `server.rs` routes `.post(create_org)` and is not a connector, so it is never
+read.
+
+The second is a wire guard. A `wiremock` server that matches **any** method answers both
+public entry points, and the test asserts that every request it actually received was a
+GET. It sees what the text guard cannot spell, and the text guard sees what no test
+exercises. The vacuous canary is replaced by this: a request that leaves the process is
+the thing being asserted about, and a `vapi.rs` that stopped making requests fails on a
+count of zero.
+
+**Acceptance:** WHEN any file under `engine/src` outside `CONNECTORS` names an HTTP client
+THEN the suite SHALL fail naming that file; AND WHEN a connector file names any request
+method other than `get` THEN the suite SHALL fail naming the verb; AND WHEN either public
+fetch entry point runs against a mock that accepts every method THEN every request
+recorded SHALL be a GET, and there SHALL be at least one.
+
+**Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`. Then break it
+seven ways and watch each go red: add `src/retell.rs` naming `reqwest`; swap `http.get` for
+`http.request(Method::POST, ..)`; drop the `Method::` entry from the forbidden list and
+break it again; empty `CONNECTORS`; make the walk skip subdirectories; delete the
+received-request assertion; make the mock match `method("GET")` instead of any.
+
+**Must not:** change anything under `engine/src` — this step is a guard over code that is
+already correct, and a source change would mean the finding was something else. Add a
+second connector, or a provider trait: D-13 says both wait for a real second provider.
+Widen the guard to `brain/`, which reaches LLM providers over `httpx` and must POST to
+call a model at all — a different rule, unwritten, for a later step. Reach outside
+`engine/src` — the `tests/` tree is not shipped and may say `.post(` freely.
+
 **The register is complete through S-48.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
