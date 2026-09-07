@@ -3543,5 +3543,114 @@ by text alone. Nothing checks `Cargo.toml` for a client crate that no source fil
 started using yet. And the walk's `>= 15` floor would not notice recursion being lost — the
 guard on the guard is a floor, not a proof.
 
-**The register is complete through S-49.** Anything after that is a new step appended
+---
+
+### S-50 — An axis a query string cannot blow up ☐ [Rust]
+**PR:** one. **Depends on:** nothing. `queries.rs` has drawn the time axis since S-8 and
+has never been audited.
+**Files:** `engine/src/queries.rs`, `engine/tests/server.rs`, `docs/spec.md`. No brain
+change, no UI change, no new dependency.
+
+**Today:** `queries.rs` opens by naming the two rules it keeps.
+
+> A missing number stays missing … And an unknown filter key is an error, not a shrug: a
+> typo in `assistant_id` that silently returned the whole org would be a wrong chart nobody
+> could spot.
+
+The first rule holds everywhere in the file — `Mean` reports nothing until something
+contributes, `add_f64` stays `None` until a value arrives, an empty bucket carries NULL.
+The second holds for every filter key **and for one filter value**: `window` is parsed at
+the filter, with the reason written next to it — *"Parsed here so a bad window is a 400 on
+the filter, not a surprise mid-query."* `since` and `until` are the two values that reach
+SQL without ever being parsed at all.
+
+Three things follow, all measured against the shipped engine on a ten-call database:
+
+**A typo'd date is answered, not refused.** `GET /api/stats?since=not-a-date` returns
+**200** with `"calls": 0`. The string goes straight into `created_at >= ?`, and `'n'` sorts
+above `'2'`, so every row is excluded. The analyst is told they had no calls. Nothing
+anywhere says the filter was not understood. `?until=banana` is the mirror: 200, all ten
+calls, the upper bound silently gone. This is exactly the failure the file's own header
+describes — *a wrong chart nobody could spot* — for the two filters most likely to be typed
+by hand.
+
+**The axis has no ceiling.** `bucketed` walks from the range's start to its end one bucket
+at a time, allocating a `Bucket` — a stamp and twenty-five totals — for each. Nothing bounds
+the count. Measured, on ten calls:
+
+| request | status | buckets | wall | peak RSS |
+|---|---|---|---|---|
+| `?window=1h&until=<+400d>` | 200 | 9,602 | — | — |
+| `?window=1h&until=<+50y>` | 200 | **438,002** | **13.4 s** | **2.0 GB** |
+| `?since=1990-01-01&until=2400-01-01` | 200 | 149,750 | — | — |
+
+`until=9999-12-31` is the same arithmetic carried to its end: roughly seventy million
+buckets. The engine is one process — it serves the API, serves `ui/dist`, and spawns the
+brain — so a query string that makes it allocate until the OS kills it takes the whole
+product down, sync included. This needs no bad data and no second user: one authenticated
+GET.
+
+**And the step and the length are decided from different intervals.** `hourly` comes from
+`span`, which is `window` when a window is given — `until` is not in it. The axis comes
+from `floor .. until`. So `?window=1h&until=<+400d>` means "the last hour" to the bucket
+size and "four hundred days" to the axis, and the answer is 9,602 hourly buckets for a
+request that asked about one hour. That mismatch is the multiplier on row one above; the
+ceiling is what is missing underneath it.
+
+There is a fourth, quieter one in the same place. `end.max(observed_end)` stretches the
+axis to cover a call dated after the range asked for. A single call whose `created_at` is
+in the future — provider data, and `keep_days` never purges it because it is not old —
+drags the axis out to that instant on **every** request, including ones that name no range
+at all.
+
+**Change:** three edits in `queries.rs`, all in the direction the file already states.
+
+1. `since` and `until` are parsed at the filter, like `window`, and normalised to UTC.
+   Unparseable is an error, which `filters()` in `server.rs` already turns into a 400
+   carrying the reason. Normalising matters on its own: the SQL compares these as strings
+   against the stamps `extract` stored, which is chronological *"for the fixed-width UTC
+   instants Vapi returns"* and for nothing else, so `2026-09-07T00:00:00+02:00` is accepted
+   today and sorts two hours wrong. Parsed, it becomes the instant it names.
+
+2. `MAX_BUCKETS`, checked in `from_query` over the range the request names, before any SQL
+   runs. Too wide is a 400 that gives the number of buckets asked for, the ceiling, and the
+   remedy. A decade of daily buckets fits under it; `HOURLY_MAX` already holds the hourly
+   axis to fifty when the step and the length come from the same interval, which after this
+   step they do.
+
+3. `bucketed` stops stretching the axis past the end the request named to reach a call
+   dated after it. Such a call still counts in `totals` and sits on no bucket — the rule the
+   file already applies two lines above: *"A call with no `created_at` cannot be placed on a
+   time axis. It still counts in `totals`; it just is not anywhere in particular."* A call
+   dated after the range is not anywhere in particular either.
+
+A backstop stays inside `bucketed` over the final axis, because `start.min(observed_start)`
+can still reach past what was asked for when a stored stamp is malformed enough that string
+comparison admits it. It errors rather than allocating; see **Not done** for why that one
+is a 500 and the other is a 400.
+
+**Acceptance:** WHEN `since` or `until` is not an RFC 3339 instant THEN the request SHALL
+be refused with 400 naming the value, and no chart SHALL be drawn from it; AND WHEN a
+request names a range needing more than `MAX_BUCKETS` buckets THEN it SHALL be refused with
+400 naming the count and the ceiling, before any query runs; AND WHEN a call is dated after
+the range the request named THEN it SHALL count in `totals` and appear on no bucket; AND
+WHEN `since` carries an offset other than `Z` THEN it SHALL filter as the instant it names.
+
+**Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`. Then break it:
+accept an unparseable `since` again and watch `?since=not-a-date` go back to answering 200
+with nothing; remove the `MAX_BUCKETS` check and watch `?window=1h&until=<+50y>` allocate
+again; put `.max(observed_end)` back and watch one future-dated call stretch an unfiltered
+axis; drop the normalisation and watch an offset instant filter by its text. Re-measure the
+table above and record the numbers after.
+
+**Must not:** change what a valid request answers. Every assertion in `tests/server.rs`
+about bucket size, bucket count and NULL-not-zero stands unedited, and a diff that edits one
+of them is the fix being wrong. Change `HOURLY_MAX`, or the bucket sizes on offer: two
+sizes is a separate decision. Truncate an axis silently — a chart shortened without saying
+so is the same class of defect as a zero drawn for a missing number. Touch `db.rs`,
+`extract.rs` or anything a provider's vocabulary reaches; this is downstream of normalised
+columns only (D-13). Add a rate limiter or a request timeout: those are real and they are
+not this step.
+
+**The register is complete through S-50.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
