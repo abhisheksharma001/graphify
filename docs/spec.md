@@ -3418,7 +3418,7 @@ both today, deliberately, and a second one would go unnoticed. And the allowlist
 genuinely useful new Vapi field needs a line of code added by someone who looked at it, which
 is the cost and also the point.
 
-### S-49 — The one rule, kept in one file ☐ [Rust]
+### S-49 — The one rule, kept in one file ☑ [Rust] (PR #50, f5a8d35)
 **PR:** one. **Depends on:** nothing. The first **Must never** has been in force since S-2.
 **Files:** `engine/tests/outbound.rs` (new), `engine/tests/vapi.rs`, `docs/spec.md`. No
 engine source change, no brain change, no UI.
@@ -3509,5 +3509,39 @@ Widen the guard to `brain/`, which reaches LLM providers over `httpx` and must P
 call a model at all — a different rule, unwritten, for a later step. Reach outside
 `engine/src` — the `tests/` tree is not shipped and may say `.post(` freely.
 
-**The register is complete through S-48.** Anything after that is a new step appended
+**Files (as built):** `engine/tests/outbound.rs` (new, 163 lines), `engine/tests/vapi.rs`
+(the old guard retired, a two-line comment left where it stood), `docs/spec.md` (the
+Must-never line now names what keeps it). No `engine/src` change, no brain, no UI, no new
+dependency — `wiremock` was already a dev-dependency. 282 → 285 engine tests.
+
+**Learned:** (a) *A rule about a program, enforced over the text of one file, is enforced
+over the text of one file.* Both halves of the gap were provable in minutes: `src/retell.rs`
+POSTing to a provider's delete-all endpoint, compiled into the binary, left the suite green
+at 283. (b) *A vacuity canary has to name something only the thing it guards can produce.*
+`src.contains(".get(")` was meant to catch a `vapi.rs` that stopped making requests;
+`row.get("createdAt")` satisfies it. The replacement is a request that actually left a
+process. (c) *A denylist of spellings is a denylist of spellings* — `.request(Method::POST,
+url)` contains none of the four verbs. The list here is longer, but what makes it hold is
+not its length: it is only ever read against files that can reach out at all, so it can
+afford to forbid `Method::` outright, which a tree-wide list could not. (d) *Narrowing the
+scope is what let the check get stricter.* The old guard could not have forbidden `.post(`
+across the tree — `server.rs` routes `.post(create_org)`. An allowlist of connectors makes
+the strict check safe, which is the same move as S-48 arriving at a different benefit.
+(e) *Two guards are worth it when they fail for different reasons.* Break 2 (an unexercised
+`purge()`) reds only the text guard; break 3 (`get_page` sends a POST) reds both, the wire
+one saying `a POST left for /call`. A text guard sees code nothing calls; a wire guard sees
+what text cannot spell. (f) *A harvest floor is not a proof of coverage.* `found.len() >= 15`
+passes happily with the walk made non-recursive — break 7b — so the subdirectory case is
+held by break 8 and by nothing in the assertions themselves.
+
+**Not done:** no `engine/src` change at all, by Must-not: this guards code that was already
+correct, and a source change would have meant the finding was something else. `brain/`
+reaches LLM providers over `httpx` and must POST to call a model at all — a different rule,
+still unwritten, for a later step. The verb list remains a denylist, better scoped; the wire
+guard covers only the paths a test exercises, so a connector function nothing calls is held
+by text alone. Nothing checks `Cargo.toml` for a client crate that no source file has
+started using yet. And the walk's `>= 15` floor would not notice recursion being lost — the
+guard on the guard is a floor, not a proof.
+
+**The register is complete through S-49.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
