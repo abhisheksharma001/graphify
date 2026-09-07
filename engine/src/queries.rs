@@ -23,6 +23,16 @@ const DEFAULT_CALL_LIMIT: usize = 200;
 /// and the query pointlessly wide.
 const HOURLY_MAX: Duration = Duration::days(2);
 
+/// The most buckets one chart may have. A decade of daily buckets fits under it and the
+/// widest hourly axis `HOURLY_MAX` allows is fifty, so no honest request comes near it.
+///
+/// It is a memory ceiling before it is a legibility one. The axis is built a `Bucket` at a
+/// time before anything is drawn, so the width of the range asked for *is* the size of the
+/// allocation: without this, `?window=1h&until=` fifty years out answers 200 after building
+/// 438,002 buckets at two gigabytes, and the engine is the one process serving the API, the
+/// UI and the sync.
+const MAX_BUCKETS: i64 = 5_000;
+
 /// The filters every endpoint accepts. All optional: with none of them set the answer is
 /// the whole database, which is the honest default for a single-tenant local dashboard.
 #[derive(Debug, Default, PartialEq)]
@@ -57,8 +67,8 @@ impl Filters {
             match k.as_ref() {
                 "org" => f.org = Some(v.parse().context("org must be an org id")?),
                 "assistant_id" => f.assistant_ids.push(v),
-                "since" => f.since = Some(v),
-                "until" => f.until = Some(v),
+                "since" => f.since = Some(instant(&v)?),
+                "until" => f.until = Some(instant(&v)?),
                 "window" => f.window = Some(v),
                 "last" => f.last = Some(v.parse().context("last must be a whole number")?),
                 "ended_group" => f.ended_group = Some(v),
@@ -70,8 +80,34 @@ impl Filters {
             }
         }
         // Parsed here so a bad window is a 400 on the filter, not a surprise mid-query.
+        // The bucket ceiling is not checked here: every endpoint shares this parser and
+        // only `stats` builds an axis, so a wide range on `/api/calls` is a fine question.
         f.span()?;
         Ok(f)
+    }
+
+    /// The axis this request asks for. Whether its buckets are hourly and where it ends are
+    /// known from the request alone; where it starts is only known when the request named a
+    /// lower bound, and otherwise the oldest call supplies it, which `bucketed` is where to
+    /// find out.
+    ///
+    /// One place, because the step and the length have to come out of the same interval.
+    /// They did not: `hourly` was taken from `span`, which is the `window` when there is
+    /// one and does not look at `until` at all, while the axis ran from the floor to
+    /// `until` — so `?window=1h&until=` a year out meant "the last hour" to the bucket size
+    /// and "a year" to the axis, and answered with 9,602 hourly buckets.
+    fn asked(&self, now: DateTime<Utc>) -> Result<Axis> {
+        let start = self.floor(now)?.as_deref().and_then(parse_instant);
+        let end = self.until.as_deref().and_then(parse_instant).unwrap_or(now);
+        let span = match self.span()? {
+            Some(d) => Some(d),
+            None => start.map(|s| end - s),
+        };
+        Ok(Axis {
+            hourly: span.is_some_and(|d| d <= HOURLY_MAX),
+            start,
+            end,
+        })
     }
 
     /// The window as a duration, if one was given.
@@ -97,6 +133,83 @@ fn flag(v: &str) -> Result<bool> {
         "1" | "true" | "yes" => Ok(true),
         "0" | "false" | "no" => Ok(false),
         other => bail!("expected true or false, got {other}"),
+    }
+}
+
+/// An instant, normalised to UTC.
+///
+/// Parsed for the same reason `window` is, and refused for the same reason an unknown key
+/// is: `?since=not-a-date` reached SQL as text, where `'n'` sorts above `'2'`, so every row
+/// failed `created_at >= ?` and the answer was a 200 saying the analyst had no calls.
+///
+/// Normalised because the comparison it feeds is chronological only while every stamp on
+/// both sides is written the same way — the property `extract` relies on. Left as text,
+/// `2026-09-07T00:00:00+02:00` filters two hours wrong; parsed, it is the instant it names.
+fn instant(v: &str) -> Result<String> {
+    let t = parse_instant(v).with_context(|| format!("{v} is not an RFC 3339 instant"))?;
+    Ok(stamp(t))
+}
+
+/// A range too wide to draw. Its own type, and public, because of where it can be raised:
+/// the ceiling is checked once at the filter, where a failure is plainly a 400, and once
+/// more inside `bucketed` after the data has supplied a bound the request left open. The
+/// second one is still the caller's mistake and still has to read as a 400 — an axis nobody
+/// can chart is not the engine failing to read its own database. `server.rs` recovers it
+/// from the error chain and says so; the same split `ask::Error` makes for the same reason.
+#[derive(Debug)]
+pub struct TooWide(pub String);
+
+impl std::fmt::Display for TooWide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for TooWide {}
+
+/// The shape of a time axis: how big its buckets are, and the two instants it runs between.
+struct Axis {
+    hourly: bool,
+    /// `None` when the request named no lower bound, in which case the data supplies one.
+    start: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
+}
+
+impl Axis {
+    /// How many buckets this axis takes, both ends included. Arithmetic rather than a
+    /// count, so the ceiling can be tested before a single bucket exists.
+    fn width(&self, start: DateTime<Utc>) -> i64 {
+        let step = if self.hourly {
+            Duration::hours(1)
+        } else {
+            Duration::days(1)
+        };
+        let from = truncate_dt(start, self.hourly);
+        let to = truncate_dt(self.end, self.hourly);
+        (to - from).num_seconds() / step.num_seconds() + 1
+    }
+
+    /// Refuse a range too wide to draw, saying how wide it was and what the ceiling is.
+    /// Called before the selection is read, so the refusal costs a subtraction. A request
+    /// that named no lower bound is not refused here — there is nothing yet to measure —
+    /// and is caught in `bucketed` once the data has supplied one.
+    fn check(&self) -> Result<()> {
+        let Some(start) = self.start else {
+            return Ok(());
+        };
+        self.fits(start)
+    }
+
+    fn fits(&self, start: DateTime<Utc>) -> Result<()> {
+        let n = self.width(start);
+        if n > MAX_BUCKETS {
+            let size = if self.hourly { "hourly" } else { "daily" };
+            return Err(TooWide(format!(
+                "that range is {n} {size} buckets wide and a chart may have                  {MAX_BUCKETS}; narrow it with since and until"
+            ))
+            .into());
+        }
+        Ok(())
     }
 }
 
@@ -745,6 +858,10 @@ struct Point {
 pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
     let now = Utc::now();
     let floor = f.floor(now)?;
+    // Before the selection is read, because the answer to a range too wide to chart does
+    // not depend on what is in it.
+    let axis = f.asked(now)?;
+    axis.check()?;
     let limit = f.last.map_or(-1, |n| n as i64);
     let (cte, params) = selection(f, floor.as_deref(), limit);
     let conn = db.conn();
@@ -857,14 +974,8 @@ pub fn stats(db: &Db, f: &Filters) -> Result<Stats> {
 
     // The span the caller asked for, however they asked. A `since` two hours back
     // deserves hourly buckets just as much as `window=2h` does.
-    let span = match f.span()? {
-        Some(d) => Some(d),
-        None => floor.as_deref().and_then(parse_instant).map(|start| {
-            f.until.as_deref().and_then(parse_instant).unwrap_or(now) - start
-        }),
-    };
-    let hourly = span.is_some_and(|d| d <= HOURLY_MAX);
-    let per_bucket = bucketed(&points, hourly, floor.as_deref(), f.until.as_deref(), now);
+    let hourly = axis.hourly;
+    let per_bucket = bucketed(&points, &axis)?;
     let totals = totals(points.iter());
 
     // Read after the axis exists, so a numeric key's series is built on the same buckets
@@ -1013,16 +1124,10 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 }
 
 /// Group the points into buckets and fill the gaps between them.
-fn bucketed(
-    points: &[Point],
-    hourly: bool,
-    floor: Option<&str>,
-    until: Option<&str>,
-    now: DateTime<Utc>,
-) -> Vec<Bucket> {
+fn bucketed(points: &[Point], axis: &Axis) -> Result<Vec<Bucket>> {
+    let hourly = axis.hourly;
     let mut by_key: BTreeMap<String, Vec<&Point>> = BTreeMap::new();
     let mut earliest: Option<DateTime<Utc>> = None;
-    let mut latest: Option<DateTime<Utc>> = None;
 
     for p in points {
         // A call with no `created_at` cannot be placed on a time axis. It still counts in
@@ -1031,20 +1136,30 @@ fn bucketed(
             continue;
         };
         earliest = Some(earliest.map_or(t, |e| e.min(t)));
-        latest = Some(latest.map_or(t, |l| l.max(t)));
         by_key.entry(truncate(t, hourly)).or_default().push(p);
     }
 
-    let (Some(observed_start), Some(observed_end)) = (earliest, latest) else {
+    let Some(observed_start) = earliest else {
         // Nothing datable in the selection. An axis with no instants on it is not a range
         // of empty buckets, it is no chart at all.
-        return Vec::new();
+        return Ok(Vec::new());
     };
     // The requested range wins where it is known, so two charts drawn with the same
-    // `window` share an axis even when one of them has no calls near its start. Where it
-    // is not, the data draws its own bounds. Either way the observed calls stay inside.
-    let start = floor.and_then(parse_instant).unwrap_or(observed_start);
-    let end = until.and_then(parse_instant).unwrap_or(now);
+    // `window` share an axis even when one of them has no calls near its start. Where it is
+    // not, the data draws its own start.
+    //
+    // The end is the request's alone. It used to be stretched to `observed_end` so that a
+    // call dated after the range still had a bucket, and one call with a `created_at` in
+    // the future — provider data, which `keep_days` never purges because it is not old —
+    // then dragged the axis out to that instant on every request, including ones that named
+    // no range at all. A call dated after the range is in the same position as a call with
+    // no date: it counts in `totals` and it is not anywhere in particular.
+    let start = axis.start.unwrap_or(observed_start).min(observed_start);
+
+    // The ceiling again, over the axis actually built. `check` could only measure the range
+    // the request named; this catches the rest — a request that named no lower bound, and a
+    // stored stamp malformed enough that string comparison let it past the floor.
+    axis.fits(start)?;
 
     let step = if hourly {
         Duration::hours(1)
@@ -1052,8 +1167,8 @@ fn bucketed(
         Duration::days(1)
     };
     let mut out = Vec::new();
-    let mut at = truncate_dt(start.min(observed_start), hourly);
-    let last = truncate_dt(end.max(observed_end), hourly);
+    let mut at = truncate_dt(start, hourly);
+    let last = truncate_dt(axis.end, hourly);
     while at <= last {
         let key = stamp_bucket(at);
         let empty: Vec<&Point> = Vec::new();
@@ -1064,7 +1179,7 @@ fn bucketed(
         });
         at += step;
     }
-    out
+    Ok(out)
 }
 
 fn parse_instant(s: &str) -> Option<DateTime<Utc>> {

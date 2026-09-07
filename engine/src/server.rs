@@ -505,7 +505,19 @@ async fn get_stats(
     RawQuery(query): RawQuery,
 ) -> Result<Response, ApiError> {
     let filters = filters(query.as_deref())?;
-    Ok(Json(queries::stats(&app.db(), &filters)?).into_response())
+    let stats = queries::stats(&app.db(), &filters).map_err(too_wide)?;
+    Ok(Json(stats).into_response())
+}
+
+/// A range too wide to chart is the caller's mistake wherever it is caught. The filter
+/// catches the ones it can measure without the data; this recovers the rest from the error
+/// chain, so an axis nobody can draw is a 400 saying how wide it was rather than a 500
+/// saying the engine failed.
+fn too_wide(e: anyhow::Error) -> ApiError {
+    match e.downcast_ref::<queries::TooWide>() {
+        Some(w) => ApiError::new(StatusCode::BAD_REQUEST, w.to_string()),
+        None => ApiError::from(e),
+    }
 }
 
 /// One chart of the dashboard, and whether it is drawn. The order of the list is the order
