@@ -3545,7 +3545,7 @@ guard on the guard is a floor, not a proof.
 
 ---
 
-### S-50 — An axis a query string cannot blow up ☐ [Rust]
+### S-50 — An axis a query string cannot blow up ☑ [Rust] (PR #51, 91407d2)
 **PR:** one. **Depends on:** nothing. `queries.rs` has drawn the time axis since S-8 and
 has never been audited.
 **Files:** `engine/src/queries.rs`, `engine/tests/server.rs`, `docs/spec.md`. No brain
@@ -3651,6 +3651,70 @@ so is the same class of defect as a zero drawn for a missing number. Touch `db.r
 `extract.rs` or anything a provider's vocabulary reaches; this is downstream of normalised
 columns only (D-13). Add a rate limiter or a request timeout: those are real and they are
 not this step.
+
+**Files (as built):** `engine/src/queries.rs` (+171/−34: `MAX_BUCKETS`, `instant`, the
+`Axis` struct with `asked`/`width`/`check`/`fits`, the `TooWide` error, and `bucketed`
+rewritten to take the axis and return a `Result`), `engine/src/server.rs` (+14: `too_wide`
+recovers the refusal from the error chain so it reads as a 400), `engine/tests/server.rs`
+(+167: nine tests). No brain change, no UI change, no new dependency. 286 → 295 engine
+tests, and **no existing assertion edited**.
+
+**Measured, before and after, on the ten-call fixture:**
+
+| request | before | after |
+|---|---|---|
+| `?since=not-a-date` | 200, `"calls": 0` | 400, names the value |
+| `?until=banana` | 200, all ten calls | 400, names the value |
+| `?window=1h&until=<+400d>` | 200, 9,602 hourly buckets | 400 |
+| `?window=1h&until=<+50y>` | 200 — 438,002 buckets, 13.4 s, 2.0 GB RSS | 400, on a subtraction |
+| `?since=1990&until=2400` | 200, 149,750 daily buckets | 400 |
+| `?until=<+50y>` | 200, 18,251 buckets | 400 (the backstop) |
+| `?window=1d` + one future-dated call | axis stretched to that instant | 25 buckets, call still in `totals` |
+| `?window=1d`, `?window=7d`, `?since=<-2h>`, `/api/calls?since=1990&until=2400` | — | unchanged |
+
+Seven breaks, each red on exactly the tests that name it: (1) `since`/`until` unparsed
+again — three red; (2) the ceiling never fires — three red, and the run goes from 0.6 s to
+**14.7 s**, the allocation visible in the clock; (3) `.max(observed_end)` restored; (4)
+parse but do not normalise; (5) backstop removed from `bucketed`; (6) `TooWide` not mapped
+to 400 — red on the status code alone; (7) the ceiling moved back into the shared parser.
+
+**Learned:** (a) *A rule kept for one value is not kept for the value beside it.* This file
+parses `window` at the filter and writes the reason next to it — "a bad window is a 400 on
+the filter, not a surprise mid-query" — and `since` and `until`, two feet away, reached SQL
+as raw text. The reasoning was already written down and simply had not been carried to the
+other two. (b) *A silent filter is worse than a loud one.* `?since=not-a-date` did not
+error and did not ignore the filter: it excluded every row, because `'n'` sorts above `'2'`
+in a text comparison, and answered 200 with "you had no calls". The wrong answer arrived
+wearing the right status code. (c) *When a step and a length are decided from different
+intervals, the ratio between them is the multiplier.* `hourly` came from `span` (the
+`window`, which never looks at `until`) and the axis came from `floor .. until`. Neither
+half was individually absurd; together they turned "the last hour" into 438,002 hourly
+buckets. (d) *An axis built in memory is an allocation, and an allocation the caller sizes
+needs a ceiling.* The engine is one process — API, UI and sync — so a query string that
+allocates until the OS kills it is not a bad chart, it is the product down. (e) *Where a
+check lives decides who it refuses.* Self-review: the ceiling first went into
+`Filters::from_query`, which every endpoint shares, and would have started 400ing
+`/api/calls?since=1990&until=2400` — a request that builds no axis at all. The ceiling
+belongs to the chart, not to the filter. Break 7 is that case. (f) *An error type is how a
+refusal keeps its status code across a call boundary.* The backstop fires inside
+`bucketed`, three frames below the handler, and without `TooWide` in the chain it came back
+as a 500 telling the caller the engine had failed. `ask::Error` had already made the same
+split for the same reason. (g) *A rule already written for one absence extends to the
+other.* "A call with no `created_at` … still counts in `totals`; it just is not anywhere in
+particular" was two lines above the code that stretched the axis to reach a call dated
+*after* the range. The fix was to notice the second case was the first one.
+
+**Not done:** `MAX_BUCKETS` is a fixed 5,000 and not a function of what the browser can
+draw; a database whose oldest call is more than about fourteen years back will need an
+explicit `?since=` on the unfiltered view — loud, and it says so. The refusal is a refusal
+and not a coarser chart: falling back to weekly or monthly buckets means a third bucket
+size, which is a product decision this step declined to make alone, so `?window=1h&until=`
+a year out is turned away rather than quietly redrawn daily. Nothing rate-limits or times
+out a request; this ceiling bounds one allocation and a general limit is its own step.
+`Filters::from_query` now reads the clock through `asked`, which is a hidden dependency in
+a parser and unavoidable while `floor` is `now - window`. And a call dated after the range
+is now counted but never plotted — if a provider ever legitimately reports a future
+`createdAt`, that is the behaviour that has to change.
 
 **The register is complete through S-50.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
