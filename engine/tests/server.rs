@@ -1,5 +1,5 @@
 use axum::serve;
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use chrono::{DateTime, FixedOffset, SecondsFormat, TimeDelta, Utc};
 use graphify::auth::Auth;
 use graphify::db::{Call, Db, ToolCall};
 use graphify::secrets::Secrets;
@@ -1182,4 +1182,169 @@ async fn the_harvest_finds_the_router_and_a_session_opens_it() {
         let status = ask(&http, &s, &verb, &path, Some(&session)).await;
         assert_ne!(status, 401, "{verb} {path} refused a session the gate had issued");
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// S-50: the time axis. `since` and `until` were the only filter values that reached SQL
+// without being parsed, and the axis they built had no ceiling.
+// ---------------------------------------------------------------------------------------
+
+/// `?since=not-a-date` used to answer 200 with `"calls": 0` — the string went into
+/// `created_at >= ?`, where `'n'` sorts above `'2'`, so every row was excluded and the
+/// analyst was told they had no calls. A filter that is not understood is a 400, the same
+/// as `window=7` and the same as a filter key nobody recognises.
+#[tokio::test]
+async fn a_since_that_is_not_an_instant_is_refused() {
+    let s = plain(ten_calls).await;
+
+    let (status, body) = get(&s.url("/api/stats?since=not-a-date")).await;
+
+    assert_eq!(status, 400);
+    let why = body["error"].as_str().unwrap();
+    assert!(why.contains("not-a-date"), "the refusal names the value: {why}");
+}
+
+/// The other half. `?until=banana` answered 200 with every call in it: `'b'` sorts above
+/// `'2'`, so `created_at < ?` excluded nothing and the upper bound the caller asked for was
+/// silently not applied.
+#[tokio::test]
+async fn an_until_that_is_not_an_instant_is_refused() {
+    let s = plain(ten_calls).await;
+
+    let (status, body) = get(&s.url("/api/stats?until=banana")).await;
+
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("banana"));
+}
+
+/// The bucket size came from the window and the axis came from `until`, so this request
+/// meant "the last hour" to one and "fifty years" to the other, and was answered — 200,
+/// after building 438,002 hourly buckets in 13.4 seconds at two gigabytes resident. The
+/// refusal has to arrive without any of that being built, so the count in its message is
+/// arithmetic on two instants and not a length.
+#[tokio::test]
+async fn a_range_wider_than_a_chart_is_refused_before_it_is_built() {
+    let s = plain(ten_calls).await;
+    let until = stamp(Utc::now() + TimeDelta::days(365 * 50));
+
+    let (status, body) = get(&s.url(&format!("/api/stats?window=1h&until={until}"))).await;
+
+    assert_eq!(status, 400);
+    let why = body["error"].as_str().unwrap();
+    assert!(why.contains("438"), "the refusal says how wide the range was: {why}");
+    assert!(why.contains("5000"), "and what the ceiling is: {why}");
+}
+
+/// Daily buckets are not a way around it. `since=1990&until=2400` needs no window at all
+/// and used to answer 200 with 149,750 of them.
+#[tokio::test]
+async fn a_wide_range_of_daily_buckets_is_refused_too() {
+    let s = plain(ten_calls).await;
+
+    let (status, body) = get(
+        &s.url("/api/stats?since=1990-01-01T00:00:00Z&until=2400-01-01T00:00:00Z"),
+    )
+    .await;
+
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("daily"));
+}
+
+/// A range a chart can hold is still answered, and answered the same way it always was.
+#[tokio::test]
+async fn a_range_that_fits_is_still_drawn() {
+    let s = plain(ten_calls).await;
+    let until = stamp(Utc::now() + TimeDelta::hours(1));
+
+    let (status, body) = get(&s.url(&format!("/api/stats?window=1h&until={until}"))).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(body["bucket_size"], "1h");
+    assert_eq!(body["totals"]["calls"], 10);
+}
+
+/// A call dated after the range is in the same position as a call with no date at all: it
+/// counts, and it is not anywhere in particular. The axis used to be stretched to reach it,
+/// so one call with a `createdAt` in the future — which `keep_days` never purges, because
+/// it is not old — pulled every chart out to that instant.
+#[tokio::test]
+async fn a_call_dated_after_the_range_counts_without_a_bucket() {
+    let s = plain(|db, org| {
+        ten_calls(db, org);
+        db.upsert_call(&Call {
+            id: "call-from-the-future".into(),
+            org_id: org,
+            created_at: Some(stamp(Utc::now() + TimeDelta::days(400))),
+            cost: Some(0.10),
+            ..Call::default()
+        })
+        .unwrap();
+    })
+    .await;
+
+    let (status, body) = get(&s.url("/api/stats?window=1d")).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(body["totals"]["calls"], 11, "it counts");
+    let buckets = body["per_bucket"].as_array().unwrap();
+    assert_eq!(buckets.len(), 25, "and the axis is still the day that was asked for");
+    let charted: i64 = buckets.iter().map(|b| b["calls"].as_i64().unwrap()).sum();
+    assert_eq!(charted, 10, "but it is on no bucket");
+}
+
+/// The ceiling belongs to the chart, not to the filter. `/api/calls` shares the same parser
+/// and builds no axis at all, so a range too wide to draw is still a fine question to ask of
+/// the call list — and answering it costs one bounded query, not four hundred thousand
+/// buckets.
+#[tokio::test]
+async fn a_wide_range_is_still_a_fine_question_for_the_call_list() {
+    let s = plain(ten_calls).await;
+
+    let (status, body) = get(
+        &s.url("/api/calls?since=1990-01-01T00:00:00Z&until=2400-01-01T00:00:00Z"),
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(body.as_array().unwrap().len(), 10);
+}
+
+/// The ceiling has to hold where the request named only one end, and the data supplied the
+/// other — the case the filter cannot measure, because at filter time there is no data. It
+/// is caught inside `bucketed`, and it is still the caller's mistake, so it still reads as a
+/// 400 rather than as the engine failing to read its own database.
+#[tokio::test]
+async fn a_range_left_open_at_one_end_is_refused_by_the_backstop() {
+    let s = plain(ten_calls).await;
+    let until = stamp(Utc::now() + TimeDelta::days(365 * 50));
+
+    let (status, body) = get(&s.url(&format!("/api/stats?until={until}"))).await;
+
+    assert_eq!(status, 400, "not a 500: nothing about the engine failed");
+    let why = body["error"].as_str().unwrap();
+    assert!(why.contains("18251"), "measured, not counted: {why}");
+}
+
+/// The SQL compares these as text, which is chronological only while both sides are
+/// written the same way. Half an hour back, spelled in +05:30, sorts above every stored
+/// stamp as text and would have excluded all ten calls; as the instant it names it excludes
+/// none of them.
+#[tokio::test]
+async fn an_instant_with_an_offset_filters_as_the_instant_it_names() {
+    let s = plain(ten_calls).await;
+    let offset = FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+    let since = (Utc::now() - TimeDelta::minutes(30))
+        .with_timezone(&offset)
+        .to_rfc3339();
+    assert!(since.ends_with("+05:30"), "the test is about the offset: {since}");
+
+    let (status, body) = get(&s.url(&format!("/api/stats?since={}", urlencode(&since)))).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(body["totals"]["calls"], 10);
+}
+
+/// `+` is a space in a query string, so an offset has to be escaped to survive the trip.
+fn urlencode(v: &str) -> String {
+    v.replace('+', "%2B").replace(':', "%3A")
 }
