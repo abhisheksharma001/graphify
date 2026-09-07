@@ -89,8 +89,11 @@ next sync without a model call.
   second provider to shape it against; one implementation shapes an abstraction wrong.
 
 ## Must never (every step inherits these)
-- Send anything but GET to a provider. Vapi is the one there is (`vapi.rs`, enforced by a
-  test that greps the source); every connector after it inherits this.
+- Send anything but GET to a provider. `engine/tests/outbound.rs` keeps this over the whole
+  source tree (S-49): `CONNECTORS` names the files allowed to reach out at all — `vapi.rs`
+  today — those files may name no request verb but `get`, and a mock that accepts every
+  method asserts that everything which actually left was a GET. A connector inherits the
+  rule by being on that list; until it is on it, it cannot make a request at all.
 - Call a model without a shown cost and an explicit go (`--yes` / click). Daily modes
   have a hard USD cap and stop when reached.
 - Download or store audio. Recording URL only.

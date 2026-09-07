@@ -191,12 +191,5 @@ async fn the_key_travels_in_the_header_and_never_in_the_url() {
     }
 }
 
-/// The one rule this whole file exists to keep: Vapi is read-only, forever.
-#[test]
-fn the_client_can_only_send_get() {
-    let src = include_str!("../src/vapi.rs");
-    for verb in [".post(", ".patch(", ".delete(", ".put("] {
-        assert!(!src.contains(verb), "vapi.rs must never call {verb}");
-    }
-    assert!(src.contains(".get("), "vapi.rs stopped making requests at all");
-}
+// The one rule this file's subject has to keep — Vapi is read-only, forever — is kept in
+// `tests/outbound.rs`, over the whole source tree rather than over this one file's text.
