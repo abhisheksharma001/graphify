@@ -3716,7 +3716,7 @@ a parser and unavoidable while `floor` is `now - window`. And a call dated after
 is now counted but never plotted — if a provider ever legitimately reports a future
 `createdAt`, that is the behaviour that has to change.
 
-### S-51 — Retention that finishes the job ☐ [Rust]
+### S-51 — Retention that finishes the job ☑ [Rust] (PR #52, c73ead5)
 **PR:** one. **Depends on:** nothing. `db.rs` is 823 source lines against 131 test lines,
 the worst ratio in the engine, and has never been audited.
 **Files:** `engine/src/db.rs`, `engine/tests/db.rs`, `docs/spec.md`. No brain change, no UI
@@ -3800,6 +3800,91 @@ call — `jobs`, `spend` and `schedule.log` grow too and none of them is retenti
 `sync.rs`'s decision about *when* to purge. Delete a `patterns` row because its labels
 went: a pattern outlives the calls it was measured on, and its stored `agreement` and
 `sample_size` are a record of what was already paid for.
+
+**Files (as built):** `engine/src/db.rs` (+29/−10: `CALL_CHILDREN`, the sweep as a loop
+over it, and the retention doc comment moved back onto `purge_calls`),
+`engine/tests/db.rs` (+176: five tests and two helpers, one of which reads the child
+tables out of the schema). No brain change, no UI change, no new dependency, no migration.
+294 → 299 engine tests, clippy clean, CI 4/4. **No existing assertion edited.**
+
+**Measured, before and after, on two calls one of which is older than `keep_days`:**
+
+| table | before | after |
+|---|---|---|
+| `calls` | 2 → 1 | 2 → 1 |
+| `tool_calls` | 2 → 1 | 2 → 1 |
+| `pattern_labels` | 2 → **2** | 2 → 1 |
+| `pattern_matches` | 2 → **2** | 2 → 1 |
+| the caller's sentence in `evidence` | survives the purge | gone with the call |
+
+Four breaks, each red on exactly the tests that name it: (1) `pattern_labels` dropped from
+the sweep — four red, and the guard names the table in its message; (2) `pattern_matches`
+dropped — three red, same; (3) a fourth table `call_flags` added to the schema and swept by
+nothing — **one** red, the guard alone, because no other test knows the table exists; (4)
+child rows counted into the return value — three red on the count.
+
+Break 3 is the whole point of the guard: it is the difference between a test that restates
+`CALL_CHILDREN` and one that checks it. The orphan-sweep shape is asserted too — the guard
+test inserts a `ghost` row whose call never existed, and it has to be gone after the purge.
+
+**Learned:**
+
+**a. A promise about deleting is the one promise that fails quietly.** Every other invariant
+in this engine shows itself in a number on a chart. This one shows itself in a row nobody
+looks at. `pattern_counts` joins `pattern_matches` to the selection and the evidence join
+hangs off `sel.id`, so the orphans were invisible to every query in the product — which is
+exactly why the sweep could go missing for the whole life of the feature without one wrong
+answer being served.
+
+**b. A comment sixty lines from its function is how a contract stops being kept.** The
+paragraph that said what retention deletes was glued to the front of `dashboard()`'s
+comment, and `purge_calls` had none. Two helpers had been inserted between a comment and
+its function at some point and nothing catches that — rustdoc renders it, the compiler does
+not care, and clippy has no opinion. The audit found the leak by reading the comment and
+then reading the code sixty lines down and finding they were about different things.
+
+**c. A rule kept for one table is not kept for the table beside it.** Third time this shape
+has surfaced: S-50 (`window` parsed, `since`/`until` not), S-48 (a denylist that named the
+fields it knew about), and now `tool_calls` swept while two tables with the same column
+were not. The pattern is always the same — the first case is handled where it is written,
+and the rule is never stated anywhere that would cover the second.
+
+**d. So the fix is a list plus a check that the list is complete.** `CALL_CHILDREN` names
+the tables; the test reads `call_id` columns out of `pragma_table_info` and fails naming
+any table the list misses. Same move as S-49's `CONNECTORS` and S-44's route harvest. Break
+3 is what makes it worth doing: a table nothing else in the suite mentions is caught on the
+day it is created, and the failure says which table and where to add it.
+
+**e. Sweep by orphan, not by the ids just removed.** The `tool_calls` statement already had
+that shape and it is the better one for two reasons the original comment never gave: it
+needs no list of what was deleted, and it heals a database that already carries orphans on
+the next sync rather than needing a migration to catch up. Every graphify database in
+existence has orphaned label rows right now, and this fix cleans them without one.
+
+**f. What a count counts is part of its contract.** `purge_calls` returns a number `sync`
+logs and the UI can show. Adding three tables to the sweep makes it tempting to add their
+rows to the total, which would turn "we removed one call" into "we removed four things".
+The doc comment now says which; break 4 is the test.
+
+**Not done:**
+
+- **No `FOREIGN KEY` or `ON DELETE CASCADE`.** The schema has none anywhere,
+  `PRAGMA foreign_keys` is off by default in SQLite, and rewriting a shipped migration is a
+  different step with a different risk. The application is the cascade.
+- **Three full scans per purge where there was one.** `tool_calls` has an index on
+  `call_id`; `pattern_labels` and `pattern_matches` do not. Same cost class, three times
+  over, once per org per sync. An index needs a new migration.
+- **`jobs`, `spend` and `schedule.log` still grow without bound.** None is keyed to a call
+  and none is retention; they are a separate step.
+- **A `NULL` in `calls.id` would silently disable all three sweeps.** `NOT IN` against a set
+  containing NULL is never true, and `id TEXT PRIMARY KEY` permits NULL in SQLite. `Call.id`
+  is a `String` so the engine cannot write one today, and S-45 keeps the brain off this
+  table. Unproven path, left alone rather than guarded on a hypothesis.
+- **`patterns` rows outlive the calls they were measured on**, deliberately: the stored
+  `agreement` and `sample_size` are a record of what was already paid for, not a derivation
+  from rows that are still there.
+- **The guard proves the sweep covers the schema, not that the schema is right.** A child
+  table that keys to a call by some other column name is invisible to it.
 
 **The register is complete through S-51.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
