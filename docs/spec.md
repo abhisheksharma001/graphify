@@ -3716,5 +3716,90 @@ a parser and unavoidable while `floor` is `now - window`. And a call dated after
 is now counted but never plotted — if a provider ever legitimately reports a future
 `createdAt`, that is the behaviour that has to change.
 
-**The register is complete through S-50.** Anything after that is a new step appended
+### S-51 — Retention that finishes the job ☐ [Rust]
+**PR:** one. **Depends on:** nothing. `db.rs` is 823 source lines against 131 test lines,
+the worst ratio in the engine, and has never been audited.
+**Files:** `engine/src/db.rs`, `engine/tests/db.rs`, `docs/spec.md`. No brain change, no UI
+change, no new dependency.
+
+**Today:** retention is the one promise in this product about *deleting* data. An org sets
+`keep_days`, and `sync` calls `purge_calls` on every run to keep it. What that helper
+actually deletes is `calls`, and then `tool_calls` — and there it stops.
+
+Three tables in `0001_init.sql` hold a `call_id`: `tool_calls`, `pattern_labels` and
+`pattern_matches`. The purge sweeps the first. Measured against the shipped engine, two
+calls one of which is older than `keep_days`:
+
+| table | before | after `purge_calls(org, 30, None)` |
+|---|---|---|
+| `calls` | 2 | 1 |
+| `tool_calls` | 2 | 1 |
+| `pattern_labels` | 2 | **2** |
+| `pattern_matches` | 2 | **2** |
+
+`pattern_labels.evidence` is the line the model quoted to justify its verdict, and it is
+quoted out of the transcript — the brain's own fixtures write
+`"user: I want to talk to a person please"` into it. So the row that survives a purge is a
+verbatim sentence the caller said, on a call the analyst asked to be deleted. Read back
+after the purge, it is still there. There is no second sweep anywhere and nothing ages
+these tables out, so the leak is permanent and it grows with every labelling run.
+
+Nothing a chart shows moves because of it: `pattern_counts` joins `pattern_matches` to the
+selection and the evidence join in `calls` hangs off `sel.id`, so a row whose call is gone
+is never selected. That is why it went unnoticed. It is a retention defect, not an
+arithmetic one.
+
+**Why it drifted is written into the file.** `purge_calls`'s doc comment is not on
+`purge_calls`. It sits sixty lines above, glued to the front of `dashboard()`'s comment,
+where two helpers were inserted between a comment and its function:
+
+```rust
+/// Enforce retention: drop calls older than `keep_days`, then drop everything past the
+/// newest `max_calls`. Returns how many rows went.
+/// ...
+/// The saved dashboard layout for this org, as the JSON it was written as. ...
+pub fn dashboard(&self, org_id: i64) -> Result<Option<String>> {
+```
+
+The paragraph that states the retention contract documents a getter for a chart layout, and
+the code that has to meet that contract carries no comment at all. A rule nobody can read
+beside the code is a rule that stops being kept.
+
+**Build:** sweep all three. The existing `tool_calls` statement already deletes by
+`call_id NOT IN (SELECT id FROM calls)` rather than by the ids just removed, which makes it
+an orphan sweep rather than a cascade — the same shape for the other two, so a database
+that already carries orphans is cleaned by the next sync rather than needing a migration.
+All three inside the transaction that is already open, so retention is one atomic act.
+
+Then keep it kept, the way S-44 and S-49 keep theirs: a test that reads the schema instead
+of a list written by hand. `pragma_table_info` over every table in the database, find each
+one other than `calls` that has a `call_id` column, and assert that after a purge none of
+them holds a row whose `call_id` is gone. A fourth child table added next year is covered
+on the day it is created, and the test names it in the failure.
+
+Move the retention doc comment back onto `purge_calls`, and say in it what the contract
+now is: a purge removes the call and everything keyed to it.
+
+**Acceptance:** WHEN a call is purged by `keep_days` or by `max_calls` THEN every row in
+every table keyed to it by `call_id` SHALL be gone in the same transaction; AND WHEN a
+table with a `call_id` column exists that `purge_calls` does not sweep THEN the suite SHALL
+fail and name that table; AND the count `purge_calls` returns SHALL stay the number of
+`calls` rows removed, not the number of rows deleted in total.
+
+**Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`. Then break it:
+drop the `pattern_labels` sweep and watch the schema-driven test name that table; drop the
+`pattern_matches` sweep and watch it name that one; add a fourth table with a `call_id`
+column and no sweep, and watch the guard catch a table no test mentions by name; count the
+child rows into the return value and watch the count assertion go red.
+
+**Must not:** change what any query answers. `pattern_counts` and the evidence join stand
+unedited. Add a `FOREIGN KEY` or `ON DELETE CASCADE` to `0001_init.sql`: the schema has no
+foreign keys anywhere, `PRAGMA foreign_keys` is off by default in SQLite, and rewriting a
+shipped migration is a different step with a different risk. Purge anything not keyed to a
+call — `jobs`, `spend` and `schedule.log` grow too and none of them is retention. Touch
+`sync.rs`'s decision about *when* to purge. Delete a `patterns` row because its labels
+went: a pattern outlives the calls it was measured on, and its stored `agreement` and
+`sample_size` are a record of what was already paid for.
+
+**The register is complete through S-51.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
