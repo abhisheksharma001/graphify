@@ -75,6 +75,12 @@ pub struct Pattern {
     pub created_at: Option<String>,
 }
 
+/// The tables keyed to a call, which a purge takes with it. Named here rather than written
+/// into one statement so there is a list to check: `engine/tests/db.rs` reads every
+/// `call_id` column out of the schema and fails, naming the table, if one is missing from
+/// this array. `calls` itself is not here — it is what the purge deletes first.
+const CALL_CHILDREN: [&str; 3] = ["tool_calls", "pattern_labels", "pattern_matches"];
+
 const PATTERN_COLUMNS: &str = "id, org_id, name, criterion, assistant_ids, plan, rule, chart,
      model, mode, daily_cap_usd, sample_size, agreement, created_at";
 
@@ -544,12 +550,6 @@ impl Db {
         Ok(())
     }
 
-    /// Enforce retention: drop calls older than `keep_days`, then drop everything past the
-    /// newest `max_calls`. Returns how many rows went.
-    ///
-    /// A call with no `created_at` has an unknown age, so the age sweep leaves it alone
-    /// rather than guess it is old. The `max_calls` sweep sorts it last, since unknown
-    /// recency is not recency.
     /// The saved dashboard layout for this org, as the JSON it was written as. NULL when
     /// nothing has been saved, which is not the same thing as a layout with no charts in
     /// it: the first says "the reader has never chosen", the second says "the reader chose
@@ -577,6 +577,23 @@ impl Db {
         Ok(())
     }
 
+    /// Enforce retention: drop calls older than `keep_days`, then drop everything past the
+    /// newest `max_calls`. Returns how many `calls` rows went — the child rows that follow
+    /// them are not a second number the caller has to explain.
+    ///
+    /// A call with no `created_at` has an unknown age, so the age sweep leaves it alone
+    /// rather than guess it is old. The `max_calls` sweep sorts it last, since unknown
+    /// recency is not recency.
+    ///
+    /// A purge takes the call and everything keyed to it. Three tables hold a `call_id`
+    /// and only `tool_calls` used to be swept, so a purged call left its `pattern_labels`
+    /// row behind — and `evidence` on that row is the line the model quoted out of the
+    /// transcript. Deleting the call and keeping a sentence the caller said is not
+    /// retention. The schema is the list: `engine/tests/db.rs` reads the `call_id` columns
+    /// back out of it and fails naming any table this does not sweep.
+    ///
+    /// Swept by orphan rather than by the ids just removed, so a database that already
+    /// carries orphans is cleaned by the next sync instead of needing a migration.
     pub fn purge_calls(
         &mut self,
         org_id: i64,
@@ -599,10 +616,12 @@ impl Db {
                 params![org_id, max],
             )?;
         }
-        tx.execute(
-            "DELETE FROM tool_calls WHERE call_id NOT IN (SELECT id FROM calls)",
-            [],
-        )?;
+        for table in CALL_CHILDREN {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE call_id NOT IN (SELECT id FROM calls)"),
+                [],
+            )?;
+        }
         tx.commit()?;
         Ok(gone)
     }
