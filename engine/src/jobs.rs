@@ -403,6 +403,18 @@ fn money(usd: f64) -> Option<f64> {
     (usd.is_finite() && usd >= 0.0).then_some(usd)
 }
 
+/// What a brain that failed says it was billed, off the last line it printed.
+///
+/// `None` is not zero here and the difference is the point: it means the brain never said,
+/// which is what a process that was killed leaves behind. `Some(0.0)` means it said so, and
+/// a brain that stopped before reaching a model does say so. Only the number is read — the
+/// complaint that came with it is on stderr and already in the job's log, and an exception
+/// message can carry the prompt and the model's raw reply into a column the browser reads.
+fn spent(last: Option<&str>) -> Option<f64> {
+    let value: Value = serde_json::from_str(last?).ok()?;
+    money(value.get("usd").and_then(Value::as_f64)?)
+}
+
 // --- the supervisor -------------------------------------------------------------------
 
 /// What came back from the conversation with the child, before its exit status is known.
@@ -632,9 +644,33 @@ fn classify(
     let last = last.map(|text| spawn.redact.scrub(text));
     let last = last.as_deref();
     if !ok {
-        // The brain's own complaint is already in the log — this is the stderr it wrote on
-        // the way down — so there is nothing to add but the verdict.
-        finish(records, id, FAILED, last, 0.0, spawn.org, "");
+        // A brain that dies before it reaches a model has spent nothing, and that is nearly
+        // every way one dies: no key, a bad request, a `--db` that is not there. The one
+        // that happens afterwards is a model answer the brain cannot coerce, which is not a
+        // retryable error — so the response the provider billed for is never sent again and
+        // this is the only place it can be counted. `cli.run` prints what the process was
+        // billed as its last line on the way out; the brain's own complaint is on stderr and
+        // already in the log, so there is nothing to add to it but the money and the verdict.
+        let (usd, note) = match spent(last) {
+            Some(usd) if usd > 0.0 => (
+                usd,
+                format!("this job failed after spending ${usd:.4}, which has been booked"),
+            ),
+            // The brain said it spent nothing, and `db.rs`'s `add_spend` writing no ledger
+            // row for that is right. Nothing to announce: a job that failed for free is what
+            // a reader already assumes a failed job did.
+            Some(_) => (0.0, String::new()),
+            // It did not get far enough to say, which a killed process never does. Zero is
+            // the only number available and it is not the same claim as the arm above, so
+            // the log says which one this is (S-58).
+            None => (
+                0.0,
+                "this job failed without saying what it had spent, so nothing could be \
+                 booked for it"
+                    .to_string(),
+            ),
+        };
+        finish(records, id, FAILED, last, usd, spawn.org, &note);
         return;
     }
     let Some(text) = last else {

@@ -180,8 +180,12 @@ def synthesize_rule(job: Job) -> tuple[Any, float]:
 
     seen = [types.LabelForRule(match=x["match"], evidence=x["evidence"]) for x in job.labels]
     collector = Collector()
-    got = client().with_options(client=cost.CLIENTS[job.model], collector=collector).SynthesizeRule(
-        criterion=job.criterion, plan=job.plan, labels=seen, dsl=DSL
+    got = (
+        client()
+        .with_options(client=cost.CLIENTS[job.model], collector=[collector, cost.ledger()])
+        .SynthesizeRule(
+            criterion=job.criterion, plan=job.plan, labels=seen, dsl=DSL
+        )
     )
     return got, _spent(collector, job.model, _synthesize_usd(job))
 
@@ -202,8 +206,12 @@ def refine_rule(job: Job, rule: Any, disagreements: Sequence[dict[str, Any]]) ->
         for d in disagreements[:MAX_DISAGREEMENTS]
     ]
     collector = Collector()
-    got = client().with_options(client=cost.CLIENTS[job.model], collector=collector).RefineRule(
-        criterion=job.criterion, plan=job.plan, rule=rule, disagreements=told, dsl=DSL
+    got = (
+        client()
+        .with_options(client=cost.CLIENTS[job.model], collector=[collector, cost.ledger()])
+        .RefineRule(
+            criterion=job.criterion, plan=job.plan, rule=rule, disagreements=told, dsl=DSL
+        )
     )
     return got, _spent(collector, job.model, _refine_usd(job))
 

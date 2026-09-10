@@ -196,7 +196,7 @@ def ask(job: Job) -> tuple[str, float]:
     collector = Collector()
     answer = (
         client()
-        .with_options(client=cost.CLIENTS[job.model], collector=collector)
+        .with_options(client=cost.CLIENTS[job.model], collector=[collector, cost.ledger()])
         .AskAnalysis(question=job.question, stats=job.stats, calls=numbered)
     )
     return answer, cost.booked(collector.last.usage, job.model, estimate(job))

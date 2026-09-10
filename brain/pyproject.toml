@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-graphify-brain = "graphify_brain.cli:app"
+graphify-brain = "graphify_brain.cli:run"
 
 [dependency-groups]
 dev = [

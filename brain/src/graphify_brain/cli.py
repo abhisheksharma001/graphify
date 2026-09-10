@@ -1,6 +1,8 @@
 """Command-line entry point. `graphify-brain --help` lists commands."""
 
+import json
 import sys
+import traceback
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -223,3 +225,54 @@ def _pipe(fn: Callable[[dict[str, Any]], dict[str, Any]], db: Optional[Path]) ->
     except (ValueError, FileNotFoundError) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
+
+
+def run() -> None:
+    """The console entry point: `app()`, plus what it spent if it does not survive.
+
+    The engine ↔ brain contract has always been JSON out on stdout, exit 0 or 1, and
+    complaints on stderr. This adds one line to the failing half of it. On any exit that is
+    not zero, the last thing on stdout is `{"usd": N}` — what the providers billed this
+    process before it stopped.
+
+    The engine books a failed job at nothing, and for almost every way a brain dies that is
+    right: no key, a bad request, a `--db` that is not there, all of them before a model is
+    reached. The exception is a model answer that will not coerce. `BamlValidationError` is
+    not a retryable error, so the response the provider charged for is not retried and, on
+    the way out through here, was never reported to anybody. A labelling run is the sharp
+    case: `label.run` prints one result at the end, so a raise in the fifth batch discards
+    the four already paid for as well.
+
+    Only the number goes on stdout. An exception's message can carry the prompt and the
+    model's raw reply, and stdout's last line is written to a column the browser reads. The
+    complaint keeps going to stderr, unabridged and unchanged: `_pipe`'s comment above is
+    right that a traceback is worth more to whoever reads `jobs.log` than a tidy line.
+
+    Nothing is caught in the sense of being handled. The process still fails, with the same
+    status it would have had.
+    """
+    try:
+        app()
+    except SystemExit as e:
+        if e.code:
+            _spent_line()
+        raise
+    except BaseException:
+        # `typer.Exit` becomes the `SystemExit` above; everything else arrives here with no
+        # traceback printed yet, because click only prints its own.
+        _spent_line()
+        traceback.print_exc()
+        raise SystemExit(1) from None
+
+
+def _spent_line() -> None:
+    """Print what this process was billed, if that can be worked out.
+
+    Nothing is printed when it cannot — a total that is missing part of itself would be
+    booked as though it were whole, which is the defect this exists to fix one layer in.
+    Zero is printed, because a brain that died before reaching a model *knows* it spent
+    nothing, and the engine tells that apart from a brain that could not say.
+    """
+    usd = cost.spent()
+    if usd is not None:
+        print(json.dumps({"usd": round(usd, 6)}), flush=True)

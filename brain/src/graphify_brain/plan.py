@@ -135,7 +135,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     collector = Collector()
     result = client().with_options(
-        client=cost.CLIENTS[model], collector=collector
+        client=cost.CLIENTS[model], collector=[collector, cost.ledger()]
     ).PlanPattern(criterion=criterion, system_prompt=system_prompt, dsl=DSL)
     return {**result.model_dump(), "usd": round(charged(collector, model, ceiling), 6)}
 
@@ -183,7 +183,7 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
 
     collector = Collector()
     result = client().with_options(
-        client=cost.CLIENTS[model], collector=collector
+        client=cost.CLIENTS[model], collector=[collector, cost.ledger()]
     ).ClarifyPattern(criterion=criterion, plan=prior, answers=given, dsl=DSL)
     return {**result.model_dump(), "usd": round(charged(collector, model, ceiling), 6)}
 
