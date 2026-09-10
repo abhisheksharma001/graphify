@@ -72,20 +72,22 @@ impl Plan {
         })
     }
 
-    /// One crontab line: five time fields, then a command `/bin/sh` can read.
+    /// One crontab line: five time fields, then a command — read by cron first and by
+    /// `/bin/sh` second. Two parsers, so two escapes: `quote` for the shell, `cron_escape`
+    /// over the finished line for cron. The plist below has one reader and needs one.
     pub fn crontab(&self) -> String {
         let mut env = format!("GRAPHIFY_DB={}", quote(&self.db));
         if let Some(brain) = &self.brain {
             env.push_str(&format!(" GRAPHIFY_BRAIN={}", quote(brain)));
         }
-        format!(
+        cron_escape(&format!(
             "{} {} * * * {env} {} sync --org {} >> {} 2>&1 {MARKER}",
             self.minute,
             self.hour,
             quote(&self.binary),
             quote_str(&self.org),
             quote(&self.log),
-        )
+        ))
     }
 
     /// The same job as a launchd agent. `StartCalendarInterval` rather than an interval:
@@ -369,8 +371,11 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// A path the way `/bin/sh` must read it. Single quotes take everything literally, and
-/// the one character they cannot hold is closed, escaped, and reopened.
+/// A path the way `/bin/sh` must read it — the second reader of a crontab line, never the
+/// first. Single quotes take everything literally, and the one character they cannot hold
+/// is closed, escaped, and reopened. What single quotes do not do is hide anything from
+/// cron, which never sees a shell: that is `cron_escape`'s job and cannot be done here,
+/// because a `%` anywhere in the command field counts, including in text no value produced.
 fn quote(path: &Path) -> String {
     quote_str(&path.display().to_string())
 }
@@ -379,6 +384,27 @@ fn quote_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// The finished line the way cron must read it. In the command field an unescaped `%` ends
+/// the command — everything after the first one is handed to it as standard input, and the
+/// later ones become newlines — so a `%` in an org name or a directory name truncates the
+/// line mid-quote and the sync never runs. Worse, `>> schedule.log` is itself past the
+/// truncation, so the one place the operator was told to look never hears about it.
+///
+/// The whole line, not each value: `%` is cron's metacharacter wherever it stands in the
+/// command, not a property of the things quoted into it. The five time fields are digits
+/// and `*` and have nothing to escape. A backslash that is not in front of a `%` is passed
+/// through untouched — that is why `find … \;` works in a crontab, and why `quote_str`'s
+/// `'\''` survives this. The one shape this does not reach is a `\` already sitting
+/// immediately before a `%`: cron's escape flag is consumed by the second backslash and the
+/// `%` goes back to being a separator. A directory named `a\%b` is left alone rather than
+/// guessed at, because past that point crons stop agreeing with each other.
+fn cron_escape(line: &str) -> String {
+    line.replace('%', r"\%")
+}
+
+/// The plist's one reader is an XML parser. launchd takes `ProgramArguments` as an array
+/// and runs no shell, so nothing here needs quoting for a second reader and a `%` is an
+/// ordinary character — escaping one would put a backslash into the argument.
 fn xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

@@ -3,6 +3,7 @@
 //! way the text could be right in a terminal and wrong at six in the morning.
 
 use assert_cmd::Command;
+use graphify::schedule::MARKER;
 use tempfile::TempDir;
 
 /// A database path of its own, so the printed line is one we can predict, and none of the
@@ -135,6 +136,146 @@ fn install_writes_nothing_unless_the_answer_is_yes() {
         assert!(
             !home.join("Library/LaunchAgents").exists(),
             "a plist was written for {answer:?}"
+        );
+    }
+}
+
+// S-52: the crontab line has two readers, not one. cron reads it before `/bin/sh` does,
+// and an unescaped `%` ends the command there — the rest, `>> schedule.log` included, is
+// fed to it as standard input.
+
+/// Everything that has ever needed escaping for one of this file's readers, in one list so
+/// the guard below covers them together. Each is used as an org name and as a directory
+/// component of the database path, because the line carries both and a rule kept for one is
+/// not kept for the other.
+const HOSTILE: [&str; 10] = ["%", "a%b", "50% off", " ", "&", "'", "\"", "$x", "`x`", "\\"];
+
+/// cron's own rule for the command field, mirroring the loop in cronie's `do_command.c`:
+/// an unescaped `%` ends the command and everything after it is standard input, with the
+/// later ones turned into newlines. A backslash before a `%` is removed and the `%` kept; a
+/// backslash before anything else is passed through untouched — which is why `find … \;`
+/// works in a crontab and why `quote_str`'s `'\''` is safe here. Written out rather than
+/// asserted about, so the guard runs the parser instead of restating what it should do.
+fn cron_reads(line: &str) -> (String, Option<String>) {
+    let field = line.splitn(6, ' ').nth(5).expect("five time fields then a command");
+    let mut command = String::new();
+    let mut chars = field.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'%') => {
+                chars.next();
+                command.push('%');
+            }
+            '%' => return (command, Some(chars.collect::<String>().replace('%', "\n"))),
+            _ => command.push(c),
+        }
+    }
+    (command, None)
+}
+
+/// `/bin/sh -n` reads a command and does not run it, which is the only way to ask the
+/// second reader whether the first one left it something it can parse.
+fn sh_accepts(command: &str) -> Result<(), String> {
+    let out = std::process::Command::new("/bin/sh")
+        .args(["-n", "-c", command])
+        .output()
+        .expect("running /bin/sh");
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// The guard. Not "the line contains no bare `%`" — that would be this file agreeing with
+/// itself. Both readers are run in the order cron runs them, and what has to survive is the
+/// whole command, redirection and marker included.
+#[test]
+fn both_readers_of_the_crontab_line_get_something_they_can_parse() {
+    for awkward in HOSTILE {
+        for (what, org, db_dir) in [
+            ("org name", awkward, "data"),
+            ("database path", "acme", awkward),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = dir.path().join(db_dir).join("graphify.db");
+            let out = graphify(&db)
+                .args(["schedule", "--print", "--org", org])
+                .assert()
+                .success();
+            let text = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+            let line = cron_line(&text);
+            let (command, stdin) = cron_reads(&line);
+            assert_eq!(
+                stdin, None,
+                "{what} {awkward:?}: cron cut the line and fed the rest to it as input\n{line}"
+            );
+            assert!(
+                command.contains("schedule.log"),
+                "{what} {awkward:?}: the redirection did not survive cron\n{line}"
+            );
+            if let Err(e) = sh_accepts(&command) {
+                panic!("{what} {awkward:?}: the shell could not read what cron left:\n{command}\n{e}");
+            }
+        }
+    }
+}
+
+/// The consequence, said once on its own: the sync does not run, and the file the operator
+/// was told to read is the file that cannot receive the reason.
+#[test]
+fn a_percent_does_not_take_the_log_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("data").join("graphify.db");
+    let out = graphify(&db)
+        .args(["schedule", "--print", "--org", "50% club"])
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    let (command, stdin) = cron_reads(&cron_line(&text));
+    assert_eq!(stdin, None, "{text}");
+    assert!(command.contains("sync --org '50% club'"), "{command}");
+    assert!(command.trim_end().ends_with(MARKER), "{command}");
+}
+
+/// An org named `50% club` is a legal org. The line has to carry it, not refuse it.
+#[test]
+fn the_org_reaches_the_command_with_its_percent_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("data").join("graphify.db");
+    let out = graphify(&db)
+        .args(["schedule", "--print", "--org", "a%b"])
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(cron_line(&text).contains(r"sync --org 'a\%b'"), "{text}");
+}
+
+/// The plist's one reader is an XML parser and launchd runs no shell, so the escape that
+/// the crontab line needs would be a backslash inside the argument here.
+#[test]
+fn the_plist_is_not_escaped_for_a_reader_it_does_not_have() {
+    for awkward in HOSTILE {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("data").join("graphify.db");
+        let out = graphify(&db)
+            .args(["schedule", "--print", "--org", awkward])
+            .assert()
+            .success();
+        let text = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+        let plist: String = text
+            .lines()
+            .skip_while(|l| !l.starts_with("<?xml"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!plist.is_empty(), "{text}");
+        assert!(
+            !plist.contains(r"\%"),
+            "{awkward:?}: the plist was escaped for cron\n{plist}"
+        );
+        assert!(
+            plist.contains(&format!("<string>{}</string>", awkward.replace('&', "&amp;"))),
+            "{awkward:?}: the org did not reach the plist as itself\n{plist}"
         );
     }
 }
