@@ -5069,5 +5069,146 @@ rather than re-derived, the test is not "is it right" but "is it the same one".
   somewhere else. The notices board (S-41) exists and is not used here, because this is not
   an operator's emergency — it is a fact about one job.
 
+### S-58 — What a job spent before it died
+
+**PR:** one. **Depends on:** nothing. S-56 fixed what a call books when the provider says
+nothing; S-57 fixed what a job books when the brain says nothing. Both are about a job that
+finished. This is the third layer and the one both of them named: a job that did not.
+
+**Files:** `brain/src/graphify_brain/cost.py`, `cli.py`, `plan.py`, `label.py`, `ask.py`,
+`synth.py`, `brain/pyproject.toml`, `brain/tests/test_spent.py` (new),
+`engine/src/jobs.rs`, `engine/tests/jobs.rs`, `docs/spec.md`. No UI change, no schema
+change, no new dependency.
+
+**Today:** `engine/src/jobs.rs:637`.
+
+```rust
+if !ok {
+    // The brain's own complaint is already in the log — this is the stderr it wrote on
+    // the way down — so there is nothing to add but the verdict.
+    finish(records, id, FAILED, last, 0.0, spawn.org, "");
+    return;
+}
+```
+
+A brain that exits non-zero is booked at nothing. That is right for almost every way a
+brain dies — a missing key, a bad request, a `--db` that is not there — because all of
+those happen before a model is reached. It is wrong for the one way that happens after,
+and `brain/src/graphify_brain/cli.py:213` names that way in as many words: *"a model that
+answered with something unparseable — is this program failing."*
+
+**A parse failure is not retried, and that is what makes it expensive.** Measured against a
+local mock standing in for the anthropic endpoint, with `retry_policy Backoff` in force:
+
+| what the mock answered | requests served | `log.calls` | billed | outcome |
+|---|---|---|---|---|
+| 503, 503, then a good 200 | 3 | 3 | the 200 only | returns |
+| a 200 whose text will not coerce | **1** | **1** | **that one** | **raises** |
+
+The first row is the retry question this register has carried since S-55 and it is
+answered: BAML retries transport failures, a 5xx carries no usage, and a provider does not
+bill for one. `FunctionLog.usage` reporting the winning call and not the sum is therefore
+not a money defect. The second row is: a response the provider *did* bill for is never
+retried, because a `BamlValidationError` is not a retryable error. It goes straight up
+through `_pipe`, out of the process, and into the branch above.
+
+**What that costs.** Priced through `cost.estimate` at the table's own rates:
+
+| shape | billed | booked today |
+|---|---|---|
+| one truncated `plan` on opus — 3k in, 4,096 out at the `max_tokens` ceiling | **$0.1174** | **$0.0000** |
+| a `label` run of five 20-call batches on sonnet, the fifth unparseable | **$0.1950** | **$0.0000** |
+
+The labelling row is the worse one and not because it is bigger. `label.run` prints one
+result at the end, so a raise in batch five discards batches one through four as well —
+they were sent, they were billed, and nothing downstream ever hears a number for any of
+them. `sync.rs:222` is still the only reader the daily cap has, and it subtracts a ledger
+that never grew. Five such runs on a $1.00 day spend $0.975 and leave the cap believing the
+whole dollar is untouched. That is the second Must-never, reached for the third time by a
+third door: S-39 was the write failing, S-56 was the number being absent, S-57 was the
+number being dropped, and this is the number never being asked for.
+
+**The money is knowable, and that is the finding.** A `Collector` holds the usage of a call
+that raised. Measured, one process, three calls through the same pair of collectors, the
+third unparseable:
+
+| after | `ledger.logs` | `ledger.usage` |
+|---|---|---|
+| nothing called | 0 | `in=None out=None` |
+| call 1 returns | 1 | `in=100 out=10` |
+| call 2 returns | 2 | `in=200 out=20` |
+| **call 3 raises** | **3** | **in=300 out=30** |
+
+Three things at once. A collector sums across function logs, so one of them can hold a
+whole process's spend. Before anything is called its counts are `None` and not `0`, so
+*"nothing was sent"* and *"something was sent and nobody knows what it cost"* are already
+different values — the distinction S-56 and S-57 each had to build by hand comes free here.
+And the log of a call that raised is in it, with its usage, which is the only reason this
+step is possible at all.
+
+**Reachability, plainly.** This one is live. `max_tokens 4096` is on all three clients
+(S-55), `SynthesizeRule` and `LabelBatch` return sizeable structures, and a reply truncated
+at the ceiling is unparseable by construction. A model that opens with prose before its
+JSON does it too. No fault has to be injected and no provider has to misbehave; the brain
+only has to be answered with something it cannot coerce, which is a normal thing for a
+model to do. What has protected the ledger so far is that it has not happened often, not
+that it cannot.
+
+**Change:**
+
+1. **`cost.LEDGER`**, one `Collector` for the life of the process, passed alongside the
+   local one at all six model calls: `plan.py:138` and `:186`, `label.py:245`,
+   `ask.py:199`, `synth.py:183` and `:205`. BAML's `collector=` takes a list, so the local
+   collector each call site already builds is untouched and every existing `usd` on the
+   success path is computed from exactly what it was computed from before.
+
+2. **`cost.spent()`** — what the process has been billed, or `None` if that cannot be
+   worked out. Priced per call and not per process, because `daily` labels several patterns
+   in one run and each carries its own `patterns.model`: a total of raw tokens summed across
+   two rate cards is not money. Every `LLMCall` carries `client_name`, so each is priced at
+   its own client's rate and a call whose usage is absent contributes nothing, which is the
+   right answer for the 5xx that was never billed. A client name that does not resolve to a
+   row in `PRICES` returns `None` for the whole total rather than a partial one.
+
+3. **`cli.run`**, the new console entry point, wrapping `app()`. On any exit that is not
+   zero it prints one JSON line on stdout — `{"usd": N}` and nothing else — and then lets
+   the failure carry on exactly as it does now. The traceback still goes to stderr
+   unabridged, because `_pipe`'s comment is right that it is worth more than a tidy line.
+   The complaint is not repeated on stdout: an exception message can carry the prompt and
+   the model's raw reply, and stdout's last line is written to a column the browser reads.
+
+4. **`jobs.rs`'s `!ok` branch** books what that line says, in three tiers, the same shape
+   S-57 gave the `Ok` branch:
+   - a number `money` accepts, above zero → booked, with a note that the job failed after
+     spending it;
+   - a `usd` of zero → booked at nothing, no note. The brain said so, and `db.rs:750`
+     writing no row for it is correct;
+   - no line, or one that does not parse → booked at nothing, **with** a note saying the
+     job failed without saying what it had spent. That is the tier a killed process reaches
+     and it is honest rather than good.
+
+**Why the collector and not the quote.** S-57 named the quote as the wrong fallback here
+and it still is: most deaths are at startup, before any call, and booking a full ceiling for
+a bad API key would eat the day for a job that spent nothing. The collector has the opposite
+property — it knows nothing until a call is made, and after one is made it knows what that
+call reported. It is the only number in the process that is about what happened rather than
+about what was allowed to happen.
+
+**Must not:** change what a job that exits **zero** books; the `Ok` and no-output branches
+of `classify` are S-57's and are not touched. Book the quote, `max_usd`, or any ceiling on
+the failure path. Change `db.rs:750`'s `if cost_usd > 0.0`. Print the exception's message,
+the prompt, or the model's raw reply on stdout. Change what any success-path `usd` is
+computed from — the local collectors stay and the ledger is additional. Catch the exception
+somewhere that swallows it: the process still fails, still non-zero, still with its
+traceback. Retry anything. Touch the UI or the schema. Add a dependency. Delete or edit an
+existing assertion in `engine/tests/jobs.rs` or in any brain test.
+
+**Verify:** `uv run pytest -q` green with the new file; `cargo test -q` green with the new
+section; `cargo clippy --all-targets -- -D warnings` clean; `pnpm test` untouched and green;
+guard 1 red if the failure path books zero regardless; guard 2 red if a mixed-model total is
+priced at one rate; guard 3 red if an unresolvable client is counted as free; guard 4 red if
+the tier that knows nothing says nothing; guard 5 red if the spend line reaches stdout on a
+clean exit; CI 4/4.
+
 **The register is complete through S-57.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
