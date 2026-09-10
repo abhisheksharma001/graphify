@@ -284,6 +284,41 @@ async fn purging_a_call_takes_its_tool_rows_with_it() {
     assert_eq!(f.count("tool_calls"), 1, "the purged call must not leave orphans");
 }
 
+/// The other half of retention, and the half that has to be asked for. A job holds the
+/// call's words — the request naming it, the verdicts with the sentence the model quoted,
+/// every line the brain printed — and no `call_id`, so `purge_calls` cannot reach it and
+/// only this path can. The `running` row is here because age is not the whole rule: that
+/// one is a subprocess and one of `MAX_LIVE` slots, not a record of a finished job.
+#[tokio::test]
+async fn a_sync_purges_the_jobs_that_read_the_calls_it_purged() {
+    let mut f = fixture();
+    for (status, created) in [
+        ("done", days_ago(20)),
+        ("done", days_ago(1)),
+        ("running", days_ago(20)),
+    ] {
+        f.sql(&format!(
+            "INSERT INTO jobs (kind, status, org_id, input, cost_usd, log, created_at)
+             VALUES ('label', '{status}', (SELECT id FROM orgs WHERE name = 'acme'),
+                     '{{}}', 0, '', '{created}')"
+        ));
+    }
+    let server = serve(json!([{ "id": "recent", "createdAt": days_ago(1) }])).await;
+
+    run(&mut f.db, &opts(&server, 250)).await.unwrap();
+
+    assert_eq!(
+        f.count("jobs"),
+        2,
+        "a finished job outlived the calls it was run over"
+    );
+    assert_eq!(
+        f.count("jobs WHERE status = 'running'"),
+        1,
+        "a purge took a job a subprocess is still writing to"
+    );
+}
+
 fn messages(tool: &str) -> Value {
     json!([{
         "role": "tool_calls",
