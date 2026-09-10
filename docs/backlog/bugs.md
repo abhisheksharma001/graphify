@@ -74,12 +74,15 @@ the job while the channel is still empty. · Fixed by S-43 (PR #44, 45fec76).
 2026-09-10 · `engine/src/cli.rs:181` · `Command::Schedule` destructures its `print` flag as
 `print: _` and never reads it, so `--print` is not a flag — it is the absence of
 `--install`. The help for it says *"Print both and write nothing. What happens anyway with
-no flags."* `graphify schedule --print --install` therefore prints and then installs: it
-writes `~/Library/LaunchAgents/ai.graphify.daily.plist` and loads it, or replaces a line in
-the user's crontab, having been told in the same breath to write nothing. The confirm
+no flags."* `graphify schedule --print --install` is therefore byte-identical to `graphify
+schedule --install` — measured under S-53, 1,478 bytes each and an empty `diff`. It does not
+print and then install: the crontab line is never printed at all, and what happens instead is
+the offer to write `~/Library/LaunchAgents/ai.graphify.daily.plist` and load it, or to replace
+a line in the user's crontab, having been told in the same breath to write nothing. The confirm
 prompt is still asked, so nothing lands without a `y`, which is what keeps this small; what
 is wrong is that a flag documented as "write nothing" does not prevent a write, and the two
 flags are silently resolved in favour of the destructive one. · Reproduce: `graphify
 schedule --print --install` and answer `y`. · Fix shape: clap `conflicts_with`, so the pair
 is refused at parse time and neither flag has to win. Found while auditing `schedule.rs`
-for S-52; out of that step's scope because it is a `cli.rs` defect.
+for S-52; out of that step's scope because it is a `cli.rs` defect. · Fixed by S-53 (PR #54,
+8849cd9): clap refuses the pair at parse time.

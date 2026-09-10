@@ -4059,7 +4059,7 @@ f. **Applied to the line, not the values, and that is a claim about cron rather 
 - **Nothing on Abhishek's machine is scheduled.** `graphify schedule --install` is still his
   to answer; this step only makes the line it would write correct.
 
-### S-53 — A flag that decides nothing
+### S-53 — A flag that decides nothing ☑ [Rust] (PR #54, 8849cd9)
 
 **PR:** one. **Depends on:** nothing. Promoted from `docs/backlog/bugs.md`, where it was
 logged on 2026-09-10 while auditing `schedule.rs` for S-52. The one open entry in the
@@ -4157,11 +4157,97 @@ Turn the harvest table into a generated file: a list nobody has to look at is no
 where anybody says what a flag does.
 
 **Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`, and the breaks —
-(1) drop `conflicts_with` → the refusal test goes red; (2) keep `conflicts_with` but let the
-arm run `schedule::print` before `install` when both are set → still red, because the pair is
-refused before any of it runs, which is the point of fixing it at parse time; (3) drop a flag
-from the harvest table → the surface test goes red naming it; (4) make `--install` with a
-closed stdin print what `--print` prints → the interchangeability test goes red.
+(1) drop `conflicts_with` → the refusal test goes red; (2) `conflicts_with = "org"`, the right
+mechanism naming the wrong pair; (3) drop a flag from the harvest table → the surface test
+goes red naming it; (4) make `--install` with a closed stdin print what `--print` prints →
+the interchangeability test goes red. Break 2 as first written — keep `conflicts_with` and
+let the arm run `schedule::print` before `install` when both are set — is not a break at all:
+the pair never reaches the arm, so the change is dead code and nothing goes red. Substituted
+during verification, and this list corrected rather than left describing a test that could
+not exist.
 
-**The register is complete through S-52.** Anything after that is a new step appended
+**Files (as built):** `engine/src/cli.rs` (+6 −1), `engine/tests/cli.rs` (+115). 303 → 306
+engine tests. No existing assertion edited.
+
+**Measured before:**
+
+| invocation | crontab line printed | plist printed | write prompt | bytes |
+|---|---|---|---|---|
+| `schedule` | yes | yes | no | 2,038 |
+| `schedule --print` | yes | yes | no | 2,038 |
+| `schedule --install` | no | yes | **yes** | 1,478 |
+| `schedule --print --install` | **no** | yes | **yes** | **1,478** |
+
+`diff` between the last two rows: empty.
+
+**Breaks:**
+
+| # | break | red | what it proves |
+|---|---|---|---|
+| 1 | drop `conflicts_with` | **1** | the refusal is the whole fix — and the defect was invisible to the other 305 tests |
+| 2 | `conflicts_with = "org"` | 5 | the pair named is load-bearing, not the attribute |
+| 3 | drop `--at` from the harvest table | 1 | the table is compared, not decorative |
+| 4 | `--install` prints instead of installing | 2 | the flags are told apart by behaviour, not by spelling |
+
+Counted with `--no-fail-fast`. `cargo test` stops at the first failing target and `cli` sorts
+before `schedule`, which understated break 2 by four until the flag was added.
+
+**Learned:**
+
+a. **A flag is a promise, and `_` is where promises go to be discarded.** The pattern
+   `print: _` is the whole defect, and it is one character wide. Nothing in Rust objects: an
+   explicit discard is exactly how you tell the compiler you meant it, so the one tool that
+   would have caught an unused binding was told to look away. The only other reader is a
+   person, and to a person `print: _` reads as tidy.
+
+b. **The harmless-looking half is what hid it.** `--print` with no `--install` does the right
+   thing, because printing is the default — so every test of `--print` passed, and the flag
+   looked honoured. Sameness had to be measured against the *other* flag, the one that
+   writes, before there was anything to see. A flag that agrees with the default cannot be
+   tested against the default.
+
+c. **Break 1 turned one red test out of 306.** Same shape as S-52's break 2 and S-51's break
+   3: the defect lived in the gap between what the tests covered and what the surface
+   claimed, and the only assertion that could see it is the one written for it. A count of
+   305 green tests says nothing about the 306th claim.
+
+d. **Refuse the pair rather than pick a winner.** Either flag winning is a decision made on
+   the operator's behalf about which of two things they meant, and one of the two writes to
+   their home directory. `conflicts_with` moves the answer to parse time, where the question
+   was actually asked, and leaves the dispatch with the one question it was already
+   answering. It also means no branch has to be trusted to get an order right.
+
+e. **The confirm prompt is what kept this a wrong prompt instead of a wrong write** — and
+   that is a thin thing to have been relying on. S-31's "must not: install without confirm"
+   held, and it held alone. A guarantee at the end of a chain does not excuse a broken link
+   in the middle of it; it just decides how bad the report is.
+
+f. **The surface guard says what it does not prove.** Harvesting flags from clap's own
+   `--help` catches a flag added, renamed or removed, which is the moment somebody has to
+   write down what it does. It does not catch a flag that is written down and ignored — which
+   is precisely this step's defect, and the doc comment says so rather than letting the green
+   tick imply otherwise. Same honesty S-51's schema guard needed.
+
+g. **A one-word-per-line harvest loses a flag that grows a short alias.** `-i, --install`
+   puts the long flag second, and the first version dropped it without a sound. Caught in
+   self-review, fixed by taking the leading run of flag-shaped words, and checked by adding a
+   short alias and watching the test stay green.
+
+**Not done:**
+
+- **`print` is still discarded.** With the pair refused, `--print` and no flag at all are the
+  same thing and the arm has nothing to read — the comment says that, and it is now true. A
+  future third flag would have to re-answer it.
+- **The harvest covers long flags only.** Short aliases are not in the table by design; a
+  subcommand added is caught only because its flags are looked up by name, so a whole new
+  subcommand nobody adds to the array is invisible until somebody notices the count.
+- **The guard does not run `sync`, `assistants` or `serve`** — they reach a network, a key
+  store or a port. Their flags are harvested from `--help` and no further.
+- **`schedule.log` still never rotates**, nothing prunes `jobs` or `spend`, `--install` still
+  knows macOS and Linux only and still cannot check that the job it loaded will fire, and
+  `which` still finds a file rather than an executable. All S-52's, all unchanged.
+- **Nothing on Abhishek's machine is scheduled.** `graphify schedule --install` is still his
+  to answer.
+
+**The register is complete through S-53.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
