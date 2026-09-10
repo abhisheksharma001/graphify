@@ -183,7 +183,7 @@ def synthesize_rule(job: Job) -> tuple[Any, float]:
     got = client().with_options(client=cost.CLIENTS[job.model], collector=collector).SynthesizeRule(
         criterion=job.criterion, plan=job.plan, labels=seen, dsl=DSL
     )
-    return got, _spent(collector, job.model)
+    return got, _spent(collector, job.model, _synthesize_usd(job))
 
 
 def refine_rule(job: Job, rule: Any, disagreements: Sequence[dict[str, Any]]) -> tuple[Any, float]:
@@ -205,12 +205,13 @@ def refine_rule(job: Job, rule: Any, disagreements: Sequence[dict[str, Any]]) ->
     got = client().with_options(client=cost.CLIENTS[job.model], collector=collector).RefineRule(
         criterion=job.criterion, plan=job.plan, rule=rule, disagreements=told, dsl=DSL
     )
-    return got, _spent(collector, job.model)
+    return got, _spent(collector, job.model, _refine_usd(job))
 
 
-def _spent(collector: Any, model: str) -> float:
-    usage = collector.last.usage
-    return cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, model)
+def _spent(collector: Any, model: str, ceiling: float) -> float:
+    """The two calls here are priced separately by `estimate`, so each books its own
+    ceiling when the provider is silent rather than half of a total."""
+    return cost.booked(collector.last.usage, model, ceiling)
 
 
 def _synthesize(job: Job, conn: Any, stderr: TextIO) -> dict[str, Any]:

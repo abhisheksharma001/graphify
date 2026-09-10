@@ -199,8 +199,7 @@ def ask(job: Job) -> tuple[str, float]:
         .with_options(client=cost.CLIENTS[job.model], collector=collector)
         .AskAnalysis(question=job.question, stats=job.stats, calls=numbered)
     )
-    usage = collector.last.usage
-    return answer, cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, job.model)
+    return answer, cost.booked(collector.last.usage, job.model, estimate(job))
 
 
 def _result(job: Job, answer: str | None, usd: float, stopped: str | None) -> dict[str, Any]:
