@@ -4612,7 +4612,7 @@ g. **The one that changed nothing is the one worth writing down.** Break 2 — d
 - **`schedule.log` still never rotates**, nothing prunes `jobs` by row count, and O-06 — the
   Vapi key pasted in chat — is still unrotated.
 
-### S-56 — What a call costs when the provider does not say
+### S-56 — What a call costs when the provider does not say ☑ (PR #57, bd14d41)
 
 **PR:** one. **Depends on:** nothing. S-55 made the request carry the ceiling the estimate
 prices. This is the other side of the same call: what gets *booked* once the answer is back.
@@ -4734,5 +4734,102 @@ and that is the whole of what may be touched in an existing test file. Call a pr
 an `or 0` is put back in any spend path; `cargo test -q` and `cargo clippy` untouched and
 green; CI 4/4.
 
-**The register is complete through S-55, with S-56 specified and not yet built.** Anything
-after that is a new step appended here, or a bug in `docs/backlog/bugs.md` promoted to one.
+**Files (as built):** `brain/src/graphify_brain/cost.py` (+31, the new `booked`),
+`plan.py` (+18 −12: two `ceiling` locals, `charged` takes a third argument, and the module
+docstring's rule updated), `label.py` (+3 −2), `ask.py` (+1 −2), `synth.py` (+6 −5),
+`brain/tests/test_booked.py` (new, 242 lines), `brain/tests/test_plan.py` (+5 −3),
+`docs/spec.md`. 305 insertions, 25 deletions over seven files. Brain suite 208 → **228**.
+Engine 313 and clippy clean, both untouched. CI 4/4.
+
+| break | red | proves |
+|---|---|---|
+| 1 · `booked` returns `0.0` for an absent count | **15** | the defect itself, across the table, both runs and the ask |
+| 2 · `booked` always returns the ceiling | 4 | the provider's numbers win when it gives them |
+| 3 · mix a real count with a ceiling half | 6 | all-or-nothing on the two counts |
+| 4 · `label` passes a ceiling of `0.0` | 2 | the ceiling is the batch's own, not a constant |
+| 5 · the `or 0` back in `synth`, bypassing `cost.booked` | 4 | the harvest, and it names `synth.py` |
+| 6 · `ask` passes twice its own estimate | 1 | the ceiling is what that call quoted |
+
+Two deviations from this entry as specced, both found in self-review. The Must-not said one
+fixture line in `test_plan.py` may change; `test_what_is_booked_is_the_named_model_s_rate_too`
+also calls `charged` directly, so its two call lines gained a third argument — `999.0`, a
+ceiling absurd enough that reaching it would be unmistakable, which makes that existing test
+say something more than it did: with both counts present the provider's numbers win. And
+`plan.py`'s module docstring said *"the ceiling is what the cap is checked against; the
+collector's number is what is booked"*, which is the sentence this step falsifies; it now
+names `cost.booked` and says zero is not one of its answers. Neither was in scope as written
+and both are recorded here rather than quietly done.
+
+**Learned:**
+
+a. **Zero was already spoken for, and that is the whole defect.** `or 0` is not wrong because
+   zero is a bad guess; it is wrong because zero already means something else here. A
+   free-mode `daily` run books zero and is right to. `db.rs:750` writes no `spend` row for a
+   zero-cost job and is right to. The substitution put an unknown cost into a value that
+   already had an owner, and every layer below then handled it correctly — for the other
+   meaning.
+
+b. **The near cap is the one that bites first.** The daily ledger was the consequence worth
+   writing down, but `label` fell over one wave sooner: `spent` feeds `_affordable`, so a
+   booking of zero does not merely under-report, it re-grants the budget. Ten batches against
+   a cap that fits three, and the run reports `stopped: null` — the failure announcing itself
+   as a success. When a number is both a report and an input, the report being wrong is the
+   smaller half.
+
+c. **Four copies of a rule is a rule nobody owns.** The same two lines stood in four modules
+   and each was individually defensible. The fix is not that `booked` is shorter; it is that
+   there is now one place to be wrong, and guard 3 makes reaching past it red. A rule with
+   four homes drifts; a rule with one home and a harvest around it cannot.
+
+d. **The right value for "unknown" was already computed, shown, and approved.** No new number
+   had to be invented: every one of the six call sites had a ceiling in hand, because
+   `afford` and `_affordable` had already checked it and the analyst had already clicked go
+   on it. When a fallback has to be chosen, look for the figure the system already committed
+   to rather than for a safe-looking constant — a constant would have needed its own
+   justification, and the ceiling needs none.
+
+e. **All or nothing on the two counts.** A real input count beside a ceiling output is a
+   third number that is neither what was billed nor what was quoted, and break 3 exists so
+   that the tidier-looking version stays red. The temptation is real: half the information
+   is there. Half a cost is not a cost.
+
+f. **The trigger is latent and the mechanism is live.** Neither pinned endpoint withholds
+   usage, so no run has been mis-booked and this fixed no money. It is the same shape as
+   S-55's break 2: what is being guarded is the answer the code gives when it does not know,
+   against the version bump or the custom base URL that has not happened. BYOK is what makes
+   it worth doing now — the endpoint is the user's, eventually.
+
+g. **A docstring that states the old rule is part of the defect.** `plan.py` said the
+   collector's number is what is booked. It was true, it was the sentence the code was built
+   around, and it was exactly what needed to stop being the whole rule. S-55 learned the same
+   thing about `max_tokens` being called a bound. A claim in prose ages into a lie without
+   anything editing it.
+
+**Not done:**
+
+- **The engine holds the same substitution twice, one layer up.** `jobs.rs:628` is
+  `value.get("usd").and_then(Value::as_f64).unwrap_or(0.0)` — a brain that exits cleanly and
+  prints JSON with no numeric `usd` gives a job marked `done` at $0 — and `db.rs:750`'s
+  `if cost_usd > 0.0` writes no ledger row for it. Contrast the branch beside it: JSON that
+  does not parse is `FAILED`. Out of scope by the Must-not, and all six brain commands print
+  `usd`, so nothing reaches it today.
+- **`jobs.rs:625` says `plan` and `clarify` "do not report `usd`, and are unmetered until
+  they do".** They both report it and have since `charged` was written. A stale comment about
+  money, standing next to the code above.
+- **`collector.last` being `None` is still an `AttributeError`**, which fails the job loudly
+  and books nothing — a call that was made and billed, recorded at zero by the other route.
+  Nothing here reaches it, and no test covers it.
+- **`retry_policy Backoff` is still 3 retries.** Whether `FunctionLog.usage` sums attempts or
+  reports only the selected call is unmeasured, so whether a retried call is booked once or
+  three times is unknown. Pre-existing, carried forward from S-55.
+- **`ask` and `synth` recompute their ceiling after the call returns** — a second pass over
+  the transcripts, negligible beside a model call, but a second pass where `label` has one
+  because `_affordable` already priced its batch.
+- **Nothing proves a ceiling is close to what a call actually costs.** Over-booking is safe
+  for the cap and wrong for the report, and a run of silent calls would show the analyst a
+  bill larger than the one the provider sends.
+- **`schedule.log` still never rotates**, nothing prunes `jobs` by row count, and O-06 — the
+  Vapi key pasted in chat — is still unrotated.
+
+**The register is complete through S-56.** Anything after that is a new step appended
+here, or a bug in `docs/backlog/bugs.md` promoted to one.
