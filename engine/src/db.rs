@@ -10,6 +10,7 @@ use std::time::Duration;
 
 const INIT: &str = include_str!("../migrations/0001_init.sql");
 const GLOBAL_SECRETS: &str = include_str!("../migrations/0002_global_secrets.sql");
+const JOBS_ORG: &str = include_str!("../migrations/0003_jobs_org.sql");
 
 /// How long an open connection waits for another one to let go before giving up. Long
 /// enough to cover any statement this file runs; short enough that a genuinely stuck
@@ -236,7 +237,7 @@ impl Db {
         // short transaction — so waiting is the whole fix.
         conn.busy_timeout(BUSY_TIMEOUT)
             .context("setting the busy timeout")?;
-        Migrations::new(vec![M::up(INIT), M::up(GLOBAL_SECRETS)])
+        Migrations::new(vec![M::up(INIT), M::up(GLOBAL_SECRETS), M::up(JOBS_ORG)])
             .to_latest(&mut conn)
             .context("running migrations")?;
         Ok(Self {
@@ -626,15 +627,53 @@ impl Db {
         Ok(gone)
     }
 
+    /// The other half of an org's retention. `purge_calls` takes the call and every row
+    /// keyed to it; this takes the jobs that were run over those calls, which hold the same
+    /// words and no `call_id` to be found by — the request naming the call, the verdicts
+    /// with the sentence the model quoted out of the transcript, and every line the brain
+    /// printed. A row with no `created_at` is not old, the same way it is not old in
+    /// `purge_calls`.
+    ///
+    /// The two statuses that mean a subprocess is alive are the caller's to name, the way
+    /// `live_jobs` and `abandon_live_jobs` already have them named: which statuses those
+    /// are is `jobs`' business and not this file's. They are excluded rather than the
+    /// finished ones being listed, so a status added later is purged by default — for a
+    /// table whose defect is rows that never leave, out is the safe direction for the case
+    /// nobody has considered yet. And a row a subprocess is still writing to is also one of
+    /// `MAX_LIVE` slots: deleting it frees a slot that is not free.
+    pub fn purge_jobs(
+        &self,
+        org_id: i64,
+        keep_days: i64,
+        running: &str,
+        waiting: &str,
+    ) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM jobs
+              WHERE org_id = ?1 AND status <> ?3 AND status <> ?4
+                AND created_at IS NOT NULL
+                AND julianday(created_at) < julianday('now', ?2)",
+            params![org_id, format!("-{keep_days} days"), running, waiting],
+        )?)
+    }
+
     /// Start a job, in whatever state its kind begins in. Returns the new id.
     ///
-    /// `input` holds the whole request, the org included: `jobs` has no org column and the
-    /// spend a finished job books is keyed by one, so it has to be recoverable from the row.
-    pub fn create_job(&self, kind: &str, status: &str, input: &str, created_at: &str) -> Result<i64> {
+    /// The org goes in a column, and stays inside `input` as well. `input` is the request
+    /// as the brain will be handed it and the org is part of that request; the column is
+    /// what retention needs, because a purge has to be a `WHERE` and not a parse.
+    pub fn create_job(
+        &self,
+        kind: &str,
+        status: &str,
+        org_id: i64,
+        input: &str,
+        created_at: &str,
+    ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO jobs (kind, status, input, cost_usd, log, created_at)
-             VALUES (?1, ?2, ?3, 0, '', ?4)",
-            params![kind, status, input, created_at],
+            "INSERT INTO jobs (kind, status, org_id, input, cost_usd, log, created_at)
+             VALUES (?1, ?2, ?3, ?4, 0, '', ?5)",
+            params![kind, status, org_id, input, created_at],
         )?;
         Ok(self.conn.last_insert_rowid())
     }

@@ -703,9 +703,9 @@ async fn a_job_left_running_by_a_dead_engine_does_not_block_the_next_one() {
     let brain = fake(dir.path(), ANSWERS);
     // Rows exactly like the ones a killed engine leaves: children that no longer exist,
     // and nothing in any registry that could ever finish them.
-    let server = boot(dir, &brain, GO_WAIT, |db, _| {
+    let server = boot(dir, &brain, GO_WAIT, |db, org| {
         for _ in 0..jobs::MAX_LIVE {
-            db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+            db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
                 .unwrap();
         }
     })
@@ -1284,7 +1284,8 @@ async fn a_quote_that_cannot_be_recorded_fails_the_job_instead_of_parking_it() {
 /// what the sweep returns, and a server would only hide it by calling it first.
 fn left_behind(dir: &TempDir) -> Db {
     let db = Db::open(dir.path().join("graphify.db")).unwrap();
-    db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+    let org = db.create_org("acme").unwrap();
+    db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
         .unwrap();
     db
 }
@@ -1319,9 +1320,9 @@ fn an_ordinary_sweep_clears_the_slots_and_says_nothing() {
 async fn a_sweep_that_cannot_run_does_not_stop_the_rest_of_the_product() {
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), LABELS);
-    let server = boot(dir, &brain, GO_WAIT, |db, _| {
+    let server = boot(dir, &brain, GO_WAIT, |db, org| {
         for _ in 0..jobs::MAX_LIVE {
-            db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+            db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
                 .unwrap();
         }
         db.conn().execute_batch(NO_SWEEP).unwrap();
@@ -1397,8 +1398,8 @@ async fn a_sweep_that_cannot_run_is_on_the_board_and_not_only_on_stderr() {
     // nothing left behind is one where the sweep succeeds by having nothing to do.
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), LABELS);
-    let server = boot(dir, &brain, GO_WAIT, |db, _| {
-        db.create_job("label", jobs::WAITING, "{}", "2026-09-03T00:00:00.000Z")
+    let server = boot(dir, &brain, GO_WAIT, |db, org| {
+        db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
             .unwrap();
         db.conn().execute_batch(NO_SWEEP).unwrap();
     })

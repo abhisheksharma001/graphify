@@ -115,6 +115,11 @@ pub async fn run(db: &mut Db, opts: &Opts) -> Result<Report> {
     // it got here.
     let new = db.count_calls(org.id)? - stored;
     let purged = db.purge_calls(org.id, keep_days, org.max_calls)?;
+    // The same retention over the jobs that were run against those calls: they hold the
+    // call's words with no `call_id` on them, so `purge_calls` cannot see them. The count
+    // is dropped rather than added to the one below — `purged` is a number of calls, and a
+    // labelling job is not a call.
+    db.purge_jobs(org.id, keep_days, jobs::RUNNING, jobs::WAITING)?;
 
     Ok(Report {
         org: org.name,

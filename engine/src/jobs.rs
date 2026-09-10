@@ -345,7 +345,7 @@ fn begin(
         }
     }
     let input = serde_json::json!({ "org": org, "body": request });
-    let id = db.create_job(kind.as_str(), RUNNING, &input.to_string(), &crate::now())?;
+    let id = db.create_job(kind.as_str(), RUNNING, org, &input.to_string(), &crate::now())?;
     let spawn = Spawn {
         kind,
         binary: binary.to_string(),
