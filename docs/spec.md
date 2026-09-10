@@ -4432,5 +4432,100 @@ g. **The row nobody can read is the row nobody deletes.** There is no `GET /api/
   sweep over it later; what the guard guarantees is that they will have to edit a line that
   says why they should not.
 
+### S-55 — The ceiling one of the three clients never receives ☐
+**PR:** one. **Depends on:** nothing. S-20 wrote the cost table; `test_cost.py` has proved
+since then that every client in `clients.baml` has a *price*. Nothing has ever proved that
+one has a *bound*, and an estimate is the two multiplied.
+
+**Files:** `brain/baml_src/clients.baml`, `brain/tests/test_wire.py` (new), `docs/spec.md`.
+No engine change, no UI change, no new dependency.
+
+**Today:** the second Must-never is *"Call a model without a shown cost and an explicit go.
+Daily modes have a hard USD cap and stop when reached."* Every price the brain shows is
+built the same way — input tokens counted at an over-counting rate, output tokens priced at
+`MAX_OUTPUT_TOKENS = 4_096` — and every module that does it writes down why the output half
+is allowed to be a fixed number rather than a guess. `plan.py:89`:
+
+> The `max_tokens` BAML sends with every call. This is what makes the output half of the
+> ceiling a bound rather than a guess: no answer can be longer than this, so no answer can
+> cost more output than the cap check allowed for.
+
+`label.py:61` and `ask.py:176` say the same thing in their own words. It is true of two of
+the three clients. Rendering the request BAML would send, without sending it:
+
+| client | provider | `max_tokens` on the wire | body keys |
+|---|---|---|---|
+| `Opus` | anthropic | 4096 | `max_tokens, messages, model, system` |
+| `Sonnet` | anthropic | 4096 | `max_tokens, messages, model, system` |
+| **`GPT`** | openai | **absent** | `messages, model` |
+
+No client block in `clients.baml` names `max_tokens`. The anthropic requests carry one
+because the Messages API requires it and BAML fills a default in; the openai request carries
+nothing, because that API does not require it and an omitted `max_tokens` means *up to the
+model's own output limit*. So for `gpt` the quote's output half is a figure with no
+counterpart in the request: $12.00 per million out × 4,096 tokens = **$0.049152** promised
+per call, against a request that names no ceiling. A 500-call labelling run is 25 batches
+and $1.2288 of quoted output, and what actually comes back is bounded by the model and not
+by anything graphify asked for. The daily mode subtracts the same quote from the same cap.
+
+`gpt` is not hypothetical. `ui/src/api.ts:483` is `MODELS = ['sonnet', 'opus', 'gpt']`, it
+is the third option in the wizard's and `Ask`'s dropdowns, and `engine/src/ask.rs:97` offers
+it by name.
+
+**Why it survived twenty steps.** Three tests already assert this, one per module, all named
+`test_baml_still_caps_the_output_where_the_estimate_says_it_does` — and all three render
+with the *declared* client. Every function in `baml_src/` declares `client Sonnet` and every
+call site overrides it with `with_options(client=cost.CLIENTS[model])`, so the three
+assertions in the suite check the one client the run may never use. They cover three of the
+six functions on one of the three clients: **3 of 18**. `test_plan.py`'s `request()` helper
+builds the body and returns `(system, user)` from it, dropping the rest, so `PlanPattern`
+and `ClarifyPattern` have never had the number read off them at all; `RefineRule` has not
+either.
+
+**Change:**
+
+1. `max_tokens 4096` in each of the three client blocks in `baml_src/clients.baml`, with the
+   sentence saying why it is written rather than inherited: a default belongs to a provider,
+   and the estimate belongs to graphify. Measured — the openai body gains the key and the
+   two anthropic bodies are byte-identical to what they already sent.
+
+2. `tests/test_wire.py`: for every BAML function × every BAML client, render the request and
+   assert `max_tokens` equals the constant the module that prices it uses. Both lists are
+   harvested from `baml_src/`, not typed out: the functions from `^function (\w+)`, the
+   clients from the same `client<llm>` regex `test_cost.py` already reads that file with.
+
+**The arguments are a table and the functions are not.** Each function takes different
+arguments, so the harvest cannot render them generically. The table maps a harvested name to
+the smallest arguments that render, and is compared against the harvest in both directions —
+a function added to `baml_src/` and not to the table is red and named; an entry left behind
+by a deleted function is red too. That is S-51's shape and S-54's: the list is not the
+guard, the comparison is. What the guard buys is that a seventh BAML function, or a fourth
+client, cannot be added without somebody stating what bounds its output.
+
+**Acceptance:** WHEN any BAML function is called on any BAML client THEN the request SHALL
+carry `max_tokens` equal to the `MAX_OUTPUT_TOKENS` its module prices with; AND WHEN a
+function is added to `baml_src/` THEN the suite SHALL fail naming it until it is rendered;
+AND WHEN a client is added THEN the suite SHALL fail naming it.
+
+**Guards.** In `brain/tests/test_wire.py`:
+
+1. **Every function × every client carries the bound.** Eighteen rendered bodies today, and
+   the count is the product of two harvests rather than a number in the test.
+2. **The rendered table is the harvest.** Symmetric difference in both directions, so the
+   test names the function nobody wrote arguments for.
+3. **The clients rendered are the clients declared.** Same, against `client<llm>`.
+
+**Must not:** call a provider — every assertion here is over a request that is built and
+never sent, and no key is needed to build one. Change `MAX_OUTPUT_TOKENS`, in either module
+that declares it: this step makes the wire agree with the number, it does not pick a new
+number. Delete or edit the three existing per-module assertions — they are three of the
+eighteen and they stay; a duplicated guard is not a defect. Move `MAX_OUTPUT_TOKENS` into
+one shared constant: `plan.py` and `label.py` declare it separately on purpose and the new
+guard reads each module's own, so drift between them is now red rather than tidied away.
+Add a fourth client, a price, or a model. Touch the estimate arithmetic, `FIXED_PROMPT_CHARS`
+or `CHARS_PER_TOKEN`. Reach for `baml_client/` as the source of the harvest — it is
+generated and not committed, and the file a person edits is the file the guard should read.
+
+
 **The register is complete through S-54.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
