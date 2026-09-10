@@ -4831,7 +4831,7 @@ g. **A docstring that states the old rule is part of the defect.** `plan.py` sai
 - **`schedule.log` still never rotates**, nothing prunes `jobs` by row count, and O-06 — the
   Vapi key pasted in chat — is still unrotated.
 
-### S-57 — What a job costs when the brain does not say `[Rust]`
+### S-57 — What a job costs when the brain does not say `[Rust]` ☑ (PR #58, 218937a)
 
 **PR:** one. **Depends on:** nothing. S-56 fixed this substitution inside the brain, where a
 provider's silence became `$0`. This is the same substitution one layer up, where the
@@ -4962,5 +4962,112 @@ quote is preferred over a reported number; guard 3 red if the ledger is not aske
 red if a missing quote invents a number; `uv run pytest -q` and `pnpm test` untouched and
 green; CI 4/4.
 
-**The register is complete through S-56.** Anything after that is a new step appended
+**Files (as built):** `engine/src/jobs.rs` (+77 −16: `money`, `price` delegating to it,
+`Outcome::Ran` carrying the quote, `converse` keeping the last one, `classify` taking it
+and booking in three tiers, and the stale comment about `plan` and `clarify` being unmetered
+replaced), `engine/tests/jobs.rs` (+126, a new section of six tests at the end),
+`docs/spec.md`. No brain change, no UI change, no schema change, no new dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the fallback removed | 3 | the defect itself |
+| 2 · the quote preferred over a reported number | 6 | the quote is a fallback, not a floor |
+| 3 · `money` drops the sign check | 3 | the one-place claim — two of the three are S-37's existing quote tests |
+| 4 · the no-quote zero says nothing | 1 | the third tier is on the record |
+| 5 · the first quote carried, not the last | 1 | what is booked is what the browser was shown |
+| 6 · zero stops counting as money | 2 | a run that really was free is still booked at nothing |
+
+Break 3 is the one worth keeping. Dropping the sign check from `money` reddens the new
+result test *and* `a_negative_quote_never_reaches_the_go_button` and `a_price_read_back_out_
+of_a_log_is_one_that_can_be_shown_to_someone`, both written for S-37 and neither touched
+here. That is what "one place, both questions" looks like when it is true rather than
+claimed.
+
+**One deviation from this entry's Must-not, recorded rather than done quietly.** The entry
+said *"Touch `price`'s wording beyond delegating to `money`."* `price`'s doc comment says
+*"This is the only place either question is asked"*, and after the extraction "this" is a
+function that no longer holds the check — a reader adding a rule about money would put it in
+the wrong place. One clause changed: *"`money` below is the only place either question is
+asked."* Nothing else in that comment moved.
+
+**Learned:**
+
+**(a) A fallback is only worth having where the fallback already exists.** The reason this
+step is fifteen lines and not a design is that the number was already there: `converse`
+parses the `ESTIMATE` line, checks it, and writes it to the log three lines before the result
+arrives. Nothing had to be computed, quoted, or approved. The same was true of S-56 one layer
+down — every call site had a ceiling in hand because `afford` had already checked it. When a
+defect's fix needs a new number, that is a signal the defect is somewhere else.
+
+**(b) Two ceilings, and the caller's is the wrong one.** The engine holds `max_usd` for every
+job, and for four of the six kinds it came from the browser as `Number(cap)`. Booking an
+unpriced job against it would let whoever wrote the request decide what it cost. The quote is
+the brain's own arithmetic, checked by the engine before it was written down. When a step has
+two candidate numbers, the question is not which is closer but which one the party who
+benefits from the answer got to choose.
+
+**(c) A refusal only buys something while the money is still in the room.** `classify` books
+`done` in all three tiers because the output has parsed, which means the brain reached the end,
+which means whatever it spent is gone. Failing there loses the labels and recovers nothing.
+The `FAILED` branches above it are the opposite case and are right to book zero: a job that
+died before the go really did spend nothing. The dividing line is not how bad the output is,
+it is whether refusing can still prevent something.
+
+**(d) Extracting a predicate is how a comment stops being a promise.** `price`'s doc comment
+has claimed since S-37 to be the only place the finite-and-non-negative question is asked,
+and it was true when it was written and false by the time `classify` needed the same
+question. Nothing enforced it, because there was nothing to enforce — the claim was about a
+function, and functions do not stop other functions from doing arithmetic. `money` is four
+lines and the claim is now structural: break it and S-37's tests fail alongside S-57's.
+
+**(e) Zero is not a spare value, said twice now.** S-56 wrote that sentence about the brain
+and this step found the same substitution one layer up, in a language with an `Option` type,
+written by the same hand, on the same number. `unwrap_or(0.0)` and `or 0` are the same three
+characters of thought. `db.rs:750`'s `if cost_usd > 0.0` is not the bug and is unchanged: it
+is correct for a job that genuinely cost nothing, and it only ever looked wrong because
+something above it was manufacturing zeros. The fix for a value with two meanings is to stop
+producing the second meaning, not to change what reads it.
+
+**(f) The third tier is honest and not good.** A brain that neither quotes nor prices is
+booked at zero, because there is nothing else, and it now writes a line saying so. That is a
+worse outcome than the other two tiers and it is written down as one rather than dressed up.
+The only kind that reaches it is `daily`, and the number that would fix it — `sync.rs:253`'s
+`left` — is engine-computed and therefore usable, which makes it a step and not a patch.
+
+**(g) Carrying a number is a promise to keep two copies equal.** `Outcome::Ran` carries the
+quote instead of reading it back out of the log, which is faster and is also a second copy of
+something the browser reads independently. The guard for that is the test with two `ESTIMATE`
+lines: `estimate` takes the last one and so must the booking. Any time a value is carried
+rather than re-derived, the test is not "is it right" but "is it the same one".
+
+**Not done:**
+
+- **The `FAILED` branches still book `0.0`.** A brain that exits non-zero after making calls
+  has spent money the engine cannot account for. The quote is the wrong fallback there —
+  most deaths are at startup, before any call, and booking a full ceiling for a bad key would
+  eat the day. Fixing it means the brain reporting partial spend on the way down, which is a
+  protocol change and its own step.
+- **`daily` has no quote.** D-8 gives it a cap instead of a click, so it prints no `ESTIMATE`
+  and reaches the third tier. `sync.rs:253` computes `left` and hands it over as `max_usd`;
+  carrying that into `Spawn` as an engine-side ceiling would give the tier a number.
+- **Nothing checks that a quote is close to what a run actually costs.** Carried from S-56.
+  A run of unpriced jobs now protects the cap and over-bills the report, and how far over is
+  unmeasured on both sides of the pipe.
+- **`money` is not applied to what the brain writes into the `spend` table itself.** It
+  cannot be: the brain writes no spend rows (S-45), and `add_spend` is reached only through
+  `finish`. Written down because the next reader will ask.
+- **Two ESTIMATE lines is a shape no brain command produces.** The guard for the carried
+  quote exercises it, which means the test is stricter than the product. That is the right
+  way round and is not a claim that the product does it.
+- **`retry_policy Backoff` is still three retries**, and whether `FunctionLog.usage` sums the
+  attempts is still unmeasured. Carried from S-55 and S-56, and still the most likely way a
+  reported `usd` is wrong rather than absent.
+- **The job's log is the only place the substitution is announced.** A job booked at its
+  quote reads `done` with a normal cost in the UI; only the log says the number came from
+  somewhere else. The notices board (S-41) exists and is not used here, because this is not
+  an operator's emergency — it is a fact about one job.
+
+**The register is complete through S-57.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
