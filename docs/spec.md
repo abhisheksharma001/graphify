@@ -3886,5 +3886,99 @@ The doc comment now says which; break 4 is the test.
 - **The guard proves the sweep covers the schema, not that the schema is right.** A child
   table that keys to a call by some other column name is invisible to it.
 
+### S-52 — The other parser on the crontab line [Rust]
+**PR:** one. **Depends on:** nothing. `schedule.rs` has written the morning job since S-31
+and has never been audited. 386 source lines against 140 test lines — the worst src:test
+ratio left in the engine.
+
+**Files:** `engine/src/schedule.rs`, `engine/tests/schedule.rs`, `docs/spec.md`. No brain
+change, no UI change, no migration, no new dependency.
+
+**Today:** the module's thesis is that a scheduler cannot be checked by running it —
+*"a crontab line does nothing until tomorrow, and the only thing there is to look at today
+is what was written."* So the whole first half is pure text generation, and the tests are
+about the text. The test that covers escaping says what it thinks the readers are:
+
+> One string goes to `/bin/sh` and another to an XML parser, and a directory with a space
+> and an ampersand in it breaks each of them differently.
+
+That is two readers, and the file escapes for exactly two: `quote_str` for `/bin/sh`, `xml`
+for the plist. **The crontab line has three.** cron reads it first, and cron is not a shell.
+
+POSIX, and Vixie cron with it: in the command field, an unescaped `%` ends the command —
+everything after the first one is fed to it as standard input, with later `%` turned into
+newlines. The escape is `\%`. `quote_str` wraps a value in single quotes, which is right for
+the shell and does nothing here, because cron's split happens before the shell is handed
+anything.
+
+Measured against the shipped binary. `graphify schedule --print --org 'q%a'` writes:
+
+```
+0 6 * * * GRAPHIFY_DB='…/graphify.db' '…/graphify' sync --org 'q%a' >> '…/schedule.log' 2>&1 # graphify schedule
+```
+
+Run that line through cron's own rule and it comes apart:
+
+| | |
+|---|---|
+| command cron runs | `GRAPHIFY_DB='…' '…/graphify' sync --org 'q` |
+| stdin cron feeds it | `a' >> '…/schedule.log' 2>&1 # graphify schedule` |
+| `/bin/sh -n` on the command | exit **2** — ``unexpected EOF while looking for matching `'`` |
+| `>> schedule.log` survived | **no** |
+
+Three things about that failure, in order of how bad they are:
+
+**It is silent.** The sync does not run. Nothing is written, nothing is spent, and no row
+anywhere records that a morning was missed. The operator's first sign is a dashboard that
+has stopped moving.
+
+**It destroys its own diagnostics.** The redirection to `schedule.log` sits after the `%`,
+so it is in the half cron feeds to stdin, not the half cron runs. The engine's one written
+answer to *"why did the morning not happen"* is the file that cannot receive the reason.
+What error text there is goes to cron's mail spool, which on a laptop is nowhere.
+
+**A `%` in the path is worse than one in the org name.** `GRAPHIFY_DB='/data/50% off/…'`
+truncates at `GRAPHIFY_DB='/data/50` — the binary itself is in the stdin half, so there is
+not even a broken command to fail, and the same line still installs without complaint.
+
+The plist form of the very same `Plan` is correct: launchd takes `ProgramArguments` as an
+array and runs no shell, so `<string>q%a</string>` needs nothing done to it. One `Plan`,
+two texts, and only the one with a second parser in front of it is wrong. `--install` on
+Linux writes this line to the user's real crontab.
+
+**Change:** small, and in the direction the file already states.
+
+1. `cron_escape`, applied to the assembled crontab line in `Plan::crontab`: `%` → `\%`.
+   Applied to the whole line rather than to each value, because `%` is cron's metacharacter
+   anywhere in the command field, not a property of the values — and the time fields are
+   digits and `*`, so they are unaffected. A backslash already in a path stays literal:
+   cron only gives `\` meaning in front of a `%`, and the single quotes around the value
+   keep the shell from giving it any.
+2. The doc comment on `quote` names the reader it serves, and `crontab` names the one that
+   reads before it. `xml` says why the plist needs no such thing. The finding was that the
+   file could not say how many parsers its output has; the fix has to leave it saying so.
+
+**Verify:**
+- `cargo test -q` green, `cargo clippy --all-targets -- -D warnings` clean.
+- A guard test that does not restate the escaping rule but runs the two parsers: for each
+  hostile input, take the printed line, apply cron's transformation (split at the first
+  unescaped `%`, unescape `\%`), assert nothing was split off into stdin, and hand the
+  result to `/bin/sh -n`, which must accept it. Red today for `%`, green after.
+- The hostile inputs are one list, used by that guard and named in one place: `%`, a
+  space, `&`, `'`, `"`, `$`, backtick, `\`, `;`, `|`, newline-free. Each goes through the
+  org name and through the database path.
+- A test that the plist is untouched by the same inputs — no backslash appears in front of
+  a `%` in the XML, because launchd would take it literally.
+- Break it four ways: drop `cron_escape`; escape the values instead of the line, so the
+  `%` in a path that reaches the line by another route is missed; escape the plist too;
+  and escape `%` as `%%`, which is the printf habit and is not cron's rule.
+
+**Must not:** change what the line *does* — same binary, same `sync --org`, same
+redirection, same marker. Touch the plist's bytes for any input that has no `%` in it.
+Validate or reject an org name: an org named `50% club` is a legal org and the line has to
+carry it, not refuse it. Add a dependency to parse crontabs. Change `--at` parsing,
+`which`, `absolute`, `home`, `confirm`, or either installer's flow. Rotate `schedule.log`,
+teach `--install` a third platform, or purge `jobs`/`spend` — each is its own step.
+
 **The register is complete through S-51.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
