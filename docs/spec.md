@@ -4831,5 +4831,136 @@ g. **A docstring that states the old rule is part of the defect.** `plan.py` sai
 - **`schedule.log` still never rotates**, nothing prunes `jobs` by row count, and O-06 — the
   Vapi key pasted in chat — is still unrotated.
 
+### S-57 — What a job costs when the brain does not say `[Rust]`
+
+**PR:** one. **Depends on:** nothing. S-56 fixed this substitution inside the brain, where a
+provider's silence became `$0`. This is the same substitution one layer up, where the
+*brain's* silence becomes `$0`, and S-56's Not-done named it.
+
+**Files:** `engine/src/jobs.rs`, `engine/tests/jobs.rs`, `docs/spec.md`. No brain change, no
+UI change, no schema change, no new dependency.
+
+**Today:** `classify` (`engine/src/jobs.rs:601`) turns the brain's last line into a finished
+row, and the whole of what it asks about money is one line:
+
+```rust
+let usd = value.get("usd").and_then(Value::as_f64).unwrap_or(0.0);
+finish(records, id, DONE, Some(text), usd, spawn.org, "");
+```
+
+A key that is absent, `null`, or a string becomes `0.0`. A negative number is passed
+through untouched. Measured on a live server with a fake brain that quotes `ESTIMATE 0.0428`,
+is given the go, and then answers:
+
+| the brain's last line | status | quoted | `cost_usd` on the row | `spend` ledger |
+|---|---|---|---|---|
+| `{"labels":[…],"stopped":null}` | `done` | 0.0428 | **0.0** | **0** |
+| `{"usd":null,…}` | `done` | 0.0428 | **0.0** | **0** |
+| `{"usd":"0.0123",…}` | `done` | 0.0428 | **0.0** | **0** |
+| `{"usd":-5,…}` | `done` | 0.0428 | **−5.0** | **0** |
+| `{"usd":0.0123,…}` | `done` | 0.0428 | 0.0123 | 0.0123 |
+
+Four ways in and four wrong answers, and in every one of them the price the brain quoted is
+sitting in the job's log, already parsed once and already validated, three lines above the
+result that failed to repeat it.
+
+**What it costs the day.** Ten labelling jobs, each quoting $0.0428, each given the go, on a
+$1.00 daily cap:
+
+| the brain's last line | ledger after ten | what `sync.rs:222` thinks is left |
+|---|---|---|
+| carries `usd` | $0.4280 | $0.5720 |
+| **carries no `usd`** | **$0.0000** | **$1.0000** |
+
+`sync.rs:222` is `let left = opts.cap_usd - db.spend_on(&now()[..10], org.id)?;` and it is the
+only reader the daily cap has. Ten jobs that spent money leave it exactly where it started.
+`db.rs:750`'s `if cost_usd > 0.0` is not the fault here and is not changed: skipping a ledger
+row for a job that genuinely cost nothing is right, and it only does harm because `classify`
+is manufacturing zeros above it.
+
+**The negative is the loud one.** `-5.0` is written into `jobs.cost_usd` and `GET
+/api/jobs/{id}` hands it to the browser as `cost_usd`. `price()` (`jobs.rs:391`) already
+refuses a negative on the `ESTIMATE` line, and says why in its own doc comment — *"it parses,
+it serialises, and it reaches the go button looking like money"* — and then claims *"this is
+the only place either question is asked."* That claim is true of the quote and false of the
+result. The result is not asked at all.
+
+**Reachability, plainly.** All six brain commands print `usd`: `plan.py:140` and `:188`,
+`label.py:401`, `synth.py:255`, `ask.py:210`, `daily.py:103`. A refusal or a bad input
+raises before any of them and exits non-zero, which is the `FAILED` branch and books nothing,
+correctly. So no job has been mis-booked. What is live is the mechanism, in the one place
+where being wrong quietly raises a limit — and this is the fifth Must-never, *"Render a
+missing value as 0"*, applied to money rather than to a chart.
+
+`serde_json` refuses `NaN`, `Infinity` and out-of-range numbers at parse — measured:
+`{"usd":1e400}` is `number out of range at line 1 column 12`, which is already the `FAILED`
+branch. So the only judgement the result needs that the parse does not already make is the
+sign.
+
+**Change:**
+
+1. **`money(usd: f64) -> Option<f64>`** — finite, and not negative. `price()` becomes
+   `money(rest.trim().parse().ok()?)`, so its doc comment's claim to be the only place the
+   question is asked becomes true by construction rather than by hope.
+
+2. **`Outcome::Ran` carries the quote.** `converse` has already parsed and validated the
+   `ESTIMATE` line before it appends it to the log; it keeps the last one it saw and hands it
+   to `classify` beside the last line. Not re-read from the log: it is a number the loop
+   already holds, and re-reading it would be a second copy to fall out of step with.
+
+3. **`classify` books, in order:** what the brain said, if `money` accepts it; otherwise the
+   price it quoted; otherwise zero, with a line in the job's log saying that is what happened.
+   The status stays `done` in all three cases — the work was done and the output is there, and
+   failing a job that has already been paid for throws away the work without recovering the
+   money, which is S-56's reasoning at a different scale.
+
+**Why the quote and not `max_usd`.** The engine holds a second ceiling for every job — the
+`max_usd` in the request — and it is the wrong one. For `plan`, `clarify`, `label` and
+`synthesize` that number comes from the browser (`ui/src/patterns/Wizard.tsx`, `Number(cap)`)
+and is validated by the brain, not by the engine; booking against a figure the caller chose
+would let a caller pick what an unpriced job costs. The quote is the brain's own arithmetic,
+already checked by `price` before it was written down.
+
+**The third tier is honest, not fixed.** `daily` is the one kind that prints no `ESTIMATE` —
+D-8 replaced its click with a cap — so a `daily` run that failed to price itself has no quote
+to fall back on and is booked at zero with a line saying so. That is not a good answer; it is
+the true one, and the only better number available is `sync.rs:253`'s `left`, which is a
+separate step because it means `Spawn` carrying a ceiling the engine computed. Named in
+Not-done.
+
+**Guards** (`engine/tests/jobs.rs`, new section):
+
+1. **The table.** A brain that quotes and then answers without a usable `usd` — absent,
+   `null`, a string, negative — books the quote, on the row and in the ledger, in all four
+   cases.
+
+2. **The honest one still wins.** A brain that reports `usd` books what it reported, not its
+   quote, including when the two differ and including `usd: 0` — a run that really did cost
+   nothing is still booked at nothing.
+
+3. **The ledger moves.** After the run, `spend_on(day, org)` is the quote, not zero: this is
+   the number `sync` subtracts and the assertion is on the ledger, not on the row.
+
+4. **No quote, no invention.** A brain that never quotes and never prices is booked at zero
+   and its log says the engine had no number — not a silent zero, and not `max_usd`.
+
+5. **The sign is refused in one place.** `money` is what both the quote and the result go
+   through; a negative on either is not money.
+
+**Must not:** change what is booked when the brain *does* report a usable number. Fail,
+retry, or refuse a job whose output parsed — the money is already spent and the output is
+already good. Read `max_usd` out of the request, or add a field to `Spawn` for it. Change
+`db.rs:750`'s `if cost_usd > 0.0`: it is correct once nothing above it manufactures zeros.
+Change the `FAILED` branches — a brain that exits non-zero or prints nothing is a different
+question and is named in Not-done. Touch `price`'s wording beyond delegating to `money`.
+Delete or edit any existing assertion in `engine/tests/jobs.rs`; the new tests are a new
+section and nothing above it moves. Touch the brain, the UI, or the schema.
+
+**Verify:** `cargo test -q` green with the new section; `cargo clippy --all-targets -- -D
+warnings` clean; guard 1 red on all four rows if the fallback is removed; guard 2 red if the
+quote is preferred over a reported number; guard 3 red if the ledger is not asked; guard 4
+red if a missing quote invents a number; `uv run pytest -q` and `pnpm test` untouched and
+green; CI 4/4.
+
 **The register is complete through S-56.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
