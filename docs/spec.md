@@ -4432,7 +4432,7 @@ g. **The row nobody can read is the row nobody deletes.** There is no `GET /api/
   sweep over it later; what the guard guarantees is that they will have to edit a line that
   says why they should not.
 
-### S-55 — The ceiling one of the three clients never receives ☐
+### S-55 — The ceiling one of the three clients never receives ☑ (PR #56, 78328a9)
 **PR:** one. **Depends on:** nothing. S-20 wrote the cost table; `test_cost.py` has proved
 since then that every client in `clients.baml` has a *price*. Nothing has ever proved that
 one has a *bound*, and an estimate is the two multiplied.
@@ -4527,5 +4527,90 @@ or `CHARS_PER_TOKEN`. Reach for `baml_client/` as the source of the harvest — 
 generated and not committed, and the file a person edits is the file the guard should read.
 
 
-**The register is complete through S-54.** Anything after that is a new step appended
+
+**Files (as built):** `brain/baml_src/clients.baml` (+14), `brain/tests/test_wire.py` (new,
+143 lines), `docs/spec.md`. Two source files, 157 lines added, none removed. No engine
+change, no UI change, no new dependency, and no existing assertion edited.
+
+**Verify:** `uv run pytest -q` 188 → 208, 0 failed. CI 4/4 (engine and ui unchanged and
+green). Six breaks, all red:
+
+| break | red | proves |
+|---|---|---|
+| 1 · drop `max_tokens` from the `GPT` block | **7** | the defect itself: six functions on the openai client, plus the file guard |
+| 2 · drop it from the `Opus` block | 1 | caught by the file guard alone — anthropic's default is 4096 today, so no rendered body changes |
+| 3 · set the `GPT` ceiling to 8192 | 6 | the number is asserted, not its presence |
+| 4 · drop `RefineRule` from the render table | 1 | the table is compared to the harvest, and the failure names it |
+| 5 · add a seventh function to `label.baml` | 1 | a function added later cannot ship unrendered |
+| 6 · `plan.MAX_OUTPUT_TOKENS = 8_192` | 6 | the wire and each module's own constant are held together |
+
+Guard 3 as specced — *the clients rendered are the clients declared* — was written, and then
+deleted in self-review: `test_cost.py:122` already holds `clients.baml` and `cost.CLIENTS` to
+each other, and the parametrize harvests the clients from the file, so the test could only
+have proved the list against itself. What replaced it is the per-block presence check that
+breaks 1 and 2 both land on, and it reads whole `client<llm> … {}` blocks rather than
+counting lines over the file — two ceilings in one block cannot stand in for a missing one in
+the next.
+
+**Learned:**
+
+a. **Half a guard reads exactly like a whole one.** `test_cost.py` has proved since S-20 that
+   every client in `clients.baml` has a price, and it says so in a docstring that names the
+   failure it prevents — *"a model that can be called but not priced is a model whose spend
+   the daily cap cannot count"*. Every word of that is true and it is half the estimate. The
+   other half, the ceiling, had no file at all. A price with no bound is not a quote.
+
+b. **A default is not a decision.** The number was right on two clients for a reason nobody
+   chose: the anthropic Messages API requires `max_tokens`, so BAML supplied one, and it
+   happened to be 4,096 — the same figure `plan.py` and `label.py` had independently written
+   down. Nothing connected them. The openai API does not require the field, so nothing was
+   sent, and the same code that called the number a bound went on calling it one.
+
+c. **The three tests that existed rendered a client the product may never use.** Every
+   function declares `client Sonnet` and every call site overrides it with
+   `with_options(client=cost.CLIENTS[model])`, so the assertion and the run disagreed about
+   which client was being checked. That is the whole of why this survived twenty steps: a
+   guard aimed one inch off the thing it names is indistinguishable from a guard, until the
+   parameter it fixed becomes the parameter that is wrong.
+
+d. **The harvest has to run over the file a person edits.** `baml_client/` is generated and
+   gitignored; a harvest over it would prove the repository agrees with the last
+   `baml-cli generate` rather than with itself. `baml_src/*.baml` is the source, and CI
+   generates from it before pytest for exactly this reason (a note already in `ci.yml`).
+
+e. **A table beside a harvest is not a list, it is a comparison.** The six functions do not
+   share a signature, so the arguments cannot be invented — `RENDERS` maps each harvested
+   name to the smallest arguments that render. The guard is the symmetric difference in both
+   directions, so a seventh function is red and named, and an entry left behind by a deleted
+   one is red too. Same shape as S-51's schema sweep and S-54's retention table: the list is
+   never the guard.
+
+f. **The module is in the table for a reason.** `RENDERS` names which module prices each
+   function and asserts against *that module's* `MAX_OUTPUT_TOKENS`. `plan.py` and `label.py`
+   declare the constant separately, on purpose; reading one shared value would have made
+   break 6 impossible and turned a drift between two ceilings into a number nobody notices.
+
+g. **The one that changed nothing is the one worth writing down.** Break 2 — dropping the
+   line from an anthropic client — alters no rendered request today. It is red because a
+   file guard says every client block writes its own ceiling. That test exists for the
+   version bump that has not happened yet, which is the only kind of defect this step could
+   still have shipped.
+
+**Not done:**
+
+- **The three per-module assertions stay.** They are three of the eighteen and a duplicated
+  guard is not a defect; deleting them was on the Must-not.
+- **`MAX_OUTPUT_TOKENS` is still declared twice**, in `plan.py` and `label.py`, and imported
+  from the second by `ask.py` and `synth.py`. Not merged, per Learned (f).
+- **The guard renders requests; it does not send them.** What a provider does with a
+  `max_tokens` it was sent is the provider's, and no test here can reach it. `4096` on the
+  wire is a bound because the API says so, which is a fact about the API.
+- **Nothing checks that 4,096 is a sensible ceiling** — only that the request and the estimate
+  agree on it. A batch truncated at 4,096 tokens is a different defect and not this one.
+- **`retry_policy Backoff` is still 3 retries**, and a retried call is billed again. The
+  estimate prices one call. Pre-existing, unmeasured, and not this step's.
+- **`schedule.log` still never rotates**, nothing prunes `jobs` by row count, and O-06 — the
+  Vapi key pasted in chat — is still unrotated.
+
+**The register is complete through S-55.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
