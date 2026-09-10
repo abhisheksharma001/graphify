@@ -14,7 +14,9 @@ a second click to approve four tenths of a cent would teach an analyst to click 
 prices. What each one does instead is the other half of the rule: the ceiling goes out as
 `ESTIMATE` before the model is touched and is refused outright when it is over the
 caller's cap, and what the provider actually charged comes back as `usd` beside the plan.
-The ceiling is what the cap is checked against; the collector's number is what is booked.
+The ceiling is what the cap is checked against; the collector's number is what is booked,
+and the ceiling again when the provider does not report one — `cost.booked` holds that
+rule for all six of the brain's model calls, and zero is not one of its answers.
 Both are priced at the model the request names, which is also the model the call runs on:
 `plan.baml` declares a client the way `label.baml` and `ask.baml` do, and every one of
 them is overridden per call. A price quoted for a model that is not the one being called
@@ -122,7 +124,8 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     # same absence to the model, and `None` is what skips the prompt block entirely.
     system_prompt = prompt.strip() if isinstance(prompt, str) and prompt.strip() else None
 
-    afford(plan_usd(criterion, system_prompt, model), cap, "plan")
+    ceiling = plan_usd(criterion, system_prompt, model)
+    afford(ceiling, cap, "plan")
 
     # Every argument is built before the client is reached for, so a bad input is refused
     # with the model still untouched. Not a style preference: `client().PlanPattern(...)`
@@ -134,7 +137,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     result = client().with_options(
         client=cost.CLIENTS[model], collector=collector
     ).PlanPattern(criterion=criterion, system_prompt=system_prompt, dsl=DSL)
-    return {**result.model_dump(), "usd": round(charged(collector, model), 6)}
+    return {**result.model_dump(), "usd": round(charged(collector, model, ceiling), 6)}
 
 
 def clarify(payload: dict[str, Any]) -> dict[str, Any]:
@@ -173,7 +176,8 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     prior = types.Plan.model_validate(payload["plan"])
     given = [types.Answer.model_validate(a) for a in answers]
 
-    afford(clarify_usd(criterion, prior, given, model), cap, "clarify")
+    ceiling = clarify_usd(criterion, prior, given, model)
+    afford(ceiling, cap, "clarify")
 
     from baml_py import Collector
 
@@ -181,7 +185,7 @@ def clarify(payload: dict[str, Any]) -> dict[str, Any]:
     result = client().with_options(
         client=cost.CLIENTS[model], collector=collector
     ).ClarifyPattern(criterion=criterion, plan=prior, answers=given, dsl=DSL)
-    return {**result.model_dump(), "usd": round(charged(collector, model), 6)}
+    return {**result.model_dump(), "usd": round(charged(collector, model, ceiling), 6)}
 
 
 def plan_usd(criterion: str, system_prompt: str | None, model: str) -> float:
@@ -224,16 +228,16 @@ def afford(usd: float, cap: float, name: str) -> None:
         )
 
 
-def charged(collector: Any, model: str) -> float:
-    """What the provider says the call it just made actually cost.
+def charged(collector: Any, model: str, ceiling: float) -> float:
+    """What the provider says the call it just made actually cost, or `ceiling` if it did
+    not say. `cost.booked` holds the rule; this is the seam a test replaces.
 
-    Its own function because it is the seam a test replaces. A fake client returns a
-    canned answer, and no fake can know what a call it never made was billed for — so
-    "what did the model say" and "what did it cost" have to be two questions with two
-    answers, or every test in `test_plan.py` would be asserting a price it invented.
+    Its own function because a fake client returns a canned answer, and no fake can know
+    what a call it never made was billed for — so "what did the model say" and "what did
+    it cost" have to be two questions with two answers, or every test in `test_plan.py`
+    would be asserting a price it invented.
     """
-    usage = collector.last.usage
-    return cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, model)
+    return cost.booked(collector.last.usage, model, ceiling)
 
 
 def max_usd(value: Any, name: str) -> float:

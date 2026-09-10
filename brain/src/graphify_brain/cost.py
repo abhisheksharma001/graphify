@@ -127,6 +127,37 @@ def estimate(tokens_in: int, tokens_out: int, model: str) -> float:
     return (tokens_in * rate.usd_in + tokens_out * rate.usd_out) / PER
 
 
+def booked(usage: Any, model: str, ceiling: float) -> float:
+    """What to book for a call that has already been made.
+
+    The provider's own numbers when it gave them, and the `ceiling` when it did not — the
+    figure this call site quoted before it sent, showed the analyst, and checked against
+    the cap. Never zero, and that is the whole of this function.
+
+    Zero is not a spare value. It is the right booking for a `daily` run in free mode, for
+    a labelling run the cap stopped before it sent anything, and for a pattern recounted by
+    rule alone, and `engine/src/db.rs` writes no `spend` row for a job that cost zero. So
+    "this was free" and "nobody knows what this cost" would be the same number, and the
+    second one is a model call the day's ledger has no record of — which is the second
+    Must-never, since `sync.rs` computes the day's remaining budget by subtracting that
+    ledger from the cap.
+
+    `Usage.input_tokens` and `Usage.output_tokens` are `Optional[int]` in BAML's own
+    signature: whether usage comes back is the provider's to decide, and neither endpoint
+    this brain is pinned to withholds it today. What is not the provider's to decide is
+    what graphify writes down when it does.
+
+    All or nothing on the two counts. A real input count beside a ceiling output is a third
+    number that is neither what was billed nor what was quoted, and a cap that is
+    over-booked is wrong in the only direction a cap survives being wrong in.
+    """
+    tokens_in = usage.input_tokens
+    tokens_out = usage.output_tokens
+    if tokens_in is None or tokens_out is None:
+        return ceiling
+    return estimate(tokens_in, tokens_out, model)
+
+
 def checked_days_ago(today: date | None = None) -> int:
     """How old the price table is, in days. `today` is injectable so a test need not
     depend on the calendar."""

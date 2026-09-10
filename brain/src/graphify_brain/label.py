@@ -244,8 +244,9 @@ def call_batch(job: Job, batch: Sequence[Call]) -> tuple[list[Any], float]:
     got = client().with_options(
         client=cost.CLIENTS[job.model], collector=collector
     ).LabelBatch(criterion=job.criterion, plan=job.plan, calls=numbered)
-    usage = collector.last.usage
-    return list(got), cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, job.model)
+    # The ceiling is the one `_affordable` reserved this batch against, so a batch the
+    # provider does not price is booked at the number the cap already allowed for it.
+    return list(got), cost.booked(collector.last.usage, job.model, batch_usd(job, batch))
 
 
 def _label(job: Job, conn: Any, stderr: TextIO) -> dict[str, Any]:

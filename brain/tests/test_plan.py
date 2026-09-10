@@ -77,7 +77,7 @@ def priced(monkeypatch):
     replaces it. Autouse, because a test that forgot would not fail on a wrong price — it
     would fail on `None.usage`, which reads like a bug in the code under test.
     """
-    monkeypatch.setattr(planning, "charged", lambda _collector, _model: FAKE_USD)
+    monkeypatch.setattr(planning, "charged", lambda _collector, _model, _ceiling: FAKE_USD)
 
 
 @pytest.fixture
@@ -611,8 +611,10 @@ def test_what_is_booked_is_the_named_model_s_rate_too():
     class Collector:
         last = Last()
 
-    assert REAL_CHARGED(Collector(), "sonnet") == pytest.approx(2.00)
-    assert REAL_CHARGED(Collector(), "opus") == pytest.approx(5.00)
+    # The ceiling is deliberately absurd: this usage has both counts, so the provider's
+    # numbers are what is booked and the ceiling must not be reached.
+    assert REAL_CHARGED(Collector(), "sonnet", 999.0) == pytest.approx(2.00)
+    assert REAL_CHARGED(Collector(), "opus", 999.0) == pytest.approx(5.00)
 
 
 def test_a_model_nobody_prices_is_refused_before_the_model(never):
