@@ -387,10 +387,19 @@ pub fn estimate(log: &str) -> Option<f64> {
 /// `f64` will read `nan` and `inf` out of a string quite happily, and serde_json writes
 /// both as `null`, so a quote that parses is not yet a quote the browser can price. A
 /// negative one is worse than either: it parses, it serialises, and it reaches the go
-/// button looking like money. This is the only place either question is asked, so that
-/// what the supervisor parks on and what the API answers with are the same judgement.
+/// button looking like money. `money` below is the only place either question is asked, so
+/// that what the supervisor parks on and what the API answers with are the same judgement.
 fn price(rest: &str) -> Option<f64> {
-    let usd: f64 = rest.trim().parse().ok()?;
+    money(rest.trim().parse().ok()?)
+}
+
+/// A number that can stand for money: finite, and not negative.
+///
+/// Both halves of the engine's arithmetic go through this — the price the brain quotes on
+/// its way in, and the cost it reports on its way out — so that `price`'s claim above is
+/// true of the result as well as the quote. A quote it refuses parks nothing; a cost it
+/// refuses is booked at the quote instead (S-57).
+fn money(usd: f64) -> Option<f64> {
     (usd.is_finite() && usd >= 0.0).then_some(usd)
 }
 
@@ -398,9 +407,15 @@ fn price(rest: &str) -> Option<f64> {
 
 /// What came back from the conversation with the child, before its exit status is known.
 enum Outcome {
-    /// It ran to the end of its stdout. The string is the last non-empty line, which is
-    /// where the brain puts its result.
-    Ran(Option<String>),
+    /// It ran to the end of its stdout. `last` is the last non-empty line, which is where
+    /// the brain puts its result; `quote` is the price it put on an `ESTIMATE` line before
+    /// it started, kept because `classify` books that when the result carries no price of
+    /// its own. Carried rather than read back out of the log: `converse` has already parsed
+    /// and checked this number, and a second reading is a second copy to fall out of step.
+    Ran {
+        last: Option<String>,
+        quote: Option<f64>,
+    },
     /// Nobody approved the price in time, so the child was killed.
     Expired,
     /// Somebody looked at the price and said no, so the child was killed. The same cost as
@@ -454,9 +469,9 @@ fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
             spawn.org,
             "the price was turned down, so this was stopped before it read anything",
         ),
-        Ok(Outcome::Ran(last)) => {
+        Ok(Outcome::Ran { last, quote }) => {
             let ok = matches!(status, Ok(s) if s.success());
-            classify(records, id, &spawn, ok, last.as_deref())
+            classify(records, id, &spawn, ok, last.as_deref(), quote)
         }
     }
 }
@@ -503,12 +518,15 @@ fn converse(
     let mut stdin = spawn.kind.waits_for_go().then_some(stdin);
 
     let mut last = None;
+    // The last quote seen, which is what `estimate` reads back out of the log for the
+    // browser: one function printing two of these means the second one.
+    let mut quote = None;
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading the brain's answer")?;
         if let Some(rest) = line.strip_prefix(ESTIMATE) {
             // Read before anything is written or parked on. A quote nobody can read back
             // is not a shown cost, and the go is what it stands in front of.
-            price(rest).with_context(|| {
+            quote = Some(price(rest).with_context(|| {
                 // Scrubbed and cut short, because this reason is appended to the job's log
                 // by `finish` and the text it quotes was written by something holding the
                 // keys. Whatever the brain printed here, it was not a price, so there is
@@ -520,7 +538,7 @@ fn converse(
                     .take(LOG_LINE_CHARS)
                     .collect();
                 format!("the brain quoted {said:?}, which is not a price")
-            })?;
+            })?);
             // The price goes in the log rather than a column: it is something the brain
             // said, and `estimate` reads it back from there. Which is why this one write
             // is checked where `append` does not bother — if the quote is not on record,
@@ -546,7 +564,7 @@ fn converse(
         }
     }
     let _ = logger.join();
-    Ok(Outcome::Ran(last))
+    Ok(Outcome::Ran { last, quote })
 }
 
 /// Block until this job is told to go, or until nobody has told it for [`GO_WAIT`].
@@ -598,7 +616,17 @@ fn drain(db: &Arc<Mutex<Db>>, id: i64, stderr: ChildStderr, redact: &Redact) {
 }
 
 /// Turn an exit status and a last line into a finished row.
-fn classify(records: Records, id: i64, spawn: &Spawn, ok: bool, last: Option<&str>) {
+///
+/// `quote` is what the brain priced this job at before it started, and it is what a result
+/// that carries no price of its own is booked at.
+fn classify(
+    records: Records,
+    id: i64,
+    spawn: &Spawn,
+    ok: bool,
+    last: Option<&str>,
+    quote: Option<f64>,
+) {
     // Scrubbed here as well as in the log: a result the brain printed goes into a column
     // the browser reads, and it was written by something that had the keys.
     let last = last.map(|text| spawn.redact.scrub(text));
@@ -622,11 +650,42 @@ fn classify(records: Records, id: i64, spawn: &Spawn, ok: bool, last: Option<&st
         return;
     };
     match serde_json::from_str::<Value>(text) {
-        // `usd` is what the brain says it spent, and the two functions that spend both
-        // report it. `plan` and `clarify` do not, and are unmetered until they do.
+        // `usd` is what the brain says it spent, and all six functions report it. What is
+        // booked when one of them does not is the price it quoted, because zero is not a
+        // spare value: it is the right answer for a `daily` run in free mode and for a
+        // labelling run the cap stopped, and `db.rs`'s `add_spend` writes no ledger row for
+        // a job that cost nothing. Putting an unknown cost into that value is a model call
+        // the day's ledger has no record of, which is the second Must-never — `sync.rs`
+        // works out what is left of the day by subtracting that ledger from the cap.
+        //
+        // `serde_json` refuses `NaN`, `Infinity` and an out-of-range number at the parse
+        // above, which is the arm below; so what `money` is left asking of a result is the
+        // sign, and a negative one would otherwise be written into the row and shown to the
+        // browser as what this job cost.
         Ok(value) => {
-            let usd = value.get("usd").and_then(Value::as_f64).unwrap_or(0.0);
-            finish(records, id, DONE, Some(text), usd, spawn.org, "");
+            let said = value.get("usd").and_then(Value::as_f64).and_then(money);
+            let (usd, note) = match (said, quote) {
+                (Some(usd), _) => (usd, String::new()),
+                (None, Some(quote)) => (
+                    quote,
+                    format!(
+                        "this job did not say what it cost, so it is booked at the \
+                         ${quote:.4} it quoted"
+                    ),
+                ),
+                // The one kind that quotes nothing is `daily`, which D-8 gives a cap
+                // instead of a click. There is no number to fall back on, so the zero
+                // stands and says so rather than passing for a job that was free.
+                (None, None) => (
+                    0.0,
+                    "this job did not say what it cost and quoted no price either, so \
+                     nothing could be booked for it"
+                        .to_string(),
+                ),
+            };
+            // Still `done`. The output parsed and the work is in it; failing a job that has
+            // already been paid for loses the work without recovering the money.
+            finish(records, id, DONE, Some(text), usd, spawn.org, &note);
         }
         Err(e) => finish(
             records,
