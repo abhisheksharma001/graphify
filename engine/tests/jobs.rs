@@ -1551,3 +1551,129 @@ async fn a_kind_that_never_parks_is_running_and_then_finished() {
     // and its end-of-file together and has no go to block on.
     assert_eq!(trail(&server, id), ["running", "done"]);
 }
+
+// --- what a job costs when the brain does not say -------------------------------------
+
+/// A brain that quotes $0.0428, waits for the go, and then answers with `result`.
+///
+/// The quote is the point of it: every one of these jobs has a price on record, put there
+/// by the same brain, checked by `price` and written to the log, before the line that fails
+/// to repeat it.
+fn priced_but(result: &str) -> String {
+    format!(
+        r#"
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+echo '{result}'
+"#
+    )
+}
+
+/// Run one labelling job through `priced_but` to `done` and hand back the finished job.
+async fn booked(result: &str) -> (Server, Value) {
+    let server = served(&priced_but(result)).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    let done = until(&server, id, jobs::DONE).await;
+    (server, done)
+}
+
+#[tokio::test]
+async fn a_job_that_does_not_say_what_it_cost_is_booked_at_what_it_quoted() {
+    // Four ways for a result to carry no price, and the fourth is the one that used to go
+    // through untouched: `-5` parses as a number and would be written into `cost_usd` and
+    // handed to the browser as what this job cost. `price` has refused a negative on the
+    // quote since S-37 for that reason; `money` is now the same judgement on the result.
+    for result in [
+        r#"{"labels":[{"call_id":"c1","match":true}],"stopped":null}"#,
+        r#"{"labels":[],"usd":null,"stopped":null}"#,
+        r#"{"labels":[],"usd":"0.0123","stopped":null}"#,
+        r#"{"labels":[],"usd":-5,"stopped":null}"#,
+    ] {
+        let (_server, done) = booked(result).await;
+        assert_eq!(done["cost_usd"], 0.0428, "booked wrong for {result}");
+        // The output is still there and the job still reads `done`: the money is spent
+        // either way, and failing it would lose the labels without recovering a cent.
+        assert!(done["output"].is_object(), "the result was thrown away: {done}");
+        assert!(
+            done["log"].as_str().unwrap().contains("booked at the $0.0428 it quoted"),
+            "the log does not say what happened: {done}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_job_that_says_what_it_cost_is_booked_at_that_and_not_at_its_quote() {
+    // The quote is a fallback, not a floor. A run that came in under what it quoted books
+    // what it came in at.
+    let (server, done) = booked(r#"{"labels":[],"usd":0.0123,"stopped":null}"#).await;
+    assert_eq!(done["cost_usd"], 0.0123);
+    assert_eq!(done["estimate_usd"], 0.0428);
+    assert_eq!(ledger(&server), 0.0123);
+    assert!(done["log"].as_str().unwrap().contains("ESTIMATE 0.0428"));
+    assert!(!done["log"].as_str().unwrap().contains("did not say what it cost"), "{done}");
+}
+
+#[tokio::test]
+async fn a_job_that_says_it_cost_nothing_is_still_booked_at_nothing() {
+    // The half of the rule that keeps zero meaning what it means. A run the cap stopped
+    // before it sent anything really did cost nothing, says so, and must not be given its
+    // ceiling instead — that would be the same substitution wearing the other sign.
+    let (server, done) = booked(r#"{"labels":[],"usd":0,"stopped":"cap"}"#).await;
+    assert_eq!(done["cost_usd"], 0.0);
+    assert_eq!(ledger(&server), 0.0, "a free run reached the ledger");
+}
+
+#[tokio::test]
+async fn what_a_silent_job_books_reaches_the_ledger_the_daily_cap_reads() {
+    // The row is a report; the ledger is an input. `sync.rs` works out what is left of the
+    // day as `cap_usd - spend_on(day, org)`, so a booking that stops at the row leaves
+    // every later run that day quoted against a budget that never shrank.
+    let (server, _done) = booked(r#"{"labels":[],"stopped":null}"#).await;
+    assert_eq!(ledger(&server), 0.0428);
+}
+
+#[tokio::test]
+async fn a_job_with_no_price_and_no_quote_is_booked_at_nothing_and_says_so() {
+    // The tier reached by a brain that neither quotes nor prices. In the product that
+    // shape is `daily`, which D-8 gives a cap instead of a click and which therefore prints
+    // no `ESTIMATE`; `ANSWERS` is the cheapest fake that produces it. There is no number to
+    // fall back on, and inventing one from the request would let whoever wrote the request
+    // decide what an unpriced job cost. So the zero stands — what changes is that it no
+    // longer passes for a job that was free.
+    let server = served(ANSWERS).await;
+    let (_, body) = post(&server.url("/api/patterns/plan?org=1"), json!({"criterion": "x"})).await;
+    let done = until(&server, body["id"].as_i64().unwrap(), jobs::DONE).await;
+
+    assert_eq!(done["cost_usd"], 0.0);
+    assert!(done["estimate_usd"].is_null(), "{done}");
+    assert_eq!(ledger(&server), 0.0);
+    assert!(
+        done["log"].as_str().unwrap().contains("quoted no price either"),
+        "a job booked at nothing said nothing about it: {done}"
+    );
+}
+
+#[tokio::test]
+async fn the_price_a_silent_job_is_booked_at_is_the_one_the_browser_was_shown() {
+    // `converse` carries the quote forward rather than reading it back out of the log, and
+    // this is the risk that buys: two `ESTIMATE` lines, and the number booked has to be the
+    // number `estimate` reads back for `GET /api/jobs/{id}`, which is the last one.
+    let server = served(
+        r#"
+read -r request
+echo "ESTIMATE 0.0100"
+read -r go
+echo "ESTIMATE 0.0428"
+echo '{"labels":[],"stopped":null}'
+"#,
+    )
+    .await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    let done = until(&server, id, jobs::DONE).await;
+
+    assert_eq!(done["estimate_usd"], 0.0428, "{done}");
+    assert_eq!(done["cost_usd"], 0.0428, "{done}");
+}
