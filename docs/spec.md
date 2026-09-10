@@ -4612,5 +4612,127 @@ g. **The one that changed nothing is the one worth writing down.** Break 2 — d
 - **`schedule.log` still never rotates**, nothing prunes `jobs` by row count, and O-06 — the
   Vapi key pasted in chat — is still unrotated.
 
-**The register is complete through S-55.** Anything after that is a new step appended
-here, or a bug in `docs/backlog/bugs.md` promoted to one.
+### S-56 — What a call costs when the provider does not say
+
+**PR:** one. **Depends on:** nothing. S-55 made the request carry the ceiling the estimate
+prices. This is the other side of the same call: what gets *booked* once the answer is back.
+
+**Files:** `brain/src/graphify_brain/cost.py`, `plan.py`, `label.py`, `ask.py`, `synth.py`,
+`brain/tests/test_booked.py` (new), one fixture line in `brain/tests/test_plan.py`,
+`docs/spec.md`. No engine change, no UI change, no new dependency.
+
+**Today:** four functions turn a provider's answer into money, and all four are the same
+line:
+
+```python
+usage = collector.last.usage
+return cost.estimate(usage.input_tokens or 0, usage.output_tokens or 0, model)
+```
+
+`plan.py:236` (`charged`, for both `plan` and `clarify`), `label.py:248` (`call_batch`),
+`ask.py:203` (`ask`), `synth.py:213` (`_spent`, for both `SynthesizeRule` and `RefineRule`).
+Six model calls, four copies of one rule.
+
+`Usage.input_tokens` and `Usage.output_tokens` are `Optional[int]` in BAML's own type
+signature, because whether a provider reports usage is the provider's to decide. `or 0` is
+the answer this brain gives to that: a call whose cost is unknown is written down as a call
+that was free.
+
+**Zero is already taken.** It is the correct booking for a `daily` run in free mode, for a
+labelling run that stopped at the cap before sending anything, and for a pattern that was
+recounted by rule alone. So the value that means *"this cost nothing"* and the value that
+means *"nobody knows what this cost"* are the same value, and nothing downstream can tell
+them apart. `engine/src/db.rs:750` is `if cost_usd > 0.0 { INSERT INTO spend … }` — a
+zero-cost job writes no ledger row at all, which is right for the free run and is, for the
+other one, a model call that the ledger has no record of.
+
+**Two caps, one substitution.** Measured on a real run through `label`, thirty calls at
+three to a batch, the cap set to exactly one wave (`CONCURRENCY = 3`). The only difference
+between the two rows is whether the provider reported usage:
+
+| provider | batches sent | `usd` reported | `stopped` | real spend, at the ceiling |
+|---|---|---|---|---|
+| reports usage | 3 | $0.129684 | `"cap"` | $0.129684 |
+| **says nothing** | **10** | **$0.000000** | **`null`** | **$0.432280** |
+
+The run cap is the first casualty and it is the closer one. `label._label` accumulates
+`spent` from what `call_batch` returns and hands it to `_affordable`, which reserves the
+next wave against `job.max_usd`. With `spent` stuck at zero, every wave is priced as though
+it were the first, so a cap that fits one wave fits all of them — here 3.3× the number the
+analyst clicked go on, and the result says `stopped: null`, which is the brain reporting
+that it finished within budget.
+
+The daily cap is the second. `usd` goes up to `jobs.rs:628`, into `finish`, into `spend`,
+and `sync.rs:222` computes the day's remaining budget as `cap_usd - spend_on(day, org)`.
+A run booked at zero leaves that subtraction unchanged, so every later run that day is
+quoted against a budget that never shrank. That is the S-39 failure exactly — *"a `done` row
+carrying a cost that no ledger counted, which would raise the day's cap by exactly that
+much"* — reached through a different door. S-39 fixed the write failing. This is the number
+being absent before the write is even attempted.
+
+**Reachability, plainly.** Both clients are pinned to `api.anthropic.com` and
+`api.openai.com`, and both report usage on every response, so the trigger is not live today
+and no run has been mis-booked. What is live is the mechanism: the code's answer to *"I do
+not know what that cost"* is *"it was free"*, in the one place where being wrong quietly
+raises a limit. The fifth Must-never — *"Render a missing value as 0. NULL → —"* — is a rule
+this repository has already paid for twice, in D-12's `Option<T>` and in the `estimate_usd
+?? 0` entry in `docs/backlog/bugs.md`, and both of those were display. This one is money.
+
+**Change:**
+
+1. **`cost.booked(usage, model, ceiling)`**, one function, the only place in the brain that
+   reads a token count off a provider. Both counts present: the provider's arithmetic, as
+   now. Either count absent: the **ceiling** — the number this same call site already
+   computed, already showed the analyst, and already checked against the cap. All-or-nothing
+   rather than mixing a real input count with a ceiling output, because that third number is
+   neither what was billed nor what was quoted.
+
+2. The four wrappers keep their names and their seams and become one line each, and each of
+   the six call sites passes the ceiling it already has in hand: `plan_usd` and
+   `clarify_usd` in `plan.py`, `batch_usd` in `label.py`, `estimate(job)` in `ask.py`,
+   `_synthesize_usd` and `_refine_usd` in `synth.py`. No new arithmetic — every one of those
+   is the number `afford` or `_affordable` was already given.
+
+**Why the ceiling and not a refusal.** The call has been made and the money is gone; there is
+nothing left to refuse. Booking the ceiling over-books, which is the only direction a cap can
+be wrong in safely, and it promises nothing new — it is the figure the analyst approved
+before the call went out. A run that books ceilings will stop early rather than late, and
+`stopped: "cap"` on a run that could have afforded one more batch is a smaller failure than
+a run that reported `null` after sending ten.
+
+**Guards** (`brain/tests/test_booked.py`):
+
+1. **The table.** Each of the four spend paths × `{both counts, input missing, output
+   missing, both missing}`. Both present is the provider's arithmetic; any missing is the
+   ceiling; no cell is zero unless the ceiling is zero.
+
+2. **The money one**, which is the run measured above: `label` with a cap of one wave and a
+   provider that reports nothing stops at the cap and reports the ceiling, not `$0.00` and
+   not `stopped: null`.
+
+3. **The harvest.** No module under `src/graphify_brain/` reads `.input_tokens` or
+   `.output_tokens` outside `cost.py`. A fifth spend path cannot bring the `or 0` back, and
+   the failure names the file that did.
+
+4. **The ceiling is the site's own.** What each path books when the provider is silent equals
+   what that path quoted — so the number booked is the number that was approved, not a new
+   one invented at the booking.
+
+**Must not:** change what is booked when the provider *does* report — that arithmetic is
+`cost.estimate` and it stays. Refuse, retry, or fail the job on an absent usage: the call is
+already paid for. Book a mixture of a real count and a ceiling. Touch `MAX_OUTPUT_TOKENS`,
+`FIXED_PROMPT_CHARS`, `CHARS_PER_TOKEN`, the price table, or `PRICES_CHECKED`. Change
+`_affordable`, `afford`, or any ceiling function — this step feeds them the number they
+already compute, it does not change the number. Touch the engine: `jobs.rs:628`'s
+`unwrap_or(0.0)` and `db.rs:750`'s `if cost_usd > 0.0` are the same substitution one layer
+up and they are named in Not-done, not fixed here. Delete or edit any existing assertion;
+one fixture line in `test_plan.py` changes because `charged` takes an argument it did not,
+and that is the whole of what may be touched in an existing test file. Call a provider.
+
+**Verify:** `uv run pytest -q` green with the new file; the table red on every cell if
+`booked` returns `0.0` for an absent count; guard 2 red on the ten-batch run; guard 3 red if
+an `or 0` is put back in any spend path; `cargo test -q` and `cargo clippy` untouched and
+green; CI 4/4.
+
+**The register is complete through S-55, with S-56 specified and not yet built.** Anything
+after that is a new step appended here, or a bug in `docs/backlog/bugs.md` promoted to one.
