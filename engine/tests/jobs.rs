@@ -1677,3 +1677,106 @@ echo '{"labels":[],"stopped":null}'
     assert_eq!(done["estimate_usd"], 0.0428, "{done}");
     assert_eq!(done["cost_usd"], 0.0428, "{done}");
 }
+
+// --- what a job spent before it died ---------------------------------------------------
+
+/// A brain that quotes, waits for the go, prints `parting` and then fails.
+///
+/// The quote matters here only because a labelling job has to be parked and released to
+/// reach the brain at all; what is under test is the last line before a non-zero exit.
+fn died_saying(parting: &str) -> String {
+    format!(
+        r#"
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+{parting}
+echo 'the model answered with something that will not parse' >&2
+exit 1
+"#
+    )
+}
+
+/// Run one labelling job through `died_saying` to `failed` and hand back the finished job.
+async fn died(parting: &str) -> (Server, Value) {
+    let server = served(&died_saying(parting)).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    let job = until(&server, id, jobs::FAILED).await;
+    (server, job)
+}
+
+#[tokio::test]
+async fn a_job_that_failed_after_spending_is_booked_at_what_it_spent() {
+    // The brain reached a model, was billed, and could not coerce the answer. Before S-58
+    // this row read `failed` with a cost of zero and the ledger never heard about it.
+    let (server, job) = died(r#"echo '{"usd":0.039}'"#).await;
+    assert_eq!(job["cost_usd"], 0.039, "{job}");
+    assert_eq!(ledger(&server), 0.039, "the cap reads the ledger and nothing else");
+    assert!(
+        job["log"].as_str().unwrap().contains("failed after spending $0.0390"),
+        "the substitution is not on the record: {job}"
+    );
+}
+
+#[tokio::test]
+async fn what_a_failed_job_spent_reaches_the_ledger_the_daily_cap_reads() {
+    // The consequence, not the column. `sync.rs` works out what is left of the day by
+    // subtracting this ledger from the cap, so a failure booked at zero raises the day's
+    // budget by exactly what it spent.
+    let server = served(&died_saying(r#"echo '{"usd":0.039}'"#)).await;
+    for _ in 0..3 {
+        let id = parked(&server).await;
+        assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+        until(&server, id, jobs::FAILED).await;
+    }
+    assert!((ledger(&server) - 0.117).abs() < 1e-9, "ledger: {}", ledger(&server));
+}
+
+#[tokio::test]
+async fn a_job_that_failed_before_spending_is_booked_at_nothing_and_says_nothing() {
+    // The brain got as far as saying it had spent nothing, which is what every failure
+    // before a model reports. Zero is correct and `db.rs` writes no ledger row for it, so
+    // there is nothing to announce either.
+    let (server, job) = died(r#"echo '{"usd":0}'"#).await;
+    assert_eq!(job["cost_usd"], 0.0, "{job}");
+    assert_eq!(ledger(&server), 0.0);
+    let log = job["log"].as_str().unwrap();
+    assert!(!log.contains("failed after spending"), "a free failure was announced: {log}");
+    assert!(!log.contains("without saying"), "a job that said so was called silent: {log}");
+}
+
+#[tokio::test]
+async fn a_job_that_died_without_saying_what_it_spent_says_that_much() {
+    // A killed process leaves nothing behind. Zero is the only number available, and it is
+    // a different claim from the one above — so the log carries which one this is rather
+    // than letting the two share a value the way S-56 and S-57 both found them sharing one.
+    for parting in ["", "echo 'not json at all'", r#"echo '{"usd":-5}'"#] {
+        let (server, job) = died(parting).await;
+        assert_eq!(job["cost_usd"], 0.0, "booked something for {parting:?}: {job}");
+        assert_eq!(ledger(&server), 0.0);
+        assert!(
+            job["log"].as_str().unwrap().contains("without saying what it had spent"),
+            "silence went unrecorded for {parting:?}: {job}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_job_that_finished_is_not_touched_by_any_of_this() {
+    // The `Ok` branch is S-57's and this step does not reach into it. Same brain shape, same
+    // parting line, one difference: it exits zero.
+    let brain = r#"
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+echo '{"labels":[],"usd":0.039,"stopped":null}'
+"#;
+    let server = served(brain).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    let done = until(&server, id, jobs::DONE).await;
+    assert_eq!(done["cost_usd"], 0.039);
+    assert_eq!(ledger(&server), 0.039);
+    assert!(!done["log"].as_str().unwrap().contains("failed after spending"), "{done}");
+}

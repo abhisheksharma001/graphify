@@ -12,6 +12,12 @@ person approved but never over it. A cap built on an under-estimate is not a cap
 Prices are data, and data goes stale. They are written out below with the day they were
 read and the pages they were read from; when a provider moves a price, this table is the
 one place to change.
+
+`booked` and `spent` at the foot of the file are the two exceptions to "before it is
+made", and they are here rather than beside their callers for the same reason as the
+table: they are the same arithmetic read backwards, off a provider's own token counts
+instead of an estimate of them, and a second copy of it is a second answer to what a call
+cost. Neither talks to a provider either.
 """
 
 from __future__ import annotations
@@ -167,3 +173,73 @@ def checked_days_ago(today: date | None = None) -> int:
 
 def is_stale(today: date | None = None) -> bool:
     return checked_days_ago(today) > STALE_AFTER_DAYS
+
+
+#: The BAML client each price is reached by, inverted from `CLIENTS`. A collected call
+#: names the client it went out on — `"Opus"`, not `"opus"` — and that is the only handle
+#: on the down path to which rate card it should be priced against. Built by inverting
+#: rather than written out, so a rename in `CLIENTS` cannot leave a call unpriceable.
+_BY_CLIENT: dict[str, str] = {client: name for name, client in CLIENTS.items()}
+
+#: Every model call the process makes, in one place, for the length of the process.
+#:
+#: Each call site builds its own `Collector` and reports `usd` from it, and that is
+#: untouched: this one is passed *alongside* it and is read in exactly one situation —
+#: the process is on its way down and nothing else will ever say what it spent.
+#:
+#: A collector holds the log of a call that raised, which is the whole reason a job that
+#: died after being billed can be booked at all. It also sums across logs, so a labelling
+#: run that raises in its fifth batch still knows about the four the provider charged for
+#: and that `label.run` was about to discard.
+#:
+#: Built on first use rather than at import, because `baml_py` is a compiled extension and
+#: `graphify-brain version` should not need it loaded to print a string.
+_LEDGER: Any = None
+
+
+def ledger() -> Any:
+    """The process-wide collector. Every model call passes it; only `cli` reads it."""
+    global _LEDGER
+    if _LEDGER is None:
+        from baml_py import Collector
+
+        _LEDGER = Collector()
+    return _LEDGER
+
+
+def spent(collector: Any = None) -> float | None:
+    """What this process has been billed so far, or `None` if that cannot be worked out.
+
+    `collector` is injectable so a test can hand in one it built, the way
+    `checked_days_ago` takes a `today`. Left out, it is the process ledger above.
+
+    Priced one call at a time rather than once over the total, because a `daily` run
+    labels several patterns in a single process and each carries its own `patterns.model`.
+    Tokens from two rate cards added together are not money at either rate.
+
+    A call whose usage is absent contributes nothing. That is not the `or 0` S-56 removed:
+    the calls that come back without usage here are the 5xx responses `retry_policy
+    Backoff` retried, and a provider does not bill for those. What is absent is the charge,
+    not the knowledge of it.
+
+    A client name that does not resolve to a row in `PRICES` gives up on the whole total
+    rather than returning part of one. A partial figure booked as if it were complete is
+    the same defect this function exists to fix, one layer further in.
+    """
+    collector = _LEDGER if collector is None else collector
+    if collector is None:
+        # Nothing built the ledger, so no model call was made and nothing was billed. Not
+        # the same as the `None` this returns below: that one is a total it cannot finish.
+        return 0.0
+    total = 0.0
+    for log in collector.logs:
+        for call in log.calls:
+            tokens_in = call.usage.input_tokens
+            tokens_out = call.usage.output_tokens
+            if tokens_in is None or tokens_out is None:
+                continue
+            name = _BY_CLIENT.get(call.client_name)
+            if name is None:
+                return None
+            total += estimate(tokens_in, tokens_out, name)
+    return total
