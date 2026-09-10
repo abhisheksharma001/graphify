@@ -4249,5 +4249,102 @@ g. **A one-word-per-line harvest loses a flag that grows a short alias.** `-i, -
 - **Nothing on Abhishek's machine is scheduled.** `graphify schedule --install` is still his
   to answer.
 
+### S-54 — The rows the purge cannot see ☐ [Rust]
+**PR:** one. **Depends on:** nothing. S-51 finished retention over the tables keyed to a
+call; this is the table that holds a call's text without holding its id.
+**Files:** `engine/migrations/0003_jobs_org.sql`, `engine/src/db.rs`, `engine/src/jobs.rs`,
+`engine/src/sync.rs`, `engine/tests/db.rs`, `docs/spec.md`. No brain change, no UI change,
+no new dependency.
+
+**Today:** retention is the one promise this product makes about deleting data. An org sets
+`keep_days`; every `sync` calls `purge_calls`, which since S-51 takes the call and every row
+keyed to it — `tool_calls`, `pattern_labels`, `pattern_matches`, read out of the schema so
+the list cannot go stale.
+
+`jobs` is not on that list and cannot be: it has no `call_id` column. What it has is the
+call's words. A labelling job's row holds `input` (the request, naming the calls), `output`
+(the model's verdicts, each with an `evidence` string quoted out of the transcript) and
+`log` (every line the brain printed, scrubbed of keys by `Redact` and of nothing else).
+Measured against the shipped engine — one call, one labelling job over it, `purge_calls`
+with `keep_days = 14`:
+
+| after the purge | |
+|---|---|
+| calls | 0 |
+| jobs | 1 |
+| job rows still quoting the deleted call's transcript | **1** |
+
+The call is gone from `calls`, from `tool_calls`, from both pattern tables. The sentence the
+model quoted out of its transcript is still in the database, in a column no retention rule
+reaches.
+
+**And nothing will ever read it.** The router has `GET /api/jobs/{id}`, `POST …/go` and
+`POST …/stop`. There is no list route. Once the browser that started a job has forgotten the
+id, that row is unreachable from the product and permanent in the file — the only data in
+graphify that is both unreadable and undeletable. It is also the only table that grows
+without bound: one row per job, each carrying the whole of what the brain said, in the file
+the operator backs up.
+
+`spend` is not this problem and is measured rather than assumed: `PRIMARY KEY (day, org_id)`
+is one row per org per day, 365 a year, and the daily cap reads it. It stays.
+
+**Change:**
+
+1. `0003_jobs_org.sql`: `ALTER TABLE jobs ADD COLUMN org_id INTEGER`, backfilled from
+   `json_extract(input, '$.org')`, and an index on `(org_id, created_at)`. Every row this
+   code has ever written carries the org there, because `create_job`'s one caller builds
+   `{"org": …, "body": …}` — so the backfill is not a guess, it is the same fact moved to
+   where a `WHERE` can reach it.
+
+2. `create_job` takes the org and writes it to the column. It was always in hand at the call
+   site (`jobs.rs` has it as a parameter, and passes it to `finish_job` to book the spend);
+   it was only ever stored somewhere that needs a parser.
+
+3. `purge_jobs(org_id, keep_days)`, one statement, called from `sync.rs` beside
+   `purge_calls` on the same `keep_days`. A job older than the org's retention goes, unless
+   its status says a subprocess is alive.
+
+**The live rows are named, and the dead ones are not.** `running` and `waiting` mean a child
+is working or is blocked on a `GO`, and that row is the only record that one of `MAX_LIVE`
+slots is held — deleting it frees a slot that is not free. Every other status is a job that
+has stopped. The filter names the live pair rather than listing the terminal three, so a
+status added later is purged by default: for a defect whose shape is *rows that never
+leave*, the safe direction for the unknown case is out.
+
+**Acceptance:** WHEN a call is purged THEN no `jobs` row belonging to that call's org and
+older than its `keep_days` SHALL remain; AND WHEN a job is `running` or `waiting` THEN it
+SHALL survive a purge whatever its age; AND WHEN a job belongs to an org THEN that org's
+`keep_days` and no other org's SHALL decide it; AND WHEN a database predates this step THEN
+every `jobs` row in it SHALL come out of the migration carrying the org its `input` names.
+
+**Guards.** Three in `engine/tests/db.rs`:
+
+1. **The retention table.** Every table in `sqlite_master` is either swept by retention or
+   named in an exemption list with the reason it is not. Harvested from the schema, so a
+   table added later is red until somebody writes down what retention does about it. The
+   S-51 shape moved one layer out: from *the columns that name a call* to *the whole file*.
+2. **A live job outlives its retention.** A `running` job dated before any `keep_days` this
+   suite uses is still there after the purge.
+3. **A purge is one org's.** Two orgs, a finished old job each, a purge of one — the other
+   org's row is untouched. The column exists to make that a `WHERE`.
+
+**Must not:** delete a row a subprocess is still writing to. Delete `spend` — it is a ledger
+the daily cap reads, and losing a row raises that day's cap by exactly what it held, which
+is S-39's defect by another route. Give `jobs` a foreign key or a cascade: `0001_init.sql`
+has neither anywhere and the application is the cascade, by decision. Change what
+`purge_calls` deletes, or edit an assertion in the tests that cover it. Add a `GET
+/api/jobs`: whether a job history is a thing the product shows is a product decision, and
+this is a retention step — it deletes rows nobody can read, it does not decide to make them
+readable. Read the org out of `input` at purge time: the column is the point, so that a
+purge is a `WHERE` and not a parse. Prune by row count as well as age — `max_calls` has a
+reason on `calls` and no counterpart here.
+
+**Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`. Then break it:
+(1) drop the status filter → the live-job guard goes red; (2) purge every org's jobs rather
+than the one named → the two-org guard goes red; (3) drop the `purge_jobs` call from
+`sync.rs` → the retention guard goes red; (4) add a table to the schema and leave it out of
+both lists → the retention table goes red naming it; (5) drop the backfill from the
+migration → a row written before this step comes out with no org and is never purged again.
+
 **The register is complete through S-53.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
