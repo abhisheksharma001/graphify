@@ -5069,7 +5069,7 @@ rather than re-derived, the test is not "is it right" but "is it the same one".
   somewhere else. The notices board (S-41) exists and is not used here, because this is not
   an operator's emergency — it is a fact about one job.
 
-### S-58 — What a job spent before it died
+### S-58 — What a job spent before it died ☑ (PR #59, 3d2a852)
 
 **PR:** one. **Depends on:** nothing. S-56 fixed what a call books when the provider says
 nothing; S-57 fixed what a job books when the brain says nothing. Both are about a job that
@@ -5210,5 +5210,117 @@ priced at one rate; guard 3 red if an unresolvable client is counted as free; gu
 the tier that knows nothing says nothing; guard 5 red if the spend line reaches stdout on a
 clean exit; CI 4/4.
 
-**The register is complete through S-57.** Anything after that is a new step appended
+**Files (as built):** `brain/src/graphify_brain/cost.py` (+74: `_BY_CLIENT`, `_LEDGER`,
+`ledger`, `spent`, and two sentences added to the module docstring, which said the file was
+about what a call costs *before* it is made), `cli.py` (+53: `run`, `_spent_line`),
+`plan.py`, `label.py`, `ask.py`, `synth.py` (one line each at six call sites; `synth.py`'s
+two reflowed onto their own lines), `brain/pyproject.toml` (the console script now points at
+`cli:run`), `brain/tests/test_spent.py` (new, 9 tests), `engine/src/jobs.rs` (+39 −3:
+`spent` beside `money`, and the `!ok` branch of `classify` in three tiers),
+`engine/tests/jobs.rs` (+103, a new section of five tests at the end), `docs/spec.md`. No UI
+change, no schema change, no new dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the failure path books zero regardless | 3 | the defect itself |
+| 2 · the tier that knows nothing says nothing | 1 | the two zeros are different claims |
+| 3 · `spent` skips `money` | 1 | a negative `usd` never reaches `cost_usd` |
+| 4 · the whole total priced at one rate | 1 | a mixed-model process |
+| 5 · an unpriceable client counted as free | 1 | nothing is better than nearly |
+| 6 · the spend line printed on every exit | 1 | the success path is S-57's and untouched |
+| 7 · only the last function log counted | **2** | one of them is the loopback test |
+
+Break 7 is the one worth keeping. It reddens the one test here that proves a claim which is
+not graphify's to make — that a collector sums across logs and holds the call that raised.
+`test_spent.py` stands an HTTP server up on the loopback interface for it rather than faking
+BAML, on the grounds that a stub of BAML tests only this repository's opinion of BAML.
+
+Break 1 was run twice. The first run reported 35 red, which was not the break: macOS ran out
+of ephemeral ports under a suite that had already been run several times, and thirty of those
+failures were `EADDRNOTAVAIL` on the test server's own socket. Re-run against the two named
+tests it is 3. Recorded because the first number was on screen and wrong.
+
+**Learned:**
+
+**(a) The measurement that closes a question is worth as much as the one that opens it.**
+This step began as the `retry_policy Backoff` item S-55, S-56 and S-57 each carried forward:
+does `FunctionLog.usage` sum the attempts? Measured, it does not, and it does not matter —
+BAML retries transport failures, a 5xx carries no usage, and no provider bills for one. The
+carried item is closed with a negative answer. What the same mock turned up on the next line
+is that a 200 the provider *did* bill for is never retried, because a parse failure is not a
+retryable error. The defect was one row below the one being looked for.
+
+**(b) A collector is a ledger the process keeps about itself.** The whole of this step rests
+on three facts about `baml_py.Collector`, none of them graphify's: it holds the log of a call
+that raised, it sums across logs, and before anything is called its counts are `None` rather
+than `0`. That last one is the distinction S-56 built by hand out of `Optional[int]` and S-57
+built by hand out of `Option<f64>`, sitting in the library both of them were already using.
+Reading the tool before writing the workaround is worth a measurement.
+
+**(c) "Nothing was spent" and "nobody can say" needed a third telling.** S-56 separated them
+in the brain, S-57 in the engine's `Ok` branch, and this step in its `!ok` branch. Three
+steps, three layers, one sentence. The shape that keeps reappearing is a failure path written
+by someone who was thinking about the success path, where a plausible constant is cheaper
+than a question. `0.0` is always available and never means nothing.
+
+**(d) The seam for a failure is the outermost one there is.** Six commands, five `except`
+blocks, and one thing to add to every non-zero exit. Putting it in any of the five would have
+meant five copies and four commands still uncovered — the uncaught path is exactly where the
+expensive failure goes. `run()` wraps `app()` and the console script points at it, so the
+addition is one function and the existing handlers are untouched. When something must happen
+on *every* way out, the place for it is the last frame, not the handlers.
+
+**(e) The failure path is where a message costs the most.** `BamlValidationError`'s message
+carries the prompt and the model's raw reply, and stdout's last line is written to a column
+the browser reads. So the line printed here is `{"usd": N}` and nothing else, and the
+complaint keeps its old home on stderr. A diagnostic is worth having and it is worth having
+in the place already built for it.
+
+**(f) Per call, not per process.** `daily` labels several patterns in one run and each
+carries its own `patterns.model`. A total of raw tokens summed across two rate cards is not
+money at either rate, and the mistake is invisible in every test with one model in it. Every
+`LLMCall` names its client, so each is priced against its own card. Any time a total spans a
+loop, the question is whether every term in it was measured in the same unit.
+
+**(g) A partial total is the same defect one layer in.** `spent` returns `None` for the whole
+process rather than a total missing one call, because a figure that is nearly right, booked
+as though it were whole, is exactly what this step exists to stop. Refusing to answer is
+available here in a way it was not in S-57's `Ok` branch — nothing has been decided yet on
+the strength of the number, so declining to give one costs nothing but a note in the log.
+
+**Not done:**
+
+- **A brain that is killed still books nothing.** `SIGKILL` cannot be caught, so a process
+  the engine kills — a declined park, an expired go — prints no line and reaches the third
+  tier. Those two both happen before the go, so nothing has been spent, which is why this is
+  a note and not the next step. A brain killed by the operating system mid-run is the real
+  case and there is no answer to it from inside the process.
+- **The spend line is a second copy of a number the success path already carries.** On a
+  clean exit the engine books what the result says (S-57) and the ledger is not read at all.
+  Two sources for one figure is what S-57's Learned (g) warned about, and the guard here is
+  weaker than the two-`ESTIMATE` test it warned into being: nothing asserts that a job which
+  succeeds books the same figure the ledger would have given.
+- **`models --check` can exit 1, and would now print `{"usd": 0.0}`.** It is an operator
+  command that no engine reads, so the line goes to a terminal and confuses nobody but a
+  person. Left because a rule about which commands may print it is more surface than the
+  line is worth.
+- **A success that fails on the way out loses its result.** If a command prints its result
+  and then something after it raises — a connection close, a broken pipe — the spend line
+  becomes the last line and the engine reads that instead of the result. Not reachable
+  through any path today; written down because the ordering is now load-bearing.
+- **`S-2`'s entry records the console script as `cli:app`.** It is a record of what was built
+  then, and register entries are not rewritten, so this entry is the one that supersedes it.
+- **Nothing checks that a quote is close to what a run actually costs.** Carried from S-56
+  and S-57 and still the largest unmeasured thing on either side of the pipe.
+- **`retry_policy Backoff` is still three retries** and that is now a deliberate figure
+  rather than an unexamined one: retried attempts are unbilled, so the cost of the policy is
+  latency and not money. The item is closed.
+- **The success-path collectors are still per call site.** Six of them, each read once, and
+  the process ledger duplicates every one of them. Cheap — a collector is a handle — but it
+  is two mechanisms counting the same tokens, and if `booked` and `spent` ever disagree
+  nothing will notice.
+
+**The register is complete through S-58.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
