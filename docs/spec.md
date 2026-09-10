@@ -4059,5 +4059,109 @@ f. **Applied to the line, not the values, and that is a claim about cron rather 
 - **Nothing on Abhishek's machine is scheduled.** `graphify schedule --install` is still his
   to answer; this step only makes the line it would write correct.
 
+### S-53 — A flag that decides nothing
+
+**PR:** one. **Depends on:** nothing. Promoted from `docs/backlog/bugs.md`, where it was
+logged on 2026-09-10 while auditing `schedule.rs` for S-52. The one open entry in the
+backlog, and the only discarded binding in `engine/src`.
+
+**Files:** `engine/src/cli.rs`, `engine/tests/cli.rs`, `docs/spec.md`,
+`docs/backlog/bugs.md`. No brain change, no UI change, no migration, no new dependency, and
+no change to `schedule.rs` — the text it generates is S-52's business and is already right.
+
+**Today:** `cli.rs` declares four things about the `schedule` subcommand and reads three.
+
+```rust
+Command::Schedule {
+    print: _,
+    install,
+    org,
+    at,
+} => {
+```
+
+`--print`'s help says *"Print both and write nothing. What happens anyway with no flags."*
+The second sentence is true and is what makes the first one look harmless: with no flags the
+command prints, so a flag that means "print" appears to be a no-op worth spelling for
+readability. It is not a no-op. It is a promise — *write nothing* — and nothing in the
+dispatch keeps it, because `print` is destructured into `_` and never looked at. What decides
+the branch is `install` alone, so `--print` is not a flag at all: it is the absence of
+`--install`, and it stops being even that the moment `--install` is also typed.
+
+Measured against the shipped binary, with stdin closed so nothing could be written:
+
+| invocation | crontab line printed | launchd plist printed | write prompt |
+|---|---|---|---|
+| `schedule` | yes | yes | no |
+| `schedule --print` | yes | yes | no |
+| `schedule --install` | no | yes | **yes** |
+| `schedule --print --install` | **no** | yes | **yes** |
+
+The last two rows are byte-identical — 1,478 bytes each, `diff` empty. So `--print` is not
+partly honoured and it does not lose a fight: it is inert. An operator who typed both flags
+did not get "print, then install". They got `--install`, they were not shown the crontab line
+they asked for, and they were asked
+
+```
+That goes to /Users/…/Library/LaunchAgents/ai.graphify.daily.plist.
+Write it and load it? [y/N]
+```
+
+about a real path in their real home directory, in answer to a command that contained the
+word `--print`.
+
+**What keeps this small, and what does not.** `confirm` is still asked, and a closed stdin
+still reads as no — S-31's "must not: install without confirm" holds, and this is why the
+defect is a wrong prompt rather than a wrong write. What is not small is the shape: two flags
+name opposite intentions, the destructive one wins silently, and the flag that would have
+stopped it is discarded at the pattern that binds it. A prompt is a thin thing to have left
+between a documented "write nothing" and a write.
+
+**Change.** Refuse the pair at parse time rather than picking a winner:
+
+```rust
+/// Print both and write nothing. What happens anyway with no flags.
+#[arg(long, conflicts_with = "install")]
+print: bool,
+```
+
+Neither flag has to win, the ambiguity is answered where it was created, and the dispatch is
+left with one question — `install` or not — which is the one it was already answering. The
+discarded binding stays discarded, but it is no longer a lie: by the time the arm runs, clap
+has guaranteed at most one of the two is set, and `--print` and no flag at all are the same
+thing. The comment on the pattern says that, so the next reader does not have to re-derive
+it.
+
+**Guards.** Two, in `engine/tests/cli.rs`:
+
+1. **The pair is refused, and refused by name.** `schedule --print --install` exits 2 with
+   both flag spellings in the message. Not "the output differs" — a parse error is the only
+   result that cannot be reached by the branch quietly preferring one flag.
+2. **The flags are not interchangeable.** `--print` and `--install` are each run with stdin
+   closed and their outputs must differ, which is the property the measurement above found
+   missing. It is the assertion that would have gone red on the shipped binary for the pair,
+   held here for the singles so the fix cannot be "make them the same on purpose".
+
+And one over the whole surface, the S-51 shape: every subcommand and every long flag
+harvested from clap's own `--help` output, compared against a written table. A flag added,
+renamed or removed forces the table to be edited, which is the moment somebody has to say
+what the flag does. It proves the surface is written down, not that any flag is honoured —
+said in its own doc comment, because that is exactly the gap this step was found in.
+
+**Must not:** change what `--print`, `--install`, `--org` or `--at` do when typed alone.
+Change `schedule.rs` — the plan, the text, the confirm, either installer. Add a flag, remove
+one, or rename one. Make `--print` win over `--install`, or `--install` win over `--print`:
+the pair is a question the operator has to answer, not one to answer for them. Teach the
+guard to run `sync`, `assistants` or `serve` — they reach a network, a key store or a port.
+Turn the harvest table into a generated file: a list nobody has to look at is not a moment
+where anybody says what a flag does.
+
+**Verify:** `cargo test -q`, `cargo clippy --all-targets -- -D warnings`, and the breaks —
+(1) drop `conflicts_with` → the refusal test goes red; (2) keep `conflicts_with` but let the
+arm run `schedule::print` before `install` when both are set → still red, because the pair is
+refused before any of it runs, which is the point of fixing it at parse time; (3) drop a flag
+from the harvest table → the surface test goes red naming it; (4) make `--install` with a
+closed stdin print what `--print` prints → the interchangeability test goes red.
+
 **The register is complete through S-52.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
