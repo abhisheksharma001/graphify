@@ -3886,7 +3886,7 @@ The doc comment now says which; break 4 is the test.
 - **The guard proves the sweep covers the schema, not that the schema is right.** A child
   table that keys to a call by some other column name is invisible to it.
 
-### S-52 — The other parser on the crontab line [Rust]
+### S-52 — The other parser on the crontab line ☑ [Rust] (PR #53, 7d94113)
 **PR:** one. **Depends on:** nothing. `schedule.rs` has written the morning job since S-31
 and has never been audited. 386 source lines against 140 test lines — the worst src:test
 ratio left in the engine.
@@ -3969,9 +3969,9 @@ Linux writes this line to the user's real crontab.
   org name and through the database path.
 - A test that the plist is untouched by the same inputs — no backslash appears in front of
   a `%` in the XML, because launchd would take it literally.
-- Break it four ways: drop `cron_escape`; escape the values instead of the line, so the
-  `%` in a path that reaches the line by another route is missed; escape the plist too;
-  and escape `%` as `%%`, which is the printf habit and is not cron's rule.
+- Break it four ways: drop `cron_escape`; escape the org and not the paths, so only the
+  carrier the obvious test covers is safe; escape the plist too; and escape `%` as `%%`,
+  which is the printf habit and is not cron's rule.
 
 **Must not:** change what the line *does* — same binary, same `sync --org`, same
 redirection, same marker. Touch the plist's bytes for any input that has no `%` in it.
@@ -3980,5 +3980,84 @@ carry it, not refuse it. Add a dependency to parse crontabs. Change `--at` parsi
 `which`, `absolute`, `home`, `confirm`, or either installer's flow. Rotate `schedule.log`,
 teach `--install` a third platform, or purge `jobs`/`spend` — each is its own step.
 
-**The register is complete through S-51.** Anything after that is a new step appended
+**Files (as built):** `engine/src/schedule.rs` (+31/−5), `engine/tests/schedule.rs`
+(+141). Two files. No existing assertion edited, no migration, no brain change, no UI
+change, no new dependency. 299 → 303 engine tests.
+
+**Measured, on the shipped binary before the change** — `--print --org 'q%a'`:
+
+| | |
+|---|---|
+| command cron runs | `GRAPHIFY_DB='…' '…/graphify' sync --org 'q` |
+| stdin cron feeds it | `a' >> '…/schedule.log' 2>&1 # graphify schedule` |
+| `/bin/sh -n` on the command | exit 2 — ``unexpected EOF while looking for matching `'`` |
+| `>> schedule.log` survived | no |
+
+**Breaks:**
+
+| # | break | red | what it proves |
+|---|---|---|---|
+| 1 | no `cron_escape` | 3 | the finding |
+| 2 | escape the org, not the paths | **1** | the guard alone — every org-name test still passes, because the org is the carrier they test |
+| 3 | escape the plist too | 1 | a backslash would land inside the launchd argument |
+| 4 | `%` → `%%` | 3 | printf's habit is not cron's rule |
+
+**Learned:**
+
+a. **Count the parsers, not the escapes.** The file had one escape per reader and was
+   confident about it — `quote` for `/bin/sh`, `xml` for the plist, and a test whose own
+   docstring says "one string goes to `/bin/sh` and another to an XML parser". The count was
+   wrong by one because a reader that runs *before* the one you named does not look like a
+   reader. cron is not a shell and never was.
+
+b. **A failure that eats its own log is worse than a loud one.** `>> schedule.log` sits
+   past the `%`, so the truncation that stops the morning also removes the redirection that
+   would have recorded it. The rule this suggests: when a generated command carries both the
+   work and the record of the work, a defect in the carrier takes both. The record has to be
+   the thing you check survives, and the guard asserts exactly that.
+
+c. **Two texts from one `Plan`, and only one was wrong.** The plist needed nothing — an
+   array of arguments handed to launchd has no shell and no metacharacter. That asymmetry is
+   the whole finding in one sentence, and it is why break 3 exists: the fix for one text is a
+   bug in the other.
+
+d. **The guard found the rule the fix depended on.** The first `cron_reads` treated a
+   backslash as escaping anything, and `quote_str`'s `'\''` went red on it. Checking cronie's
+   `do_command.c` settled it: the backslash is removed only in front of a `%`, and passes
+   through untouched everywhere else — which is why `find … \;` works in a crontab and why
+   the shell quoting this file already had is safe. Writing the model of the other parser is
+   what turned an assumption into a citation.
+
+e. **The same shape as S-51 and S-49, in the break table.** Break 2 escapes the org name and
+   not the paths, and every org-name test still passes: only the guard, which carries each
+   hostile input through both the org and the database path, goes red. A rule kept for one
+   carrier is not kept for the one beside it, and the test that notices is the one that
+   enumerates the carriers rather than picking the obvious one.
+
+f. **Applied to the line, not the values, and that is a claim about cron rather than about
+   taste.** `%` is a metacharacter of the command field wherever it stands, including in text
+   no value produced. Escaping per value would be correct today by accident — every `%` in
+   the line happens to arrive inside a quoted value — and wrong the moment the template grows
+   a literal one.
+
+**Not done:**
+
+- **A `\` sitting immediately before a `%` is not reached.** cron's escape flag is consumed
+  by the second backslash, so `a\%b` in a directory name goes back to being a separator. Past
+  that point crons stop agreeing with each other; the doc comment says so rather than
+  guessing, and no test claims it.
+- **`--print` is discarded, so `graphify schedule --print --install` installs.** `cli.rs`
+  destructures it as `print: _` while its help says "write nothing". Logged in
+  `docs/backlog/bugs.md`; it is a `cli.rs` defect, not a `schedule.rs` one.
+- **`schedule.log` still never rotates**, and nothing prunes `jobs` or `spend`. Same step as
+  the retention S-51 left open.
+- **`--install` still knows macOS and Linux only**, and still cannot check that the job it
+  loaded will actually fire — that is tomorrow's fact, which is the module's founding
+  problem.
+- **`which` finds a file, not an executable.** A directory entry named `graphify-brain` that
+  nobody can run is written into the line as though it were the brain.
+- **Nothing on Abhishek's machine is scheduled.** `graphify schedule --install` is still his
+  to answer; this step only makes the line it would write correct.
+
+**The register is complete through S-52.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.

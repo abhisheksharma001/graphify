@@ -70,3 +70,16 @@ by hand — the window is the handful of instructions between `MutexGuard::drop`
 `SyncSender::send`. Under contention it is reachable: park a job, race a `go` against a
 reader that takes the lock the instant it is free, and the reader can see the map without
 the job while the channel is still empty. · Fixed by S-43 (PR #44, 45fec76).
+
+2026-09-10 · `engine/src/cli.rs:181` · `Command::Schedule` destructures its `print` flag as
+`print: _` and never reads it, so `--print` is not a flag — it is the absence of
+`--install`. The help for it says *"Print both and write nothing. What happens anyway with
+no flags."* `graphify schedule --print --install` therefore prints and then installs: it
+writes `~/Library/LaunchAgents/ai.graphify.daily.plist` and loads it, or replaces a line in
+the user's crontab, having been told in the same breath to write nothing. The confirm
+prompt is still asked, so nothing lands without a `y`, which is what keeps this small; what
+is wrong is that a flag documented as "write nothing" does not prevent a write, and the two
+flags are silently resolved in favour of the destructive one. · Reproduce: `graphify
+schedule --print --install` and answer `y`. · Fix shape: clap `conflicts_with`, so the pair
+is refused at parse time and neither flag has to win. Found while auditing `schedule.rs`
+for S-52; out of that step's scope because it is a `cli.rs` defect.
