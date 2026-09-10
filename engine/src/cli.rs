@@ -67,7 +67,7 @@ pub enum Command {
     /// Print the crontab line and the launchd job that run the morning sync.
     Schedule {
         /// Print both and write nothing. What happens anyway with no flags.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "install")]
         print: bool,
         /// Write the one this machine uses — launchd on macOS, cron on Linux — after
         /// showing it and asking. Never writes anything unless the answer is yes.
@@ -178,6 +178,11 @@ impl Cli {
                 ))
             }
             Command::Schedule {
+                // Nothing left to decide: `--print` and no flag at all are the same thing,
+                // and clap refuses `--print` alongside `--install`, so by here at most one
+                // of the two is set. Without that refusal this discard is a promise the
+                // dispatch does not keep — `--install` would simply win, and the operator
+                // who typed "write nothing" would be asked to write.
                 print: _,
                 install,
                 org,
