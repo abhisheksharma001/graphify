@@ -4249,7 +4249,7 @@ g. **A one-word-per-line harvest loses a flag that grows a short alias.** `-i, -
 - **Nothing on Abhishek's machine is scheduled.** `graphify schedule --install` is still his
   to answer.
 
-### S-54 — The rows the purge cannot see ☐ [Rust]
+### S-54 — The rows the purge cannot see ☑ [Rust] (PR #55, 684b370)
 **PR:** one. **Depends on:** nothing. S-51 finished retention over the tables keyed to a
 call; this is the table that holds a call's text without holding its id.
 **Files:** `engine/migrations/0003_jobs_org.sql`, `engine/src/db.rs`, `engine/src/jobs.rs`,
@@ -4345,6 +4345,92 @@ than the one named → the two-org guard goes red; (3) drop the `purge_jobs` cal
 `sync.rs` → the retention guard goes red; (4) add a table to the schema and leave it out of
 both lists → the retention table goes red naming it; (5) drop the backfill from the
 migration → a row written before this step comes out with no org and is never purged again.
+A sixth was added during the step and is not a break of the plan but of a thing the plan did
+not have: drop `json_valid` from the backfill and one row of text that is not JSON stops the
+database from opening at all. Break 3 also had to be *given* something to break — see
+**Learned (c)**.
 
-**The register is complete through S-53.** Anything after that is a new step appended
+**Files (as built):** `engine/migrations/0003_jobs_org.sql` (new, 20), `engine/src/db.rs`
+(+46 −7), `engine/src/jobs.rs` (+1 −1), `engine/src/sync.rs` (+5), `engine/tests/db.rs`
+(+224), `engine/tests/sync.rs` (+35), `engine/tests/jobs.rs` (+8 −7, four call sites taking
+the org their fixture already had). 306 → 313 engine tests. No existing assertion edited.
+
+**Breaks:**
+
+| # | break | red | what it proves |
+|---|---|---|---|
+| 1 | drop the status filter | 2 | a live job's row is not a record to be tidied away |
+| 2 | purge every org rather than the one named | 1 | the column is used, and used as a filter |
+| 3 | drop the `purge_jobs` call from `sync.rs` | 1 | the wiring is asserted, not assumed |
+| 4 | add a table and leave it out of both lists | 1 | the retention table is compared, not decorative |
+| 5 | drop the backfill | 1 | the rows already in the file are covered, not only new ones |
+| 6 | drop `json_valid` | 1 | `malformed JSON`, and the database stops opening |
+
+Counted with `--no-fail-fast`.
+
+**Learned:**
+
+a. **A table can hold a call without naming one.** S-51's guard was sound and its subject was
+   too narrow: it harvested the columns called `call_id` and proved the sweep covered every
+   one of them. `jobs` holds the same words in `input`, `output` and `log` and has no such
+   column, so a guard built out of the schema's column names could never see it. The fix to
+   a guard that reads the schema is not a better query — it is a wider question: not *which
+   tables name a call*, but *what does retention do about every table there is*.
+
+b. **The fact was already in the row; it was in a shape a `WHERE` could not use.** The org
+   was written into `input` as JSON and handed to `finish_job` as an argument. Nothing had
+   to be discovered to make retention possible — a value had to be moved from a blob to a
+   column. That is why the backfill is not a guess: it reads the same JSON that was always
+   there.
+
+c. **A helper nobody calls is the defect S-53 shipped a fix for, and I nearly repeated it.**
+   `purge_jobs` was written, tested directly, and green — and dropping its one call from
+   `sync.rs` turned *nothing* red, because every test called the helper rather than the path.
+   Break 3 was what found it. A unit test of a helper says the helper works; it does not say
+   anybody asks it to. The test in `tests/sync.rs` is the one that would have gone red.
+
+d. **Excluding the live statuses is not the same as listing the dead ones**, and the choice
+   is about the case nobody has thought of yet. A status added later is either purged by
+   default or kept by default. For a table whose defect is rows that never leave, the safe
+   default is out — and the two statuses that must never be swept are named, because those
+   rows are also `MAX_LIVE` slots and deleting one frees a slot that is not free.
+
+e. **A migration is the one statement that can cost every future start.** `json_extract`
+   over text that is not JSON raises; a raise fails the migration; a failed migration runs
+   again on the next open and fails again. The unguarded version trades a database for a
+   column. `json_valid` was added in self-review on suspicion and then *measured* — the
+   break prints `malformed JSON` and `Db::open` returns an error — because a comment giving
+   a reason that is not the reason is its own kind of defect.
+
+f. **`spend` was checked rather than assumed.** It looked like the same problem and is not:
+   `PRIMARY KEY (day, org_id)` is one row per org per day, and the daily cap reads it.
+   Deleting a row there raises that day's cap by exactly what it held, which is S-39's
+   defect by another route. The measurement is the reason it is in the exemption list with a
+   sentence rather than in the sweep.
+
+g. **The row nobody can read is the row nobody deletes.** There is no `GET /api/jobs`, so a
+   finished job is unreachable the moment its id is forgotten. That is what let eleven steps
+   pass without anybody noticing the table: it is not on a screen, so it is not on anyone's
+   mind. Unreadable and undeletable is a bad pair, and only one half of it is this step's.
+
+**Not done:**
+
+- **No `GET /api/jobs`.** Whether a job history is something the product shows is a product
+  decision; this step deletes rows nobody can read and does not decide to make them
+  readable. If it ever does, this retention is what makes the list finite.
+- **A row whose `input` is not JSON keeps no org and is never purged.** That is the trade in
+  Learned (e) and it is the right one, but it is a row that lives forever, and nothing
+  reports it. No such row can exist from this code; the guard is for the file, not the code.
+- **A job is purged on its org's clock, and an org that is never synced never runs one.**
+  `purge_jobs` is called from `sync`, exactly where `purge_calls` is, so an org nobody syncs
+  keeps its calls and its jobs alike. That is pre-existing and unchanged.
+- **Nothing prunes by row count.** `max_calls` has a reason on `calls`; there is no
+  counterpart here, and a single day can hold more jobs than a year of them.
+- **`schedule.log` still never rotates.** The file on disk is the other unbounded thing a
+  daily cron writes, and it is not a table. S-52's, still open.
+- **The `spend` exemption is a sentence, not a mechanism.** Nothing stops somebody adding a
+  sweep over it later; what the guard guarantees is that they will have to edit a line that
+  says why they should not.
+
+**The register is complete through S-54.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
