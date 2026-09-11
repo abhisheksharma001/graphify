@@ -16,6 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from baml_client import types
+from graphify_brain import cost
 from graphify_brain import daily as dailies
 from graphify_brain import label as labelling
 from graphify_brain.cli import app
@@ -520,3 +521,206 @@ def test_the_columns_this_touches_are_the_ones_the_engine_makes():
         assert f"  {column} " in schema, column
     assert "CREATE TABLE pattern_matches" in schema
     assert "source     TEXT" in schema
+
+
+# --- what a pattern spent before it fell over -------------------------------------------
+#
+# `label.run` charges for every batch it sent before the one that failed and then re-raises,
+# so its own running total dies with the exception. `daily` catches that exception, which is
+# why S-58's spend-on-the-way-out line never fires for this command: the process is going to
+# exit zero. What is left to read the money off is the process ledger, and these tests drive
+# it the way a real run does — a call that is billed puts a log in the collector whether or
+# not anybody could use its answer.
+
+
+class _Usage:
+    def __init__(self, tokens_in: int | None, tokens_out: int | None) -> None:
+        self.input_tokens = tokens_in
+        self.output_tokens = tokens_out
+
+
+class _Call:
+    def __init__(self, client: str, tokens_in: int | None, tokens_out: int | None) -> None:
+        self.client_name = client
+        self.usage = _Usage(tokens_in, tokens_out)
+
+
+class _Log:
+    def __init__(self, call: _Call) -> None:
+        self.calls = [call]
+
+
+class _Ledger:
+    """A stand-in for `baml_py.Collector` holding only what `cost.spent` reads off one.
+
+    `bill` is one model call that the provider charged for. The default is ten thousand in
+    and three thousand out, which on sonnet's card is $0.02 + $0.03 — five cents a batch,
+    so the arithmetic in these tests is readable.
+    """
+
+    def __init__(self) -> None:
+        self.logs: list[_Log] = []
+
+    def bill(self, tokens_in: int = 10_000, tokens_out: int = 3_000, client: str = "Sonnet") -> None:
+        self.logs.append(_Log(_Call(client, tokens_in, tokens_out)))
+
+
+A_BATCH = 0.05
+
+
+@pytest.fixture(autouse=True)
+def _no_stale_ledger(monkeypatch):
+    """`cost._LEDGER` is scoped to a brain process and a test process is not one.
+
+    `test_booked.py` hands the call sites a stand-in for `baml_py.Collector`, so a run that
+    touches it can leave the module global holding one. Every test in this file now reads
+    that global through `_one`, so it is cleared around all of them rather than only the
+    ones below.
+    """
+    monkeypatch.setattr(cost, "_LEDGER", None)
+
+
+@pytest.fixture
+def ledger(monkeypatch):
+    """The process ledger `daily` reads its failures off, with nothing in it yet."""
+    fake = _Ledger()
+    monkeypatch.setattr(cost, "_LEDGER", fake)
+    return fake
+
+
+def paying(monkeypatch, ledger, fails_on=None, usd=A_BATCH):
+    """A `call_batch` that bills the ledger for every batch, and raises on the ones named.
+
+    The batch that raises is billed first, on purpose: a `BamlValidationError` is what a
+    model's unparseable answer becomes, and the provider charged for that answer.
+    """
+    seen = {}
+    real = Batches(usd, all_match)
+
+    def fake(job, batch):
+        n = seen.get(job.pattern_id, 0) + 1
+        seen[job.pattern_id] = n
+        ledger.bill()
+        if fails_on is not None and n in fails_on:
+            raise RuntimeError("the model answered with something that will not parse")
+        return real(job, batch)
+
+    monkeypatch.setattr(labelling, "call_batch", fake)
+    return seen
+
+
+def test_a_pattern_that_fell_over_is_booked_at_what_the_ledger_says_it_spent(
+    store, ledger, monkeypatch
+):
+    """The step. Three batches sent, answered and charged, then a fourth that will not
+    parse — and that fourth was billed too, for the reply nobody could use."""
+    seed(store, 80)
+    pattern(store)
+    paying(monkeypatch, ledger, fails_on={4})
+
+    result = run(store)
+    got = answer(result)
+
+    assert result.exit_code == 0
+    assert len(ledger.logs) == 4, "the run did not get as far as the batch that fails"
+    assert got["patterns"][0]["usd"] == pytest.approx(4 * A_BATCH)
+    assert got["usd"] == pytest.approx(4 * A_BATCH)
+    assert got["patterns"][0]["error"].startswith("RuntimeError")
+    assert f"failed after spending ${4 * A_BATCH:.4f}" in result.stderr
+
+
+def test_what_a_failed_pattern_spent_counts_against_the_days_cap(store, ledger, monkeypatch):
+    """The reason this is a step and not a report. `run` opens every pattern with
+    `budget - spent`, so a failure booked at nothing leaves the cap unable to ever fire."""
+    for k in range(14):
+        seed(store, 80, first=1 + k * 100, assistant_id=f"a{k}")
+        pattern(store, name=f"p{k}", assistant_ids=f'["a{k}"]')
+    paying(monkeypatch, ledger, fails_on={4})
+
+    got = answer(run(store, max_usd=1.00))
+
+    billed = len(ledger.logs) * A_BATCH
+    assert got["stopped"] == "cap"
+    assert len(got["patterns"]) < 14, "every pattern was read, so nothing stopped the run"
+    assert got["usd"] == pytest.approx(billed)
+    assert billed < 1.00 + 4 * A_BATCH, f"${billed:.4f} billed against a $1.00 cap"
+
+
+def test_a_successful_pattern_still_reports_what_labelling_charged(store, ledger, monkeypatch):
+    """The success path is S-56's and the ledger is not consulted on it. Proved by making
+    the two disagree: the fake charges a penny a batch and bills the ledger five."""
+    seed(store, 40)
+    pattern(store)
+    paying(monkeypatch, ledger, usd=0.01)
+
+    got = answer(run(store))
+
+    assert len(ledger.logs) == 2
+    assert got["patterns"][0]["error"] is None
+    assert got["patterns"][0]["usd"] == pytest.approx(2 * 0.01)
+    assert got["usd"] == pytest.approx(2 * 0.01)
+
+
+def test_a_pattern_that_fell_over_before_spending_is_booked_at_nothing(
+    store, ledger, monkeypatch
+):
+    """A failure before any model call books zero, and `db.rs` writing no ledger row for
+    that is right. The note about money is not printed, because there was none."""
+    seed(store, 40)
+    pattern(store)
+
+    def fake(job, batch):
+        raise RuntimeError("no API key")
+
+    monkeypatch.setattr(labelling, "call_batch", fake)
+
+    result = run(store)
+    got = answer(result)
+
+    assert ledger.logs == []
+    assert got["patterns"][0]["usd"] == 0.0
+    assert got["usd"] == 0.0
+    assert "failed after spending" not in result.stderr
+
+
+def test_a_ledger_that_cannot_price_books_nothing_and_says_so(store, ledger, monkeypatch):
+    """S-58's third tier, in the one place S-58 could not reach. `cost.spent` gives up on a
+    whole total rather than returning part of one, and a total it cannot finish is not a
+    zero — so the run says which of the two this was."""
+    seed(store, 40)
+    pattern(store)
+    seen = {}
+
+    def fake(job, batch):
+        n = seen.get(job.pattern_id, 0) + 1
+        seen[job.pattern_id] = n
+        ledger.bill(client="A client no rate card knows")
+        raise RuntimeError("the model answered with something that will not parse")
+
+    monkeypatch.setattr(labelling, "call_batch", fake)
+
+    result = run(store)
+    got = answer(result)
+
+    assert cost.spent(ledger) is None, "the fake ledger priced after all"
+    assert got["patterns"][0]["usd"] == 0.0
+    assert "failed without a figure for what it had spent" in result.stderr
+
+
+def test_each_pattern_is_booked_for_its_own_calls_only(store, ledger, monkeypatch):
+    """One process, one ledger, several patterns. The difference between two readings is
+    what this pattern cost; the total is what everything before it cost as well."""
+    seed(store, 40, first=1, assistant_id="a0")
+    seed(store, 80, first=200, assistant_id="a1")
+    pattern(store, name="first", assistant_ids='["a0"]')
+    pattern(store, name="second", assistant_ids='["a1"]')
+    paying(monkeypatch, ledger, fails_on={4})
+
+    got = answer(run(store))
+
+    first, second = got["patterns"]
+    assert first["error"] is None
+    assert first["usd"] == pytest.approx(2 * A_BATCH)
+    # Its own four batches, and not the two the pattern before it paid for.
+    assert second["usd"] == pytest.approx(4 * A_BATCH)
+    assert got["usd"] == pytest.approx(6 * A_BATCH)

@@ -22,7 +22,9 @@ Two rules shape the rest of it.
 it prints, so a pattern that fails takes its own labels down and nothing else: the failure
 is recorded against that pattern, the run carries on, and the total that reaches `spend`
 is the total that was actually paid. A traceback out of here would be money spent and no
-line to book it from.
+line to book it from. A pattern that fails is booked at what the process ledger says it
+had already been billed, which is not the same as nothing: `label` charges for every batch
+before the one that fell over.
 
 **The newest calls are read first.** A capped run reads part of what it was given, so the
 part it reads should be the part somebody is about to look at.
@@ -35,6 +37,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any, Sequence, TextIO
 
+from graphify_brain import cost
 from graphify_brain import label as labelling
 from graphify_brain.label import SQL_VARS, _chunks, _marks
 from graphify_brain.plan import envelope
@@ -123,14 +126,57 @@ def _one(conn: Any, pattern: Pattern, budget: float, stdout: TextIO, stderr: Tex
         "max_usd": budget,
         "pattern_id": pattern.id,
     }
+    # Read before the call so the difference afterwards is this pattern's alone. A `daily`
+    # run labels several patterns in one process and they share the ledger.
+    before = cost.spent()
     try:
         got = labelling.label_calls(request, conn, stdout, stderr)
     except Exception as e:  # noqa: BLE001 — reported, for the reason in the docstring
         traceback.print_exc(file=stderr)
-        return _report(pattern, [], 0.0, None, f"{type(e).__name__}: {e}")
+        return _report(
+            pattern, [], _paid(pattern, before, stderr), None, f"{type(e).__name__}: {e}"
+        )
 
     _store(conn, pattern.id, got["labels"])
     return _report(pattern, got["labels"], got["usd"], got["stopped"], None)
+
+
+def _paid(pattern: Pattern, before: float | None, stderr: TextIO) -> float:
+    """What a pattern that fell over had already been billed for, off the process ledger.
+
+    `label.run` re-raises only once the wave it was in has been stored, so every batch
+    before the one that failed was sent, answered and charged, and the `spent` it was
+    accumulating is a local that dies with the exception. The ledger S-58 put in does not
+    care how a call ended, only that it was made, so the difference between two readings of
+    it is what this pattern cost — including the call that raised, which was billed for a
+    reply nobody could parse and which `cost.booked` never saw.
+
+    `cost.spent` answers `None` rather than a partial total when it meets a client it cannot
+    price. Either reading being `None` means the difference is not a figure, and so does a
+    total that went backwards, which a collector cannot do. Those book nothing and say so —
+    the third tier of S-58's `!ok` branch, in the one place that branch cannot reach, since
+    this process is on its way to exiting zero.
+    """
+    after = cost.spent()
+    if before is None or after is None or after < before:
+        print(
+            f"pattern {pattern.id} {pattern.name}: failed without a figure for what it had "
+            "spent, so nothing could be booked for it",
+            file=stderr,
+            flush=True,
+        )
+        return 0.0
+    usd = after - before
+    if usd > 0.0:
+        # The same shape of line `label` prints when the cap stops it, so one search of a
+        # job's log finds either kind of money that went missing.
+        print(
+            f"pattern {pattern.id} {pattern.name}: failed after spending ${usd:.4f}, "
+            f"which has been booked",
+            file=stderr,
+            flush=True,
+        )
+    return usd
 
 
 def _report(
