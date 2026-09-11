@@ -5322,5 +5322,118 @@ the strength of the number, so declining to give one costs nothing but a note in
   is two mechanisms counting the same tokens, and if `booked` and `spent` ever disagree
   nothing will notice.
 
-**The register is complete through S-58.** Anything after that is a new step appended
-here, or a bug in `docs/backlog/bugs.md` promoted to one.
+
+### S-59 — What a pattern spent before it fell over
+
+**PR:** one. **Depends on:** nothing, but it is the fourth step of one argument. S-56 fixed
+what a call books when the provider says nothing, S-57 what a job books when the brain says
+nothing, S-58 what a job books when it dies on the way out. Each of those is about a number
+that went missing on a path out of the process. This one is about the path that never leaves
+it: `daily` catches its own failure, so nothing S-58 built ever fires, and the money is lost
+inside a run that exits zero.
+
+**Files:** `brain/src/graphify_brain/daily.py`, `brain/tests/test_daily.py`, `docs/spec.md`.
+No engine change, no UI change, no schema change, no new dependency.
+
+**Today:** `brain/src/graphify_brain/daily.py:128`, the whole of it.
+
+```python
+    try:
+        got = labelling.label_calls(request, conn, stdout, stderr)
+    except Exception as e:  # noqa: BLE001 — reported, for the reason in the docstring
+        traceback.print_exc(file=stderr)
+        return _report(pattern, [], 0.0, None, f"{type(e).__name__}: {e}")
+```
+
+The reason in the docstring is right and it is worth keeping: a traceback out of `daily`
+would be money spent and no last line to book it from, so a pattern that falls over is
+reported rather than raised and the patterns after it are still read. What the branch then
+reports is `0.0`, and that is the defect. The same docstring states the invariant it
+breaks, in bold, eight lines above the code: *"**The spend is reported, always.** … the
+total that reaches `spend` is the total that was actually paid."*
+
+**`label.run` raises only after it has paid.** `label.py:285` catches a batch that fell over,
+keeps going to the end of the wave so the two beside it are not thrown away, writes the
+wave's labels, and *then* re-raises. Every batch before that point was sent, answered and
+charged, and `spent` is a local variable that dies with the exception. `daily` catches the
+exception and books zero for all of it.
+
+**Measured**, one pattern of eighty calls — four batches of twenty, three paid for at
+$0.05 and the fourth answered with something that will not coerce:
+
+| | |
+|---|---|
+| batches sent, answered and billed | **3** |
+| what the run reports for that pattern | **`usd: 0.0`** |
+| what the run reports for the day | **`$0.0000`** |
+| exit code | **0** |
+
+**And it compounds, because the cap is computed from that total.** `daily.run` opens every
+pattern with `left = budget - spent`, and `spent` is the sum of exactly those reports. A
+pattern that fails contributes nothing to it, so `left` never shrinks and the cap never
+fires. Measured on a `$1.00` day, every pattern paying for three batches and then failing:
+
+| patterns | actually billed | reported | `stopped` | patterns read |
+|---|---|---|---|---|
+| 6 | **$0.9000** | $0.0000 | `None` | 6 of 6 |
+| 14 | **$2.1000** | $0.0000 | `None` | 14 of 14 |
+
+The cap is not breached by a margin here. It is inert: `spent` stays at zero for the length
+of the run, so there is no number of patterns and no amount of money that will stop it. The
+engine then books the last line — `$0.0000` — so tomorrow's ledger is clean too. That is the
+second Must-never, *"Daily modes have a hard USD cap and stop when reached"*, and it is the
+fifth door onto it: S-39 was the write failing, S-56 the number absent, S-57 the number
+dropped, S-58 the number never asked for, and this is the number asked for and answered with
+a constant.
+
+**This is the unattended mode.** `plan`, `label`, `ask` and `synthesize` all fail outward,
+where S-58's `cli.run` prints what the process was billed and the engine books it. `daily`
+is the one command that swallows its own failure, and it is the one that runs on cron at six
+in the morning with nobody reading the log. It is also the only one whose docstring promises
+the opposite.
+
+**The money is already counted.** S-58's `cost.ledger()` is a process-wide `Collector` that
+every model call is passed, and it holds the usage of a call that raised. So the figure this
+branch needs is not lost and does not have to be rebuilt — it is the difference between two
+readings of `cost.spent()`, taken either side of the call. That is more correct than the
+number `label.run` lost, not merely equal to it: the batch that raised was itself billed for
+the reply nobody could parse, and the ledger counts it where `booked` never saw it.
+
+**Change:** one branch.
+
+1. `_one` reads `cost.spent()` before it calls `label_calls` and again in the `except`,
+   and reports the difference instead of `0.0`. The note goes to stderr beside the
+   traceback, in the words `label` and `daily` already use for a stop, so one search of a
+   job's log finds it.
+
+2. If either reading is `None` — `cost.spent` gives up on a whole total rather than
+   returning part of one — the branch books nothing and **says** it could not tell, which is
+   S-58's third tier in the place S-58 could not reach. Near-unreachable, because an
+   unpriced model is refused at the request, and written down rather than assumed away.
+
+3. Nothing else. The success path keeps returning `label.run`'s own figure; the cap loop in
+   `run` is untouched and starts working the moment the reports it sums stop lying.
+
+**Why the ledger and not the exception.** Carrying the spend on a custom exception out of
+`label.run` would work for this one failure and would have to be maintained at every later
+`raise`. The ledger is failure-shaped already: it does not care how the call ended, only
+that it was made, and it is the same mechanism S-58 put in for the same reason one layer
+out. It also gives that mechanism its first reader on a path that exits zero.
+
+**Must not:** raise out of `_one` — the catch stays, for the reason its docstring gives.
+Change what a pattern that *succeeded* reports; the success path's `got["usd"]` is S-56's
+and is not touched. Book the pattern's budget, `max_usd`, `daily_cap_usd`, or any ceiling
+on the failure path — S-57 and S-58 both ruled that out and nothing here changes the
+argument. Change `label.run`, `label.py:285`, or anything about when a wave is stored.
+Change the cap arithmetic in `run`. Touch the engine, the UI, the schema, or `cost.py`.
+Add a dependency. Stop the run early on a failure: a pattern that fell over takes down its
+own labels and nothing else. Delete or edit an existing assertion in any test.
+
+**Verify:** `uv run pytest -q` green; `cargo test -q`, `cargo clippy --all-targets --
+-D warnings` and `pnpm test` all untouched and green; guard 1 red if a failed pattern books
+zero while the ledger says otherwise; guard 2 red if the day's cap does not stop a run of
+failing patterns; guard 3 red if a successful pattern's figure changes; guard 4 red if the
+tier that cannot price says nothing; CI 4/4.
+
+**The register is complete through S-58. S-59 is open.** Anything after that is a new step
+appended here, or a bug in `docs/backlog/bugs.md` promoted to one.
