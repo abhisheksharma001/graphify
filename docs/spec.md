@@ -5323,7 +5323,7 @@ the strength of the number, so declining to give one costs nothing but a note in
   nothing will notice.
 
 
-### S-59 — What a pattern spent before it fell over
+### S-59 — What a pattern spent before it fell over ☑ (PR #60, 92f7254)
 
 **PR:** one. **Depends on:** nothing, but it is the fourth step of one argument. S-56 fixed
 what a call books when the provider says nothing, S-57 what a job books when the brain says
@@ -5435,5 +5435,92 @@ zero while the ledger says otherwise; guard 2 red if the day's cap does not stop
 failing patterns; guard 3 red if a successful pattern's figure changes; guard 4 red if the
 tier that cannot price says nothing; CI 4/4.
 
-**The register is complete through S-58. S-59 is open.** Anything after that is a new step
-appended here, or a bug in `docs/backlog/bugs.md` promoted to one.
+
+**Files (as built):** `brain/src/graphify_brain/daily.py` (+48 −2: `cost` imported, `before`
+read ahead of the call, `_paid` beside `_one`, and three lines added to the module docstring,
+which promised *"the spend is reported, always"* eight lines above the code that reported a
+constant), `brain/tests/test_daily.py` (+204: an autouse fixture clearing `cost._LEDGER`
+around every test in the file, a `_Ledger` stand-in, a `paying` helper, and six tests in a
+new section at the end), `docs/spec.md`. No engine change, no UI change, no schema change,
+no new dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the failure books zero regardless | **4** | the defect |
+| 2 · the reading is taken in the `except`, so the delta is nothing | 3 | reading *before* is load-bearing |
+| 3 · the success path books the ledger delta too | 3 | S-56's figure is not replaced |
+| 4 · a total nobody can price is booked as nothing, silently | 1 | the third tier says which zero it is |
+| 5 · booked at the whole ledger, not this pattern's share | 2 | one process, several patterns |
+
+Break 2 was written twice. The first version moved `before = cost.spent()` from above the
+`try` to the first line inside it and came back green, which is correct and not a hole:
+nothing between those two lines makes a model call, so it is the same position. The break
+that means anything is taking the reading in the `except`, after the call — 3 red. Recorded
+because the first version was on screen saying the guard was weak when it was the break that
+was.
+
+**Learned:**
+
+**(a) A failure that is caught is a failure S-58 cannot see.** The whole of S-58 hangs on
+the process exiting non-zero, and `daily` is the one command that makes sure it does not.
+The mechanism was sound and the hole was one `except` away from it, in the only mode that
+runs unattended. Anything installed on the way out of a process is worth re-reading for who
+catches first.
+
+**(b) An inert cap is worse than a breached one and looks the same from inside.** `left =
+budget - spent` is right arithmetic over a wrong term. Because the term was a constant zero,
+the cap did not overrun by a margin that would show up in a test with one pattern in it — it
+stopped existing, and the run went as far as there were patterns to read. A bound computed
+from a number somebody else reports is only a bound if that report can be wrong in a
+direction that stops it.
+
+**(c) The number was already being kept.** S-58 built a process-wide collector for a path
+that exits non-zero, and it turned out to be exactly the right instrument for a path that
+exits zero, because it does not care how a call ended — only that it was made. That is the
+second time in two steps the answer was a property of a tool already in the build rather
+than something to write.
+
+**(d) The ledger is more correct than the total it replaced.** `label.run`'s `spent` never
+saw the batch that raised; the collector did, and that batch was billed for the reply nobody
+could parse. So the difference between two readings is not a reconstruction of the lost
+figure — it is the figure plus the call that made it get lost.
+
+**(e) A docstring that states an invariant is a test that has not been written.** *"The
+spend is reported, always … the total that reaches `spend` is the total that was actually
+paid"* has been at the top of this file since S-28, eight lines above a branch that reported
+a constant. The file said what it was for and the code below it did something else, and
+nothing in between noticed for thirty-one steps.
+
+**Not done:**
+
+- **A failed pattern still reports `read: 0`.** `label.run` writes its wave's labels to
+  `pattern_labels` before it re-raises, so those rows exist; `_one`'s failure branch skips
+  `_store`, so no `pattern_matches` row is written for them and the report says nothing was
+  read. The money is now right and the labels are half-stored. Left alone because the
+  branch's Must-not was to change nothing but the figure, and because which half is correct
+  is a question about D-8, not about spend.
+- **The two mechanisms still are not compared.** S-58's item stands: on a pattern that
+  succeeds, `got["usd"]` and the ledger delta are two answers to one question and nothing
+  asserts they agree. Break 3 proves only that the success path uses the first one. Making
+  them agree is a step; noticing when they do not is a smaller one.
+- **A `SIGKILL`ed `daily` still reports nothing at all**, for the same reason S-58 gave.
+  Worse here than there, because this run may have read several patterns before it was
+  killed and there is one last line for all of them.
+- **The quote is still not a bound on input.** `label.py:49` says so itself — *"It is not a
+  bound: a transcript full of punctuation or another script can tokenize worse than this"* —
+  and `CHARS_PER_TOKEN = 3` is checked against the cap before a call and never compared to
+  the provider's own count after it. Non-Latin transcripts are the live case. Measuring it
+  needs a tokenizer the brain does not depend on, which is why it is still written down
+  rather than done, and it remains the largest unmeasured thing on either side of the pipe.
+- **`cost.spent()` is now read twice per pattern on the success path as well**, and it walks
+  every log in the process each time. Cheap at a day's volume — twenty-five batches a pattern
+  — and quadratic in principle.
+- **Nothing stops a run after a failure**, by this step's own Must-not. A provider that is
+  down will be paid for one billed-and-unparseable call per pattern, for every pattern, and
+  the cap is the only thing that ends it. That is now true arithmetic, which it was not
+  before, but it is still the cap doing all the work.
+
+**The register is complete through S-59.** Anything after that is a new step appended
+here, or a bug in `docs/backlog/bugs.md` promoted to one.
