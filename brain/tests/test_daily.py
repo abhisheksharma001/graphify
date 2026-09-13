@@ -588,14 +588,14 @@ def ledger(monkeypatch):
     return fake
 
 
-def paying(monkeypatch, ledger, fails_on=None, usd=A_BATCH):
+def paying(monkeypatch, ledger, fails_on=None, usd=A_BATCH, answer=all_match):
     """A `call_batch` that bills the ledger for every batch, and raises on the ones named.
 
     The batch that raises is billed first, on purpose: a `BamlValidationError` is what a
     model's unparseable answer becomes, and the provider charged for that answer.
     """
     seen = {}
-    real = Batches(usd, all_match)
+    real = Batches(usd, answer)
 
     def fake(job, batch):
         n = seen.get(job.pattern_id, 0) + 1
@@ -724,3 +724,137 @@ def test_each_pattern_is_booked_for_its_own_calls_only(store, ledger, monkeypatc
     # Its own four batches, and not the two the pattern before it paid for.
     assert second["usd"] == pytest.approx(4 * A_BATCH)
     assert got["usd"] == pytest.approx(6 * A_BATCH)
+
+
+# --- what a failed pattern already paid for -------------------------------------------
+#
+# S-59 fixed the money on this branch. These are about the answer it bought. `label.run`
+# writes each wave's labels to `pattern_labels` before it sends the next one and writes the
+# failing wave too, so a pattern that fell over leaves verdicts on disk; `_store` sits on
+# the line after the `except` and never ran. `pattern_labels` is what a model said and
+# `pattern_matches` is what `queries.rs` counts, and `daily._store` is the only thing that
+# ever writes a `source='llm'` row into the second one.
+
+
+def llm_matches(store, pattern_id):
+    return [
+        r["call_id"]
+        for r in rows(
+            store,
+            "SELECT call_id FROM pattern_matches WHERE pattern_id = ? AND source = 'llm'",
+            pattern_id,
+        )
+    ]
+
+
+def labelled(store, pattern_id):
+    return [
+        r["call_id"]
+        for r in rows(store, "SELECT call_id FROM pattern_labels WHERE pattern_id = ?", pattern_id)
+    ]
+
+
+def test_a_failed_patterns_confirmed_verdicts_are_counted(store, ledger, monkeypatch):
+    """The step. Three batches of twenty confirmed and charged for, then a fourth that will
+    not parse. Every verdict the three bought is on disk, and before this step not one of
+    them reached the table the product counts."""
+    seed(store, 80)
+    p = pattern(store)
+    paying(monkeypatch, ledger, fails_on={4})
+
+    result = run(store)
+    got = answer(result)["patterns"][0]
+
+    assert len(labelled(store, p)) == 60, "the run did not get as far as the batch that fails"
+    assert llm_matches(store, p) == labelled(store, p)
+    assert got["error"].startswith("RuntimeError")
+    assert "failed after reading 60 calls" in result.stderr
+
+
+def test_a_failed_pattern_reports_what_it_read(store, ledger, monkeypatch):
+    """The report is the run's own account of itself, and it used to deny the sixty rows it
+    had just written. `read` and `matched` are what the engine's job log shows."""
+    seed(store, 80)
+    pattern(store)
+    paying(monkeypatch, ledger, fails_on={4})
+
+    got = answer(run(store))["patterns"][0]
+
+    assert got["read"] == 60
+    assert got["matched"] == 60
+
+
+def test_a_failed_hybrid_pattern_drops_the_rule_rows_the_model_overruled(
+    store, ledger, monkeypatch
+):
+    """The other half of `_store`, and the one that makes a hybrid confirmation worth paying
+    for. Sixty calls the model said no about keep their rule row and go on being counted."""
+    ids = seed(store, 80)
+    p = pattern(store, mode="hybrid")
+    rule_matched(store, p, ids)
+    paying(monkeypatch, ledger, fails_on={4}, answer=none_match)
+
+    got = answer(run(store))["patterns"][0]
+
+    left = rows(
+        store, "SELECT call_id FROM pattern_matches WHERE pattern_id = ? AND source = 'rule'", p
+    )
+    assert len(left) == 20, "the sixty the model overruled are still counted as matches"
+    assert got["read"] == 60
+    assert got["matched"] == 0
+
+
+def test_a_salvage_that_cannot_write_still_reports_what_the_pattern_spent(
+    store, ledger, monkeypatch
+):
+    """This branch exists so that a failure ends in a last line for the engine to book the
+    spend from, and there is now a database read and a write standing in front of it."""
+    seed(store, 80)
+    pattern(store)
+    paying(monkeypatch, ledger, fails_on={4})
+
+    def no_write(conn, pattern_id, labels):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(dailies, "_store", no_write)
+
+    result = run(store)
+    got = answer(result)
+
+    assert result.exit_code == 0
+    assert got["usd"] == pytest.approx(4 * A_BATCH), "the money went down with the labels"
+    assert got["patterns"][0]["read"] == 0
+    assert "could not apply the verdicts it had already paid for" in result.stderr
+
+
+def test_the_salvage_picks_up_only_the_calls_this_attempt_read(store, ledger, monkeypatch):
+    """What makes reading the table back exact is `_candidates`'s own exclusion: an id this
+    run was handed was not in `pattern_labels` when it was handed over. A pattern with older
+    labels already stored must not have them applied a second time."""
+    ids = seed(store, 80)
+    p = pattern(store)
+    already_read(store, p, ids[:20])
+    paying(monkeypatch, ledger, fails_on={3})
+
+    got = answer(run(store))["patterns"][0]
+
+    # Sixty candidates, three batches, one wave: two are answered and paid for, one raises.
+    assert len(labelled(store, p)) == 20 + 40
+    assert len(llm_matches(store, p)) == 40, "an older run's labels were applied again"
+    assert got["read"] == 40
+
+
+def test_the_calls_a_failed_run_never_reached_are_still_read_tomorrow(store, ledger, monkeypatch):
+    """End to end. A pattern falls over three quarters of the way through, the next run picks
+    up what it never got to, and the count ends where it would have without the failure."""
+    seed(store, 80)
+    p = pattern(store)
+    paying(monkeypatch, ledger, fails_on={4})
+    answer(run(store))
+
+    paying(monkeypatch, ledger)
+    second = answer(run(store))["patterns"][0]
+
+    assert second["read"] == 20, "the twenty the failure never reached"
+    assert second["error"] is None
+    assert len(llm_matches(store, p)) == 80
