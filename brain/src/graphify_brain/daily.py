@@ -24,7 +24,9 @@ is recorded against that pattern, the run carries on, and the total that reaches
 is the total that was actually paid. A traceback out of here would be money spent and no
 line to book it from. A pattern that fails is booked at what the process ledger says it
 had already been billed, which is not the same as nothing: `label` charges for every batch
-before the one that fell over.
+before the one that fell over. What those batches bought is kept as well: their verdicts are
+already in `pattern_labels`, and the failure branch applies them rather than leaving an answer
+that was paid for, that nothing counts, and that nothing will ever ask for again.
 
 **The newest calls are read first.** A capped run reads part of what it was given, so the
 part it reads should be the part somebody is about to look at.
@@ -133,9 +135,9 @@ def _one(conn: Any, pattern: Pattern, budget: float, stdout: TextIO, stderr: Tex
         got = labelling.label_calls(request, conn, stdout, stderr)
     except Exception as e:  # noqa: BLE001 — reported, for the reason in the docstring
         traceback.print_exc(file=stderr)
-        return _report(
-            pattern, [], _paid(pattern, before, stderr), None, f"{type(e).__name__}: {e}"
-        )
+        usd = _paid(pattern, before, stderr)
+        applied = _salvage(conn, pattern, calls, stderr)
+        return _report(pattern, applied, usd, None, f"{type(e).__name__}: {e}")
 
     _store(conn, pattern.id, got["labels"])
     return _report(pattern, got["labels"], got["usd"], got["stopped"], None)
@@ -177,6 +179,63 @@ def _paid(pattern: Pattern, before: float | None, stderr: TextIO) -> float:
             flush=True,
         )
     return usd
+
+
+def _salvage(
+    conn: Any, pattern: Pattern, asked: Sequence[str], stderr: TextIO
+) -> list[dict[str, Any]]:
+    """The verdicts this attempt paid for, which `_store` was never reached to apply.
+
+    `label.run` writes each wave's labels to `pattern_labels` before sending the next one, and
+    writes the failing wave too, so a pattern that fell over leaves verdicts on disk that the
+    branch above skipped `_store` for. The two tables are not the same record: `pattern_labels`
+    is what a model said, `pattern_matches` is what the product counts, and `_store` is the
+    only thing in the build that ever writes a `source='llm'` row into it. A confirmed verdict
+    that misses it is counted by nothing — and re-read by nothing either, because
+    `_candidates` excludes a call that already has a label. Being written down is what
+    disqualifies it from ever being asked about again.
+
+    That same exclusion is what makes reading them back exact rather than a guess. Every id in
+    `asked` was absent from `pattern_labels` when this run picked it, so every one of them in
+    there now was put there by this attempt. No timestamp column is needed and none exists.
+
+    A row whose `llm_match` is `NULL` is skipped. Nothing writes one today, and `bool(None)` is
+    `False` — a missing verdict read as a no is a missing value rendered as a definite one.
+
+    Its own failure is caught for the reason `_one` catches: this branch has to end in a report
+    or the engine has no last line to book the spend from, and there is now a read and a write
+    standing in front of that. The labels are worth salvaging. They are not worth the money.
+    """
+    try:
+        verdicts: dict[str, bool] = {}
+        for chunk in _chunks(asked, SQL_VARS):
+            rows = conn.execute(
+                "SELECT call_id, llm_match FROM pattern_labels WHERE pattern_id = ? "
+                f"AND llm_match IS NOT NULL AND call_id IN ({_marks(chunk)})",
+                [pattern.id, *chunk],
+            )
+            verdicts.update({row["call_id"]: bool(row["llm_match"]) for row in rows})
+        # Back into the order they were asked about in, for the reason `label.run` sorts its
+        # own wave: a list that reorders itself run to run is one nobody can diff.
+        labels = [{"call_id": i, "match": verdicts[i]} for i in asked if i in verdicts]
+        _store(conn, pattern.id, labels)
+        if labels:
+            print(
+                f"pattern {pattern.id} {pattern.name}: failed after reading {len(labels)} "
+                "calls, whose verdicts have been applied",
+                file=stderr,
+                flush=True,
+            )
+        return labels
+    except Exception:  # noqa: BLE001 — the spend line matters more, see the docstring
+        traceback.print_exc(file=stderr)
+        print(
+            f"pattern {pattern.id} {pattern.name}: could not apply the verdicts it had "
+            "already paid for; they are in pattern_labels and nothing counts them",
+            file=stderr,
+            flush=True,
+        )
+        return []
 
 
 def _report(
