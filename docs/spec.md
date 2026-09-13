@@ -5522,5 +5522,114 @@ nothing in between noticed for thirty-one steps.
   the cap is the only thing that ends it. That is now true arithmetic, which it was not
   before, but it is still the cap doing all the work.
 
+
+### S-60 — The verdicts a failed pattern already paid for
+
+**PR:** one. **Depends on:** S-59, which fixed the money on this exact branch and named this
+in its Not-done. S-59's Must-not was to change nothing but the figure. The figure is settled;
+this is the answer that was bought with it.
+
+**Files:** `brain/src/graphify_brain/daily.py`, `brain/tests/test_daily.py`, `docs/spec.md`.
+No engine change, no UI change, no schema change, no new dependency.
+
+**Today:** `brain/src/graphify_brain/daily.py:128`, the same branch, one field over.
+
+```python
+    except Exception as e:  # noqa: BLE001 — reported, for the reason in the docstring
+        traceback.print_exc(file=stderr)
+        return _report(
+            pattern, [], _paid(pattern, before, stderr), None, f"{type(e).__name__}: {e}"
+        )
+
+    _store(conn, pattern.id, got["labels"])
+```
+
+`_store` is on the line after the `except`, so a pattern that fell over never reaches it.
+That empty list is the defect. It is not an empty run: `label.run` wrote its labels to
+`pattern_labels` wave by wave before it raised, and those rows are on disk.
+
+**The two tables are not the same record.** `pattern_labels` is what a model said.
+`pattern_matches` is what the product counts — `queries.rs:420` builds every pattern's number
+from it, `count(DISTINCT m.call_id)`. `daily._store` is the only thing in the build that ever
+writes a `source='llm'` row into it, and `db.rs:862` says in as many words that a rule re-run
+*"never touches"* them. So a confirmed verdict that misses `_store` has no second chance.
+
+**And it can never be re-read, because being on disk is what disqualifies it.**
+`_candidates` excludes `c.id NOT IN (SELECT call_id FROM pattern_labels WHERE pattern_id = ?)`
+and its own docstring gives the reason: *"a call already in `pattern_labels` has been read and
+paid for once, and a model does not get asked the same question twice."* That rule is right.
+It is also what makes this permanent.
+
+**Measured**, one full-mode pattern, eighty calls, four batches of twenty, three answered
+`match: true` and the fourth answered with something that will not coerce:
+
+| | |
+|---|---|
+| billed | $0.2000, 4 batches |
+| booked (S-59) | $0.2000 ✓ |
+| rows written to `pattern_labels` | **60**, every one `llm_match = 1` |
+| rows written to `pattern_matches` | **0** |
+| what the report says | `read: 0`, `matched: 0` |
+
+Then the same database, run again, nothing changed:
+
+| | |
+|---|---|
+| calls the second run reads | 20 — the four batches' worth are excluded |
+| calls left unread afterwards | **0 of 80** |
+
+There is no third run. Sixty confirmed matches were paid for, written down, and will never
+be counted by anything. The run's own report denies the sixty rows it just wrote.
+
+**The rejection half is different and worth stating, because it is what shows the fix.** In
+hybrid, `_store` also *deletes* the rule's row for a call the model overruled. Measured the
+same way, with every verdict `match: false`: sixty rejections written to `pattern_labels`,
+and all eighty `source='rule'` rows still standing, so the pattern counts eighty matches the
+model has already said no to sixty of. That half does self-heal — but not here.
+`engine/src/rules.rs:487` re-reads `pattern_labels WHERE llm_match = 0` on the next rule run,
+under a comment that says exactly why: *"`pattern_labels` is where a verdict lives, so this is
+a read of what was already paid for rather than a second record of it that could fall out of
+step."* The engine already treats the table as the record of truth. `daily`'s failure branch
+is the one place that does not.
+
+**Change:** the same branch, one more line.
+
+1. A `_salvage` helper beside `_paid`. It reads back the `pattern_labels` rows this attempt
+   wrote — `pattern_id` and the candidate ids it was handed — and hands them to `_store`, so
+   a failed pattern applies the verdicts it bought and reports them. The identity that makes
+   this exact rather than a guess is `_candidates`'s own exclusion: every id in `calls` was
+   *not* in `pattern_labels` when the run started, so every one of them in there now was put
+   there by this attempt. No timestamp column is needed and none is added.
+
+2. Back into the order the calls were asked about in, for the reason `label.py:293` gives
+   about its own sort: a list that reorders itself run to run is one nobody can diff.
+
+3. `_salvage` catches its own failure, prints it, and returns nothing. Reading and writing
+   the database is what this branch now does, and the branch exists so that a failure has a
+   last line to be booked from. A salvage that raised would take that line away and lose the
+   money S-59 just fixed, to save labels.
+
+4. A row whose `llm_match` is `NULL` is skipped rather than read as a no. The column is
+   nullable, nothing writes a null into it today, and `bool(None)` is `False` — which is
+   rendering a missing value as a definite one.
+
+**Must not:** raise out of `_one`, or out of `_salvage` — everything S-59 said about the
+last line still holds and now has a database write standing in front of it. Change what a
+pattern that *succeeded* does; the success path already calls `_store` and is untouched.
+Change `_paid`, `_report`'s shape, or the figure a failed pattern books. Change `_store`
+itself, `label.run`, `label.py:302`, `_write`, or anything about when a wave is written.
+Change `_candidates`, its exclusion, or the rule that a model is not asked twice. Add a
+column, a timestamp, or a migration. Touch the engine, the UI, `rules.rs`, or `cost.py`.
+Add a dependency. Re-read a call the run failed on. Stop the run early on a failure. Delete
+or edit an existing assertion in any test.
+
+**Verify:** `uv run pytest -q` green; `cargo test -q`, `cargo clippy --all-targets --
+-D warnings` and `pnpm test` all untouched and green; guard 1 red if a failed pattern's
+confirmed verdicts do not reach `pattern_matches`; guard 2 red if a failed hybrid pattern's
+overruled calls keep their rule row; guard 3 red if the report still says `read: 0`; guard 4
+red if a salvage that cannot write takes down the spend line; guard 5 red if the salvage
+picks up a call this attempt did not read; CI 4/4.
+
+
 **The register is complete through S-59.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
