@@ -30,11 +30,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The job is alive and its subprocess is working.
 pub const RUNNING: &str = "running";
@@ -65,6 +65,21 @@ pub fn binary_from_env() -> String {
 /// analyst to read a plan table and think about it; short enough that a wizard abandoned
 /// at lunchtime is not still holding an interpreter at five.
 const GO_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// How long a child may say nothing before it is killed.
+///
+/// Silence and not total runtime. A labelling run over a fortnight of a busy org is
+/// legitimately long, and a ceiling big enough never to cut one short is no ceiling at all.
+/// What a working brain does every wave is say something — `PROGRESS` on stderr, a result or
+/// a quote on stdout — and `drain` was already reading every line of it without ever taking
+/// one as a sign of life. Ten minutes is far above one model call and the few short retries
+/// `baml_src/clients.baml` allows it, and far below for ever.
+const RUN_LIMIT: Duration = Duration::from_secs(10 * 60);
+
+/// How often the watchdog looks at the clock. Small enough that a test need not sit through
+/// a whole tick after the limit it wound down, large enough that a thread per live job is
+/// not doing anything measurable.
+const WATCH_TICK: Duration = Duration::from_millis(50);
 
 /// How many jobs may hold a subprocess at once. A waiting job holds a parked interpreter,
 /// so a button pressed ten times is refused rather than answered with ten of them.
@@ -137,6 +152,8 @@ pub struct Jobs {
     /// How long a parked job waits. A field rather than a constant so a test can watch a
     /// job expire without sitting through half an hour of it.
     wait: Duration,
+    /// How long a child may say nothing before it is killed, for the same reason.
+    limit: Duration,
 }
 
 impl Default for Jobs {
@@ -144,6 +161,7 @@ impl Default for Jobs {
         Jobs {
             waiting: Mutex::new(HashMap::new()),
             wait: GO_WAIT,
+            limit: RUN_LIMIT,
         }
     }
 }
@@ -156,6 +174,16 @@ impl Jobs {
     pub fn waiting_for(wait: Duration) -> Self {
         Jobs {
             wait,
+            ..Self::default()
+        }
+    }
+
+    /// Both clocks wound down together, for a test that wants to watch one of them run out
+    /// without sitting through the other.
+    pub fn bounded_by(wait: Duration, limit: Duration) -> Self {
+        Jobs {
+            wait,
+            limit,
             ..Self::default()
         }
     }
@@ -415,6 +443,44 @@ fn spent(last: Option<&str>) -> Option<f64> {
     money(value.get("usd").and_then(Value::as_f64)?)
 }
 
+// --- the clock ------------------------------------------------------------------------
+
+/// When the child has to have said something by, shared with everything that hears it.
+///
+/// `None` is the clock stopped, and there is exactly one interval it is stopped for: a
+/// labelling job parked on its go, which `GO_WAIT` bounds already and where silence is the
+/// analyst's, not the child's.
+#[derive(Clone)]
+struct Deadline {
+    at: Arc<Mutex<Option<Instant>>>,
+    limit: Duration,
+}
+
+impl Deadline {
+    fn new(limit: Duration) -> Self {
+        Deadline {
+            at: Arc::new(Mutex::new(Some(Instant::now() + limit))),
+            limit,
+        }
+    }
+
+    /// The child said something, so it is alive and the clock starts again from here. Called
+    /// for every line off either pipe, which is what makes this a bound on silence rather
+    /// than on how much work a job is allowed to be.
+    fn heard(&self) {
+        *lock(&self.at) = Some(Instant::now() + self.limit);
+    }
+
+    /// Parked. Stop counting until there is something to count again.
+    fn held(&self) {
+        *lock(&self.at) = None;
+    }
+
+    fn passed(&self) -> bool {
+        matches!(*lock(&self.at), Some(at) if Instant::now() >= at)
+    }
+}
+
 // --- the supervisor -------------------------------------------------------------------
 
 /// What came back from the conversation with the child, before its exit status is known.
@@ -450,15 +516,50 @@ fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
         }
     };
 
-    let outcome = converse(jobs, db, id, &spawn, &mut child);
+    // Taken here rather than in `converse` so that what is left of the child is only the
+    // handle to wait on and kill, which is what lets the watchdog hold it while the
+    // conversation is still going on.
+    let pipes = match take_pipes(&mut child) {
+        Ok(pipes) => pipes,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            finish(records, id, FAILED, None, 0.0, spawn.org, &format!("{e:#}"));
+            return;
+        }
+    };
+
+    let deadline = Deadline::new(jobs.limit);
+    let child = Arc::new(Mutex::new(child));
+    let watch = watchdog(Arc::clone(&child), deadline.clone());
+
+    let outcome = converse(jobs, db, id, &spawn, pipes, &deadline);
     if outcome.is_err() {
-        let _ = child.kill();
+        let _ = lock(&child).kill();
     }
     // Reaped whatever happened: a child nobody waits on is a zombie, including the one
-    // just killed for expiring.
-    let status = child.wait();
+    // just killed for expiring or for going quiet.
+    let status = reap(&child);
+    let silent = watch.stop();
 
     match outcome {
+        // A child killed for saying nothing reaches this through whichever end of the
+        // conversation the kill broke, and the limit is why it ended either way. Said before
+        // the plumbing's own account of it, which is a closed pipe and true but not the
+        // reason anybody needs.
+        _ if silent => finish(
+            records,
+            id,
+            FAILED,
+            None,
+            0.0,
+            spawn.org,
+            &format!(
+                "the brain said nothing for {:?} and was stopped; anything it spent before \
+                 that went unbooked, because a killed process prints no last line",
+                jobs.limit
+            ),
+        ),
         Err(e) => finish(records, id, FAILED, None, 0.0, spawn.org, &format!("{e:#}")),
         Ok(Outcome::Expired) => finish(
             records,
@@ -504,24 +605,108 @@ fn command(spawn: &Spawn) -> Command {
     cmd
 }
 
+/// Wait for the child to be gone, without holding the lock while doing it.
+///
+/// `Child::wait` blocks until the process dies, and the thread that would kill one that
+/// never does needs the same handle to do it. Polling gives the lock back between looks, so
+/// the watchdog can still fire on a child that closed its pipes and then hung about.
+fn reap(child: &Mutex<Child>) -> std::io::Result<ExitStatus> {
+    loop {
+        match lock(child).try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => thread::sleep(WATCH_TICK),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The three pipes, off the child and into the conversation's hands.
+struct Pipes {
+    stdin: ChildStdin,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+}
+
+fn take_pipes(child: &mut Child) -> Result<Pipes> {
+    Ok(Pipes {
+        stdin: child.stdin.take().context("the child has no stdin")?,
+        stdout: child.stdout.take().context("the child has no stdout")?,
+        stderr: child.stderr.take().context("the child has no stderr")?,
+    })
+}
+
+/// A thread that kills the child once it has been quiet for too long.
+///
+/// It is the only thing in this file that touches the child while the conversation is still
+/// going: the reads block, so nothing on the supervisor's own thread can notice a silence it
+/// is part of. The kill closes both pipes, the blocked read sees end-of-file, and the
+/// supervisor unwinds through the path it already has for a child that died.
+fn watchdog(child: Arc<Mutex<Child>>, deadline: Deadline) -> Watch {
+    let done = Arc::new(Mutex::new(false));
+    let killed = Arc::new(Mutex::new(false));
+    let (over, fired) = (Arc::clone(&done), Arc::clone(&killed));
+    let handle = thread::spawn(move || {
+        while !*lock(&over) {
+            if deadline.passed() {
+                // Killed under the same lock that `supervise` waits under, so a child that
+                // finished on its own between the two lines is reaped and not signalled.
+                let mut child = lock(&child);
+                if matches!(child.try_wait(), Ok(None)) {
+                    let _ = child.kill();
+                    *lock(&fired) = true;
+                }
+                return;
+            }
+            thread::sleep(WATCH_TICK);
+        }
+    });
+    Watch {
+        done,
+        killed,
+        handle,
+    }
+}
+
+/// The watchdog's end of things: told to stop, and asked whether it did anything first.
+struct Watch {
+    done: Arc<Mutex<bool>>,
+    killed: Arc<Mutex<bool>>,
+    handle: thread::JoinHandle<()>,
+}
+
+impl Watch {
+    /// Wind the thread up and answer whether it killed the child. Joined rather than left to
+    /// finish on its own, so the answer is the whole answer: a watchdog still deciding is one
+    /// whose verdict would arrive after the row was written.
+    fn stop(self) -> bool {
+        *lock(&self.done) = true;
+        let _ = self.handle.join();
+        *lock(&self.killed)
+    }
+}
+
 /// Write the request, read the answer, and stop at the price if this kind stops there.
 fn converse(
     jobs: &Jobs,
     db: &Arc<Mutex<Db>>,
     id: i64,
     spawn: &Spawn,
-    child: &mut Child,
+    pipes: Pipes,
+    deadline: &Deadline,
 ) -> Result<Outcome> {
-    let mut stdin = child.stdin.take().context("the child has no stdin")?;
-    let stdout = child.stdout.take().context("the child has no stdout")?;
-    let stderr = child.stderr.take().context("the child has no stderr")?;
+    let Pipes {
+        mut stdin,
+        stdout,
+        stderr,
+    } = pipes;
 
     // stderr gets a thread of its own. `PROGRESS` lines and tracebacks both come down it,
     // and a supervisor blocked on stdout while the child fills its stderr pipe is a
     // deadlock with both sides politely waiting.
     let log = Arc::clone(db);
     let redact = spawn.redact.clone();
-    let logger = thread::spawn(move || drain(&log, id, stderr, &redact));
+    let heard = deadline.clone();
+    let logger = thread::spawn(move || drain(&log, id, stderr, &redact, &heard));
 
     writeln!(stdin, "{}", spawn.body).context("writing the request to the brain")?;
     stdin.flush()?;
@@ -535,6 +720,7 @@ fn converse(
     let mut quote = None;
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading the brain's answer")?;
+        deadline.heard();
         if let Some(rest) = line.strip_prefix(ESTIMATE) {
             // Read before anything is written or parked on. A quote nobody can read back
             // is not a shown cost, and the go is what it stands in front of.
@@ -559,7 +745,7 @@ fn converse(
                 .append_job_log(id, &spawn.redact.scrub(&line))
                 .context("writing the brain's quote to the job's log")?;
             if let Some(stdin) = stdin.take() {
-                match park(jobs, db, id)? {
+                match park(jobs, db, id, deadline)? {
                     Some(Verdict::Go) => go(stdin)?,
                     // Both of these drop `stdin` unwritten and return, and `supervise`
                     // kills the child on the way out. It is holding a request it has read
@@ -580,10 +766,14 @@ fn converse(
 }
 
 /// Block until this job is told to go, or until nobody has told it for [`GO_WAIT`].
-fn park(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64) -> Result<Option<Verdict>> {
+fn park(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64, deadline: &Deadline) -> Result<Option<Verdict>> {
     let (tx, rx) = sync_channel(1);
     jobs.lock().insert(id, tx);
     lock(db).set_job_status(id, WAITING)?;
+    // The one silence that is not the child's. This interval is somebody reading a plan
+    // table and thinking about it, `GO_WAIT` is what bounds it, and a second clock over the
+    // same wait would only make the shorter of the two the real one.
+    deadline.held();
 
     let mut said = rx.recv_timeout(jobs.wait).ok();
     if said.is_none() {
@@ -601,6 +791,9 @@ fn park(jobs: &Jobs, db: &Arc<Mutex<Db>>, id: i64) -> Result<Option<Verdict>> {
     if said == Some(Verdict::Go) {
         lock(db).set_job_status(id, RUNNING)?;
     }
+    // Started again whatever the answer: a no and a timeout both end in a kill, and the
+    // clock costs nothing on the way there. What matters is that a go does not leave it off.
+    deadline.heard();
     Ok(said)
 }
 
@@ -612,10 +805,13 @@ fn go(mut stdin: std::process::ChildStdin) -> Result<()> {
 }
 
 /// Copy the child's stderr into its log, line by line, while it is still running.
-fn drain(db: &Arc<Mutex<Db>>, id: i64, stderr: ChildStderr, redact: &Redact) {
+fn drain(db: &Arc<Mutex<Db>>, id: i64, stderr: ChildStderr, redact: &Redact, deadline: &Deadline) {
     let mut written = 0usize;
     for line in BufReader::new(stderr).lines() {
         let Ok(line) = line else { return };
+        // Before the cap, and deliberately: a child looping on stderr has its lines dropped
+        // but is plainly not the child this clock is for.
+        deadline.heard();
         // Past the cap the pipe is still read and the line is dropped. Stopping the read
         // instead would fill the pipe and block the child for ever.
         if written >= LOG_BYTES {
@@ -793,8 +989,8 @@ fn append(db: &Arc<Mutex<Db>>, id: i64, line: &str) {
 
 /// A poisoned lock means another handler panicked mid-statement, which SQLite survives —
 /// the same reasoning `server::App::db` gives.
-fn lock(db: &Mutex<Db>) -> MutexGuard<'_, Db> {
-    db.lock().unwrap_or_else(|e| e.into_inner())
+fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
+    held.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // --- the map and the channel, under one lock ------------------------------------------
