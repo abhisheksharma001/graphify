@@ -5523,7 +5523,7 @@ nothing in between noticed for thirty-one steps.
   before, but it is still the cap doing all the work.
 
 
-### S-60 — The verdicts a failed pattern already paid for
+### S-60 — The verdicts a failed pattern already paid for ☑ (PR #61, 931bd96)
 
 **PR:** one. **Depends on:** S-59, which fixed the money on this exact branch and named this
 in its Not-done. S-59's Must-not was to change nothing but the figure. The figure is settled;
@@ -5630,6 +5630,93 @@ overruled calls keep their rule row; guard 3 red if the report still says `read:
 red if a salvage that cannot write takes down the spend line; guard 5 red if the salvage
 picks up a call this attempt did not read; CI 4/4.
 
+**Files (as built):** `brain/src/graphify_brain/daily.py` (+63 −4: `_salvage` beside `_paid`,
+three lines in the `except`, and three sentences on the module docstring's spend paragraph —
+the same paragraph S-59 extended, because keeping what was paid for is one rule with two
+halves), `brain/tests/test_daily.py` (+132: two readers of the two tables, an `answer=`
+default added to S-59's `paying` helper so a test can buy rejections, and six tests in a new
+section at the end), `docs/spec.md`. No engine change, no UI change, no schema change, no new
+dependency.
 
-**The register is complete through S-59.** Anything after that is a new step appended
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the salvage returns nothing | **6** | the defect |
+| 2 · the labels are reported but not applied | 5 | `_store` is the fix, not the report |
+| 3 · only confirmations salvaged, not overrulings | 1 | the hybrid half |
+| 4 · the salvage's own `except` removed | 1 | the spend line survives a write that fails |
+| 5 · the whole pattern's labels read, not this attempt's | 1 | an older run's verdicts stay put |
+
+Break 2 is the one worth reading. It leaves `_salvage` reading the rows and reporting them
+and takes out only the `_store` call, and `test_a_failed_pattern_reports_what_it_read` stays
+green under it. The report was never the fix; it was the symptom that led to it.
+
+Break 3 was written twice. The first version appended `-- BREAK 3` inside the SQL string,
+which commented out the rest of the statement and took five tests down for a reason that had
+nothing to do with the break. Recorded because a break that fails everything looks like a
+strong guard and is usually a broken break.
+
+Break 4's single red is a `JSONDecodeError` in the test's own `answer()` helper: there was no
+last line at all. That is the harm, exactly.
+
+**Learned:**
+
+**(a) Two tables holding one fact will drift at whichever seam is least travelled.**
+`pattern_labels` and `pattern_matches` are both true records of a model's verdict, kept in
+step by one function on the success path. The engine already knew better and reads the
+verdict straight out of `pattern_labels` for the overruled half (`rules.rs:487`, under a
+comment about "a second record of it that could fall out of step"). That comment was written
+about this hazard, four steps before the branch that fell into it.
+
+**(b) A correct exclusion is what made the loss permanent.** `_candidates` skips a call that
+already has a label, and it is right to: a model is not asked the same question twice. Add a
+path that writes the label without applying it and that rule stops being a saving and starts
+being a shredder. The dangerous change was never made to `_candidates`; it was made next to
+it, and the rule turned.
+
+**(c) The same property was the defect and the fix.** Because `_candidates` excluded every
+already-labelled call, every id the run was handed was guaranteed absent from the table when
+it started — so anything of theirs in there now was written by this attempt. Reading the rows
+back needs no timestamp, no run id, and no schema change. The invariant that made the loss
+unrecoverable is the one that makes recovery exact.
+
+**(d) A repair on a failure path is a new way for the failure path to fail.** This branch's
+whole job is to end in a report so the engine has a last line to book money from, and the fix
+puts a database read and a database write in front of that line. Guarding `_salvage` with its
+own catch is not defensive habit; break 4 shows the alternative is losing the money S-59 just
+fixed in order to save the labels.
+
+**(e) `read: 0` was the visible half of an invisible loss.** S-59 saw the field, called it a
+D-8 question rather than a spend one, and wrote it down. It was neither: it was sixty paid-for
+answers that nothing would ever count. A report that contradicts the rows the same function
+just wrote is worth chasing to the table.
+
+**Not done:**
+
+- **A pattern that fails now writes twice on one branch.** `label.run` wrote `pattern_labels`,
+  `_salvage` writes `pattern_matches`, and they are separate transactions with an exception
+  in between. A crash between them leaves the same split this step closed, in a smaller
+  window. One transaction across both would need `label.run` to stop committing per wave,
+  which S-59 and this step both ruled out.
+- **The two mechanisms still are not compared.** S-58's item and S-59's, unchanged: on a
+  pattern that succeeds, `got["usd"]` and the ledger delta are two answers to one question
+  and nothing asserts they agree.
+- **Nothing repairs the databases this already happened to.** Any `pattern_labels` row with
+  no matching `pattern_matches` row from a run before this one stays uncounted, and no
+  migration goes looking. A reconciliation pass is a step; it is also a write over rows
+  nobody has been asked about.
+- **The report still has no field for it.** A caller reading `read: 60` beside an `error`
+  cannot tell whether those sixty were applied by the success path or salvaged from a
+  failure. The two stderr lines say which; the JSON does not.
+- **A `SIGKILL`ed `daily` still applies nothing**, and now leaves labels behind in exactly
+  the shape this step exists to prevent. Same reason as S-58 and S-59: nothing runs on the
+  way out of a signal.
+- **The quote is still not a bound on input.** Unchanged and still the largest unmeasured
+  thing on either side of the pipe: `label.py:49` says so itself, `CHARS_PER_TOKEN = 3` is
+  never compared to the provider's own count, and measuring it needs a tokenizer the brain
+  does not depend on.
+
+
+**The register is complete through S-60.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
