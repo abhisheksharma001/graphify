@@ -5717,6 +5717,97 @@ just wrote is worth chasing to the table.
   never compared to the provider's own count, and measuring it needs a tokenizer the brain
   does not depend on.
 
+### S-61 — A brain that stops answering [Rust]
+
+**PR:** one. **Depends on:** nothing. It is the first step in five that is not about a number
+the brain reported; it is about a brain that reports nothing at all, ever again.
+
+**Files:** `engine/src/jobs.rs`, `engine/src/server.rs` (one builder for tests),
+`engine/tests/jobs.rs`, `docs/spec.md`. No brain change, no UI change, no schema change, no
+new dependency.
+
+**Today:** there is no clock on a running child.
+
+`GO_WAIT` is the only duration in `jobs.rs`, and `park` is the only thing that reads it: it
+bounds the interval where a labelling job sits at its price waiting for a click. Once the go
+is sent, `converse` reads the child's stdout to end-of-file and `supervise` calls
+`child.wait()`. Neither has a deadline. A child that never writes another line and never
+exits is waited on for as long as the engine runs.
+
+**And a hang is reachable, because nothing on the far side has a clock either.** No client in
+`baml_src/clients.baml` declares a request timeout. `retry_policy Backoff` retries a request
+that *failed*; a socket that was accepted and never answered has not failed yet. Measured
+against a loopback server that accepts the POST and never sends a header — no provider
+reached:
+
+| what the server did | outcome |
+|---|---|
+| answered at once | returned in 0.0s |
+| accepted, never answered | **still blocked at 40s** |
+| the same, with `timeout_ms 3000` in the client options | **still blocked at 40s** |
+
+The third row matters as much as the second: the option is accepted by `add_llm_client` and
+does nothing, so this cannot be fixed by writing a number into `clients.baml`.
+
+**Measured from the engine**, four labelling jobs given the go against a brain that reads the
+go and then goes quiet:
+
+| | |
+|---|---|
+| all four job rows, six seconds later | `running`, `cost_usd: 0.0` |
+| `live_jobs` | **4 of `MAX_LIVE` 4** |
+| the fifth `POST /api/patterns/label` | **429** *"4 jobs are already running or waiting for a go; finish or abandon one first"* |
+
+There is no way to finish or abandon one. `POST /api/jobs/{id}/stop` answers *"job {id} is
+not waiting for an answer"* — it reaches a parked child only. `sweep_abandoned` closes rows
+left by a process that died, and runs once, at startup. So labelling is refused until
+somebody restarts the engine, and the message on the way out names a remedy that does not
+exist for this state. That is the shape of the bug S-38 fixed, one status over: S-38's was a
+message naming a remedy the product did not have, for jobs that at least expired on their
+own after half an hour. These do not expire at all.
+
+On the schedule it is worse and quieter. `sync.rs:254` runs the daily read through
+`run_blocking`, on the cron process's own thread, so a `graphify daily` at six in the morning
+that meets a stalled provider simply never returns.
+
+**Change:** a clock on silence, and the child killed when it runs out.
+
+1. `Jobs` gains a `limit` beside its `wait`, and `App` a builder to wind it down, the way
+   `with_go_wait` already winds down the other one. Default `RUN_LIMIT`, ten minutes.
+
+2. A deadline shared by the supervisor and the two threads reading the child, held as
+   `Option<Instant>`: `Some` when the clock is running, `None` while the job is parked, which
+   is the one interval that already has a bound of its own. Every line the child writes —
+   stdout in `converse`, stderr in `drain`, which is where `PROGRESS` arrives — pushes it
+   forward. A long healthy run is never touched; a quiet one is.
+
+3. A watchdog thread kills the child when the deadline passes. The blocked read then sees
+   end-of-file and the supervisor unwinds through the path it already has for a child that
+   died, with a reason naming the limit rather than the exit status.
+
+**Why silence and not total runtime.** A labelling run over a fortnight of a busy org is
+legitimately long, and a ceiling large enough never to cut one short is large enough to be
+no bound at all. What a working brain does every wave is *say something*; `drain` already
+reads every line of it. The signal is there and nothing was reading it as a sign of life.
+
+**Must not:** change `GO_WAIT`, `park`, or anything about how a job waits for its go. Kill a
+parked child on this clock — that interval is bounded already and killing it early would
+turn an analyst's lunch into a refusal. Change `MAX_LIVE`, the 429, or its wording; the
+message will be true again once the slots free themselves, and rewriting it is a different
+step. Add a way to stop a running job — also a different step, and one that needs a decision
+about what a half-read run leaves behind. Touch `stop_job`, `sweep_abandoned`, or
+`abandon_live_jobs`. Change what a child that exits on its own reports, or any part of
+S-57's or S-58's classification. Book, estimate, or invent a figure for what a killed child
+spent — it printed no last line and there is nothing to read. Touch the brain, `clients.baml`,
+the UI, or the schema. Add a dependency. Use a signal other than the one `Child::kill`
+already sends.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean;
+`uv run pytest -q` and `pnpm test` untouched and green; guard 1 red if a silent child is
+waited on past the limit; guard 2 red if a child that keeps printing is killed anyway; guard
+3 red if a parked child is killed by this clock; guard 4 red if the slot is not free after
+the kill; guard 5 red if a child that finishes normally is touched at all; CI 4/4.
+
 
 **The register is complete through S-60.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
