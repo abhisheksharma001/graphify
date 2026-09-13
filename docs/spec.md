@@ -5717,7 +5717,7 @@ just wrote is worth chasing to the table.
   never compared to the provider's own count, and measuring it needs a tokenizer the brain
   does not depend on.
 
-### S-61 — A brain that stops answering [Rust]
+### S-61 — A brain that stops answering [Rust] ☑ (PR #62, 516151e)
 
 **PR:** one. **Depends on:** nothing. It is the first step in five that is not about a number
 the brain reported; it is about a brain that reports nothing at all, ever again.
@@ -5808,6 +5808,92 @@ waited on past the limit; guard 2 red if a child that keeps printing is killed a
 3 red if a parked child is killed by this clock; guard 4 red if the slot is not free after
 the kill; guard 5 red if a child that finishes normally is touched at all; CI 4/4.
 
+**Files (as built):** `engine/src/jobs.rs` (+197 −16: `RUN_LIMIT` and `WATCH_TICK`, a `limit`
+beside `Jobs::wait`, a `Deadline`, `take_pipes`, `watchdog` and its `Watch`, `reap`, and the
+three lines that reset or hold the clock — one in `converse`'s stdout loop, one in `drain`,
+two in `park`; `lock` made generic over what it holds, same poison reasoning),
+`engine/src/server.rs` (+11: `with_job_clocks` beside `with_go_wait`, which it replaces at
+every call site in the tests), `engine/tests/jobs.rs` (+152: `boot` takes both clocks, a
+`served_within`, a `GOES_QUIET` brain and four tests), `docs/spec.md`. No brain change, no UI
+change, no schema change, no new dependency.
 
-**The register is complete through S-60.** Anything after that is a new step appended
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the watchdog notices and does not kill | 2 | the defect |
+| 2 · a stderr line is not a sign of life | 1 | a working run is not cut short |
+| 3 · the clock is not held while parked | 1 | half an hour to read a plan does not become six seconds |
+| 4 · the clock is left off after the go | 2 | the interval that matters is the one after the click |
+| 5 · no reason of its own for a killed child | 1 | the log says why, not just that a pipe closed |
+
+**Learned:**
+
+**(a) The absence of a duration is invisible in a way a wrong one is not.** `GO_WAIT` is
+named, documented and tested, and its presence reads as "this file thinks about time". It
+bounds one interval out of two, and the other one had nothing — not a generous limit, not a
+default, nothing. A file with one clock in it looks like a file with clocks in it.
+
+**(b) A remedy in an error message is a claim, and claims go stale sideways.** The 429 says
+*"finish or abandon one first"*, which S-38 made true for a parked job. Nothing about S-38
+was wrong; a second way to occupy a slot appeared beside it and the sentence quietly stopped
+covering the cases it named. The message was not edited here, by this step's own Must-not —
+it is true again once the slots free themselves — but that is the second time in this
+register that a sentence promising a remedy outlived it.
+
+**(c) Silence was already being read and never being heard.** `drain` has copied every
+`PROGRESS` line into the job's log since S-28. The signal that a child is alive was crossing
+a pipe the engine already owned, being written to a table the engine already had, and no
+line of code took it as meaning anything. The cheapest guards are usually a second reading of
+something already in hand — the third step running where that turned out to be true.
+
+**(d) A blocking call under a lock is a deadlock with a watchdog.** The first version had
+`supervise` call `child.wait()` while holding the child, which is exactly the handle the
+watchdog needs to kill it. For a child that closes its pipes and then hangs about, the
+supervisor would have waited forever holding the lock and the watchdog would have blocked
+trying to take it. Found in self-review, not by a test, and `reap` polling `try_wait` is the
+fix. A guard that shares a resource with the thing it guards has to give it back.
+
+**(e) A test clock has to clear process startup, and that is the semantics talking.** Three
+seconds was not always enough for a shell to reach its first line with the rest of this file
+running beside it, and the child was killed before it ever parked. That is not a test
+artefact to paper over: the clock starts at spawn, so a brain that never gets as far as
+reading its request is a brain saying nothing, which is right. Six seconds, and the reason is
+written where the constant is.
+
+**Not done:**
+
+- **The watchdog kills one process, not a tree.** A brain launched through a wrapper that
+  forks — `uv run graphify-brain`, say — leaves the real child holding the pipes, so
+  `converse` stays blocked on a read that never ends and the row is never closed. The shipped
+  `graphify-brain` is a console script and does not fork, and the fake brain in these tests
+  `exec`s for the same reason and says so. Two ways out, both bigger than this step: kill the
+  process group, which needs `libc`; or make the conversation something the supervisor can
+  abandon rather than join, which needs `converse`'s borrows turned into owned handles.
+- **A killed child books nothing, and it may have spent.** S-58's rule is that the last line
+  on the way out is what the engine books, and `Child::kill` is `SIGKILL` — there is no way
+  out to print one. The reason line says so in as many words rather than writing a zero
+  quietly, which is the third tier again, but the money is still gone. Booking it would need
+  the brain to handle a `SIGTERM` and the engine to send one and wait, which is a step on both
+  sides of the pipe. Item (bbbb) stands, now with a second way to reach it.
+- **There is still no way to stop a running job.** The slot comes back on its own now, after
+  the limit. Nobody can give it back sooner, and `stop` still answers *"job {id} is not
+  waiting for an answer"*. Deliberately left: a stop for a running labelling job needs a
+  decision about what a half-read run leaves behind, and S-60 has just finished paying for
+  the last question of that shape.
+- **`Instant` may not advance across suspend**, which is the standing item, and it now has a
+  second reader. A laptop closed mid-run wakes up with a clock that may not have moved, and
+  the effect is a limit that is longer than it says — the safe direction, and still not the
+  stated one.
+- **The 429 still names a remedy that does not fit every way of holding a slot**, per (b),
+  and nothing tells the browser that a job died of silence rather than of an error. The log
+  line is there for anyone who opens the job.
+- **Nothing bounds a request the brain makes.** This is a clock over the child, in the engine,
+  which is the right place for the slot and the row. It is not a timeout on the model call,
+  and after ten minutes of one stalled request the whole run is lost rather than that one
+  batch retried. Doing it properly is a `baml_src` question, and this step's measurement says
+  the obvious spelling of it does nothing.
+
+
+**The register is complete through S-61.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
