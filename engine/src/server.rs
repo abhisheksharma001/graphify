@@ -133,6 +133,17 @@ impl App {
         self
     }
 
+    /// Both of a job's clocks at once: how long it may sit at its price, and how long it
+    /// may say nothing. Only the tests set these; everything else takes what `jobs` chose.
+    pub fn with_job_clocks(
+        mut self,
+        wait: std::time::Duration,
+        limit: std::time::Duration,
+    ) -> Self {
+        self.jobs = Arc::new(Jobs::bounded_by(wait, limit));
+        self
+    }
+
     pub fn with_vapi_base(mut self, base: impl Into<String>) -> Self {
         self.vapi_base = base.into();
         self

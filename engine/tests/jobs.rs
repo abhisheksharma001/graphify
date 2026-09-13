@@ -133,7 +133,13 @@ impl Server {
 }
 
 /// A live server over a fresh database holding one org, pointed at `brain`.
-async fn boot(dir: TempDir, brain: &str, wait: Duration, fill: impl FnOnce(&Db, i64)) -> Server {
+async fn boot(
+    dir: TempDir,
+    brain: &str,
+    wait: Duration,
+    limit: Duration,
+    fill: impl FnOnce(&Db, i64),
+) -> Server {
     let db = Db::open(dir.path().join("graphify.db")).unwrap();
     let org = db.create_org("acme").unwrap();
     fill(&db, org);
@@ -141,7 +147,7 @@ async fn boot(dir: TempDir, brain: &str, wait: Duration, fill: impl FnOnce(&Db, 
     let store = Secrets::open(dir.path().join(".secret")).unwrap();
     let app = App::new(db, store, Auth::new(None))
         .with_brain(brain)
-        .with_go_wait(wait);
+        .with_job_clocks(wait, limit);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -163,16 +169,26 @@ async fn served(body: &str) -> Server {
 async fn served_for(body: &str, wait: Duration) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), body);
-    boot(dir, &brain, wait, |_, _| {}).await
+    boot(dir, &brain, wait, RUN_LIMIT, |_, _| {}).await
+}
+
+/// The same, with the silence limit wound down instead of the go-wait.
+async fn served_within(body: &str, limit: Duration) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let brain = fake(dir.path(), body);
+    boot(dir, &brain, GO_WAIT, limit, |_, _| {}).await
 }
 
 /// A server pointed at a binary of the test's choosing, over a database it fills itself.
 async fn serve_with(brain: &str, fill: impl FnOnce(&Db, i64)) -> Server {
-    boot(tempfile::tempdir().unwrap(), brain, GO_WAIT, fill).await
+    boot(tempfile::tempdir().unwrap(), brain, GO_WAIT, RUN_LIMIT, fill).await
 }
 
 /// Long enough that no test reaches it by being slow.
 const GO_WAIT: Duration = Duration::from_secs(600);
+
+/// The same, for the other clock.
+const RUN_LIMIT: Duration = Duration::from_secs(600);
 
 async fn get(url: &str) -> (u16, Value) {
     let res = reqwest::get(url).await.unwrap();
@@ -703,7 +719,7 @@ async fn a_job_left_running_by_a_dead_engine_does_not_block_the_next_one() {
     let brain = fake(dir.path(), ANSWERS);
     // Rows exactly like the ones a killed engine leaves: children that no longer exist,
     // and nothing in any registry that could ever finish them.
-    let server = boot(dir, &brain, GO_WAIT, |db, org| {
+    let server = boot(dir, &brain, GO_WAIT, RUN_LIMIT, |db, org| {
         for _ in 0..jobs::MAX_LIVE {
             db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
                 .unwrap();
@@ -1174,7 +1190,7 @@ const NO_LOG: &str = "CREATE TRIGGER no_log BEFORE UPDATE OF log ON jobs
 async fn served_but_broken(body: &str, sql: &'static str) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), body);
-    boot(dir, &brain, GO_WAIT, |db, _| {
+    boot(dir, &brain, GO_WAIT, RUN_LIMIT, |db, _| {
         db.conn().execute_batch(sql).unwrap();
     })
     .await
@@ -1320,7 +1336,7 @@ fn an_ordinary_sweep_clears_the_slots_and_says_nothing() {
 async fn a_sweep_that_cannot_run_does_not_stop_the_rest_of_the_product() {
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), LABELS);
-    let server = boot(dir, &brain, GO_WAIT, |db, org| {
+    let server = boot(dir, &brain, GO_WAIT, RUN_LIMIT, |db, org| {
         for _ in 0..jobs::MAX_LIVE {
             db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
                 .unwrap();
@@ -1398,7 +1414,7 @@ async fn a_sweep_that_cannot_run_is_on_the_board_and_not_only_on_stderr() {
     // nothing left behind is one where the sweep succeeds by having nothing to do.
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), LABELS);
-    let server = boot(dir, &brain, GO_WAIT, |db, org| {
+    let server = boot(dir, &brain, GO_WAIT, RUN_LIMIT, |db, org| {
         db.create_job("label", jobs::WAITING, org, "{}", "2026-09-03T00:00:00.000Z")
             .unwrap();
         db.conn().execute_batch(NO_SWEEP).unwrap();
@@ -1473,7 +1489,7 @@ const TRAIL: &str = "CREATE TABLE trail (n INTEGER PRIMARY KEY, job INTEGER NOT 
 async fn watched(body: &str, wait: Duration) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let brain = fake(dir.path(), body);
-    boot(dir, &brain, wait, |db, _| {
+    boot(dir, &brain, wait, RUN_LIMIT, |db, _| {
         db.conn().execute_batch(TRAIL).unwrap();
     })
     .await
@@ -1779,4 +1795,122 @@ echo '{"labels":[],"usd":0.039,"stopped":null}'
     assert_eq!(done["cost_usd"], 0.039);
     assert_eq!(ledger(&server), 0.039);
     assert!(!done["log"].as_str().unwrap().contains("failed after spending"), "{done}");
+}
+
+
+// --- a brain that stops answering -----------------------------------------------------
+//
+// `GO_WAIT` used to be the only duration in `jobs.rs`, and it covers the interval where a
+// labelling job sits at its price. After the go there was no clock at all: `converse` read
+// stdout to end-of-file and `supervise` called `child.wait()`, and a child that never wrote
+// another line and never exited was waited on for as long as the engine ran. Nothing on the
+// far side has a clock either — no client in `baml_src/clients.baml` declares a request
+// timeout, and a socket that was accepted and never answered has not failed, so
+// `retry_policy Backoff` never sees it.
+
+/// Short enough to sit through, long enough that starting a shell is not itself mistaken for
+/// a silence. The clock starts when the child is spawned, so a brain that never gets as far
+/// as reading its request is a brain saying nothing — which is right, and which is why this
+/// cannot be tightened: every test in this file runs at once, and three seconds was not
+/// always enough for a shell to reach its first line on a machine running the rest of them.
+const A_SHORT_SILENCE: Duration = Duration::from_secs(6);
+
+/// A brain that takes the go and then says nothing at all, which is what a provider that
+/// accepts the connection and never answers looks like from up here.
+///
+/// `exec`, so the shell is replaced rather than left waiting on a child of its own. A
+/// grandchild would inherit the pipes and hold them open past the kill, which is a real
+/// limit of killing one process and is written up in this step's Not-done — it is not what
+/// these tests are measuring.
+const GOES_QUIET: &str = r#"
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+exec sleep 300
+"#;
+
+#[tokio::test]
+async fn a_brain_that_stops_answering_is_stopped() {
+    let server = served_within(GOES_QUIET, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    let done = until(&server, id, jobs::FAILED).await;
+    let log = done["log"].as_str().unwrap();
+    assert!(log.contains("said nothing for 6s and was stopped"), "{log}");
+    // Nothing is booked for it. The child printed no last line, so there is no figure to
+    // read, and S-58's rule is that a number nobody has is not zero — it is said out loud.
+    assert_eq!(done["cost_usd"], 0.0);
+    assert!(log.contains("went unbooked"), "{log}");
+}
+
+#[tokio::test]
+async fn the_slot_a_silent_child_held_comes_back() {
+    // Four of them is every slot there is, and before this step the fifth request was
+    // refused until somebody restarted the engine: `stop` reaches a parked child only, and
+    // `sweep_abandoned` runs once, at startup.
+    let server = served_within(GOES_QUIET, A_SHORT_SILENCE).await;
+    // Started together rather than one after another, so the four clocks run at once and the
+    // test costs one silence instead of four.
+    let mut ids = Vec::new();
+    for _ in 0..jobs::MAX_LIVE {
+        ids.push(parked(&server).await);
+    }
+    for id in &ids {
+        assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    }
+    for id in &ids {
+        until(&server, *id, jobs::FAILED).await;
+    }
+
+    assert_eq!(server.db().live_jobs(jobs::RUNNING, jobs::WAITING).unwrap(), 0);
+    let (status, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "asked for a human", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+}
+
+#[tokio::test]
+async fn a_brain_that_keeps_talking_is_left_alone_however_long_it_takes() {
+    // The whole reason this clock is on silence and not on runtime. This child runs for
+    // longer than the limit and is never quiet for a twentieth of it.
+    let brain = r#"
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+i=0
+while [ $i -lt 24 ]; do
+  echo "PROGRESS $i/24" >&2
+  sleep 0.3
+  i=$((i + 1))
+done
+echo '{"labels":[],"usd":0.0231,"stopped":null}'
+"#;
+    let server = served_within(brain, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    let done = until(&server, id, jobs::DONE).await;
+    assert_eq!(done["cost_usd"], 0.0231);
+    assert!(!done["log"].as_str().unwrap().contains("said nothing"), "{done}");
+}
+
+#[tokio::test]
+async fn a_job_parked_on_its_price_is_not_a_job_saying_nothing() {
+    // A parked child is silent on purpose and `GO_WAIT` is what bounds it. A second clock
+    // over the same wait would make the shorter of the two the real one, and half an hour to
+    // read a plan table would quietly become four hundred milliseconds.
+    let dir = tempfile::tempdir().unwrap();
+    let brain = fake(dir.path(), LABELS);
+    let server = boot(dir, &brain, GO_WAIT, A_SHORT_SILENCE, |_, _| {}).await;
+    let id = parked(&server).await;
+    tokio::time::sleep(A_SHORT_SILENCE + Duration::from_millis(500)).await;
+
+    let (status, body) = get(&server.url(&format!("/api/jobs/{id}"))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], jobs::WAITING, "the parked child was killed by the wrong clock");
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    assert_eq!(until(&server, id, jobs::DONE).await["cost_usd"], 0.0123);
 }
