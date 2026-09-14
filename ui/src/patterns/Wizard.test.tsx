@@ -68,6 +68,13 @@ const done = (id: number, output: unknown, cost: number | null): Job => ({
   finished_at: '2026-01-01T00:00:02Z',
 })
 
+/** Where a run that is still reading has got to. */
+const PART = { done: 6, of: 20 }
+
+/** What the engine booked for the run that was stopped six batches in — S-62's figure:
+ * what the brain had reported spending by the time it was killed. */
+const STOPPED_COST = 0.0094
+
 let sent: Sent[]
 
 type StubOptions = {
@@ -78,13 +85,16 @@ type StubOptions = {
   estimate?: number | null
   /** How many calls `GET /api/calls` finds for the selection. */
   found?: number
+  /** A labelling job that keeps working after its go instead of answering `done` at once,
+   * so a test can press a button while it is running. It ends only when it is stopped. */
+  keepsReading?: boolean
 }
 
 /** The engine, as far as this component can tell. Every start answers with a job id and
  * every job is already finished, so nothing here has to wait out a poll. */
 function stubEngine(
   costs: (number | null)[] = [0.0043, 0.0051],
-  { plan = PLAN, estimate = 0.1094, found = 3 }: StubOptions = {},
+  { plan = PLAN, estimate = 0.1094, found = 3, keepsReading = false }: StubOptions = {},
 ) {
   sent = []
   let started = 0
@@ -94,6 +104,9 @@ function stubEngine(
   /** The labelling jobs that have been told to go. Before the go a labelling job answers
    * `waiting`, which is the state the whole two-click rule is about. */
   const gone = new Set<number>()
+  /** The jobs a `POST /stop` reached after their go. S-63: the same URL answers off two
+   * maps in the engine, and which one it found the job in is what the status says. */
+  const halted = new Set<number>()
 
   vi.stubGlobal(
     'fetch',
@@ -123,7 +136,10 @@ function stubEngine(
       }
       const stop = /\/api\/jobs\/(\d+)\/stop$/.exec(url)
       if (method === 'POST' && stop) {
-        return answer({ id: Number(stop[1]), status: 'expired' })
+        const id = Number(stop[1])
+        if (!gone.has(id)) return answer({ id, status: 'expired' })
+        halted.add(id)
+        return answer({ id, status: 'stopped' })
       }
       if (url.startsWith('/api/calls?')) {
         return answer(Array.from({ length: found }, (_, i) => ({ id: `c${i + 1}` })))
@@ -132,11 +148,25 @@ function stubEngine(
       if (job) {
         const id = Number(job[1])
         if (kinds.get(id) !== 'label') return answer(done(id, plan, costs[id - 1] ?? null))
-        return answer(
-          gone.has(id)
-            ? { ...done(id, LABELLED, LABELLED.usd), kind: 'label' }
-            : { ...done(id, null, null), kind: 'label', status: 'waiting', estimate_usd: estimate },
-        )
+        if (!gone.has(id)) {
+          return answer({
+            ...done(id, null, null),
+            kind: 'label',
+            status: 'waiting',
+            estimate_usd: estimate,
+          })
+        }
+        if (keepsReading) {
+          // Six of twenty batches in, and stays there: what this serves is a run the
+          // analyst is looking at while it spends, which is the only state a stop is for.
+          const reading = { ...done(id, null, null), kind: 'label', progress: PART }
+          return answer(
+            halted.has(id)
+              ? { ...reading, status: 'stopped' as const, cost_usd: STOPPED_COST }
+              : { ...reading, status: 'running' as const },
+          )
+        }
+        return answer({ ...done(id, LABELLED, LABELLED.usd), kind: 'label' })
       }
       throw new Error(`the wizard asked for something this test does not serve: ${url}`)
     }),
@@ -410,5 +440,89 @@ describe('the two clicks that spend', () => {
     await screen.findByRole('button', { name: 'Read 25 calls' })
     expect(stops()).toHaveLength(1)
     expect(goes()).toHaveLength(0)
+  })
+})
+// --- a run a person can stop (S-63) ---------------------------------------------------
+//
+// Before S-63 the only control over a run that was spending was refused by the engine, and
+// the wizard drew no button for it. These are about what the screen offers while a run is
+// working, and what it says about one that was stopped: money was spent, so it cannot be
+// reported as a quote that was turned down, and nothing failed, so it cannot be reported as
+// a failure either.
+
+describe('stopping a run that is already reading', () => {
+  /** A run that has gone and is six batches in, still reading. */
+  async function reading() {
+    stubEngine(undefined, { plan: SURE, keepsReading: true })
+    const user = await draft()
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: 'Stop this run' })
+    return user
+  }
+
+  test('the stop is offered while it reads, and the no is not', async () => {
+    await reading()
+
+    // Two different answers to two different questions. "Not now" turns a price down and
+    // costs nothing; this one stops something that is spending, and the screen must not
+    // offer the cheap word for the expensive act.
+    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop this run' })).toBeTruthy()
+    // And it says what stopping does and does not do, in front of the button that does it.
+    expect(screen.getByText(/does not get back what it cost/)).toBeTruthy()
+  })
+
+  test('the stop is not offered before the go', async () => {
+    stubEngine(undefined, { plan: SURE, keepsReading: true })
+    const user = await draft()
+    await user.click(spendButton())
+    await screen.findByRole('button', { name: /up to/ })
+
+    // Nothing is reading yet: the answer to a quote is the no, and that one is here.
+    expect(screen.queryByRole('button', { name: 'Stop this run' })).toBeNull()
+    expect(noButton()).toBeTruthy()
+  })
+
+  test('clicking it stops the job, once, and reads nothing more', async () => {
+    const user = await reading()
+    const readBefore = goes().length
+
+    await user.click(screen.getByRole('button', { name: 'Stop this run' }))
+    await screen.findByText(/Stopped\./)
+
+    expect(stops()).toHaveLength(1)
+    expect(stops()[0].url).toBe('/api/jobs/2/stop')
+    // The stop is not a second go, and it does not start anything else either.
+    expect(goes()).toHaveLength(readBefore)
+    expect(posts('label')).toHaveLength(1)
+  })
+
+  test('a stopped run is reported with what it cost, not as a failure', async () => {
+    const user = await reading()
+
+    await user.click(screen.getByRole('button', { name: 'Stop this run' }))
+    const said = await screen.findByText(/Stopped\./)
+
+    // S-62's figure, shown: the run spent and the screen says how much. A stop that showed
+    // nothing would read as a quote that had been turned down, which costs nothing.
+    expect(said.textContent).toContain('$0.0094')
+    expect(said.textContent).toContain('6 of 20')
+    // Nothing failed. The brain's complaint panel is for faults, and a person pressing a
+    // button they were offered is not one.
+    expect(screen.queryByText(/went wrong/i)).toBeNull()
+  })
+
+  test('the wizard can price a second run after one was stopped', async () => {
+    const user = await reading()
+
+    await user.click(screen.getByRole('button', { name: 'Stop this run' }))
+    await screen.findByText(/Stopped\./)
+    await user.click(spendButton())
+
+    // The slot the stopped run was holding is back — that is half of what stopping is for —
+    // and the second quote is a second job rather than the first one resumed.
+    await waitFor(() => expect(posts('label')).toHaveLength(2))
   })
 })

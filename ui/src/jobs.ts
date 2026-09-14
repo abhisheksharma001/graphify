@@ -65,7 +65,8 @@ export class JobFailed extends Error {
  * that. The window is small — six goes in a row here were all `running` by the next
  * request — but it is real, and a client that read `waiting` as an ending would fail a
  * labelling run that was about to succeed. Anything else that is not `until` is an error,
- * carrying the brain's own last line.
+ * carrying the brain's own last line — except `stopped`, which is somebody having asked
+ * for this and is thrown as `Cancelled`.
  */
 export async function settle(
   id: number,
@@ -79,6 +80,10 @@ export async function settle(
     if (!alive()) throw new Cancelled()
     tick(job)
     if (until.includes(job.status)) return job
+    // Somebody pressed stop. Not a fault and nothing to report: the screen that asked for
+    // it already knows, and a screen that did not ask is no longer waiting for this answer
+    // either — which is what `Cancelled` means everywhere else it is thrown here.
+    if (job.status === 'stopped') throw new Cancelled()
     if (job.status !== 'running' && job.status !== 'waiting') throw new JobFailed(job)
     await new Promise((resume) => setTimeout(resume, POLL_MS))
   }

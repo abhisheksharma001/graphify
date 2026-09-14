@@ -308,7 +308,7 @@ export type Plan = {
  *
  * `waiting` is the interesting one: the brain has printed its price and is parked with
  * its stdin open, having read nothing and spent nothing, until it is told to go. */
-export type JobStatus = 'running' | 'waiting' | 'done' | 'failed' | 'expired'
+export type JobStatus = 'running' | 'waiting' | 'done' | 'failed' | 'expired' | 'stopped'
 
 export type Job = {
   id: number
@@ -416,9 +416,17 @@ export const job = (id: number) => get<Job>(`/api/jobs/${id}`)
  * button that sends it carries the price the brain quoted. */
 export const go = (id: number) => send<Started>('POST', `/api/jobs/${id}/go`, null)
 
-/** The no. The other answer to the price the go carries, and the one that gives the
- * engine's slot back: a parked job otherwise holds it for the half hour the engine waits.
- * Spends nothing and reads nothing, because the job it stops has done neither. */
+/** Turn this job off. One call and two meanings, decided by where the job has got to.
+ *
+ * Before the go it is the no: the other answer to the price the go carries, and the one
+ * that gives the engine's slot back, since a parked job otherwise holds it for the half
+ * hour the engine waits. It spends nothing and reads nothing, because the job it stops has
+ * done neither, and the answer says `expired`.
+ *
+ * After the go it stops the run where it is, and the answer says `stopped`. That one has
+ * spent: the engine books what the brain had reported spending by then and the job's
+ * `cost_usd` carries it. Not a refund and never offered as one — what it saves is the rest.
+ */
 export const stop = (id: number) => send<Started>('POST', `/api/jobs/${id}/stop`, null)
 
 /** One assistant's system prompt. Not in `assistants` above, which is a picker: these run
