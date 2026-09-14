@@ -5895,7 +5895,7 @@ written where the constant is.
   the obvious spelling of it does nothing.
 
 
-### S-62 — What a killed brain had already spent [Rust]
+### S-62 — What a killed brain had already spent [Rust] ☑ (PR #63, 93d7432)
 
 **PR:** one. **Depends on:** S-61, which built the thing that kills a child on purpose, and
 S-58, which decided what a failed one is booked at. It closes the first item in S-61's own
@@ -5993,6 +5993,89 @@ guard 4 red if a child that exits normally is booked at the announcement instead
 last line; guard 5 red if a line that is not money is taken for money; guard 6 red if a loop
 stops announcing; CI 4/4.
 
+**Files (as built):** `engine/src/jobs.rs` (+93 −24: a `SPENT` const beside `PROGRESS`, a
+`Tally` and the `announced` helper that turns its three answers into a booking and a
+sentence, both threaded through `converse` into `drain`, and the three arms — S-61's silent
+kill, the plumbing error beside it, and `classify`'s `None`), `engine/tests/jobs.rs` (+115: a
+`SPENDS_THEN_QUIET` brain and five tests; S-61's kill test keeps its assertion and changes
+the phrase it looks for, because the sentence for a child that announced nothing is now the
+third of three), `brain/src/graphify_brain/cost.py` (+39 −1: `SPENT` and `announce`),
+`label.py`, `daily.py`, `synth.py` (+5 between them: one call beside each `PROGRESS`),
+`brain/tests/test_spent.py` (+42: three tests on the announcement itself),
+`test_label.py`/`test_daily.py`/`test_synth.py` (+57: one per loop),
+`brain/tests/test_booked.py` (+4: its `baml_py.Collector` stand-in gains the `logs` the real
+one has — see (c)), `docs/spec.md`. No UI change, no schema change, no new dependency.
 
-**The register is complete through S-61.** Anything after that is a new step appended
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · `drain` hears the line and does not keep it | 3 | the defect |
+| 2 · a child that announced nothing is booked at something | 9 | zero for "never said" is still zero, S-58's rule intact |
+| 3 · the announcement outranks the brain's own last line | 1 | the fallback is only ever a fallback |
+| 4 · the total parsed without the money check | 1 | `nan`, `inf` and a negative are not prices |
+| 5 · a loop stops announcing | 2 | the figure keeps arriving |
+| 6 · a total `spent` could not finish is announced anyway | 1 | a part booked as the whole is what this refuses |
+
+Break 2 is the wide one, and it is wide honestly: nine tests go red because S-58's existing
+tests and S-62's new ones make the same claim about the same helper from either side. It was
+checked against S-60's lesson — a break that fails everything is usually a broken break — and
+it is not one; every red is an assertion that a job which spent nothing is booked at nothing.
+
+**Learned:**
+
+**(a) The figure was already in the process, and the gap was that nothing said it out loud.**
+`cost.ledger()` has been collecting every model call since S-56, and `cost.spent()` has been
+able to total it since S-58. Both were read in exactly one place: `cli`, on the way down. A
+process that is killed never gets to the way down, so the one reader was the one that could
+not run. Three steps running now where the cheapest guard turned out to be a second reading
+of something already in hand — and this time it was not even a second reading, it was the
+first one that happens while the process is still alive.
+
+**(b) "There is nothing to read" was a statement about the protocol, not about the world.**
+S-61's Must-not said not to invent a figure for a killed child because it printed no last
+line, and that was right for S-61. It reads like a fact about killed processes and it is a
+fact about *when* the brain chose to speak. Moving the speaking earlier moved the whole
+question. The lesson is narrow and worth having: a Must-not that rests on an absence should
+name what would have to change for the absence to go away, or it quietly forbids the fix.
+
+**(c) A stand-in is a stand-in for a shape, and the shape can grow under it.**
+`test_booked.py` replaces `baml_py.Collector` with a class carrying only `last`, which was
+everything the code touched. `announce` touches `logs`, and sixteen tests across three files
+went red the moment the module global held the fake — the pollution `test_spent.py` already
+had a fixture and a paragraph about. The fake gained the attribute the real class has. What
+is worth remembering is the failure's shape: it was not in the tests for the new code, it was
+in every test that ran *after* one of them.
+
+**(d) Two zeros that mean different things need two sentences, and now there are three.**
+S-58 split "the brain said zero" from "the brain never said". A killed child is a third: "the
+brain said something on the way and then stopped". `announced` holds all three in one place
+so the arms that use it cannot drift apart, which is what `money` already does for the two
+directions of the arithmetic.
+
+**Not done:**
+
+- **`plan`, `clarify` and `ask` do not announce.** They print no `PROGRESS` either — one or
+  two model calls and out — so there is no loop to hang it on. The window a kill can land in
+  is one returned model call wide, and it is real: `plan` makes two.
+- **The last wave before a stall is still lost.** The announcement is per wave, not per call,
+  so what is booked is what the run had spent at the last boundary it reached. Per call would
+  mean a print inside `cost.booked`, which is a pure function today.
+- **A brain killed before its first boundary still books nothing**, which is correct — it has
+  not been billed — but it is indistinguishable from the defect without reading the log. The
+  third tier's sentence is the only thing that tells them apart.
+- **Nothing reconciles the announcement against the last line on the success path.** They are
+  two mechanisms for the same number and the success path uses only one of them, so a
+  disagreement between them would go unnoticed. Item (iiii) already says this about `booked`
+  and the ledger delta; this is a third figure in the same family.
+- **The running total is not shown anywhere.** It crosses the wire, lands in the job's log,
+  and is read by `Tally` alone. The browser still sees a cost only when the job closes, and
+  the wizard's bar is still drawn from `PROGRESS`.
+- **A `SPENT` line is not authenticated and nothing else validates the stream.** Any line the
+  child writes to stderr beginning with `SPENT ` and parsing as a non-negative finite number
+  is taken as the running total. That is the same trust the engine already extends to
+  `ESTIMATE` and `PROGRESS`, and the same answer: the child is a process this engine started.
+
+
+**The register is complete through S-62.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
