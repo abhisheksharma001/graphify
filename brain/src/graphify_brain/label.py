@@ -303,6 +303,7 @@ def _label(job: Job, conn: Any, stderr: TextIO) -> dict[str, Any]:
             labels.extend(fresh)
             done += len(fits)
             print(f"PROGRESS {done}/{len(sending)}", file=stderr, flush=True)
+            cost.announce(stderr)
 
             if failure is not None:
                 raise failure

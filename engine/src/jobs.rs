@@ -95,6 +95,8 @@ const LOG_LINE_CHARS: usize = 4_000;
 
 const ESTIMATE: &str = "ESTIMATE ";
 const PROGRESS: &str = "PROGRESS ";
+/// `cost.announce` in the brain writes the other half of this.
+const SPENT: &str = "SPENT ";
 
 /// The brain functions the API can start. The name is the subcommand, and it is also what
 /// lands in `jobs.kind`.
@@ -443,6 +445,65 @@ fn spent(last: Option<&str>) -> Option<f64> {
     money(value.get("usd").and_then(Value::as_f64)?)
 }
 
+// --- what it has spent so far -----------------------------------------------------------
+
+/// The last running total the child announced, kept where the supervisor can reach it.
+///
+/// S-58 books a failed job at the last line it printed, and a killed one prints none — no
+/// last line, no figure, and `sync.rs` works out the rest of the day's budget by subtracting
+/// a ledger this job never reached. The brain says the same number on stderr as it goes
+/// (`cost.announce`), and this is where the engine keeps it.
+///
+/// Held rather than read back out of the log for the reason `Outcome::Ran` carries its
+/// quote: the line is parsed once, on its way past, and a second reading is a second copy
+/// to fall out of step with the first. It is also the only copy that survives `LOG_BYTES` —
+/// a child loud enough to fill its log still has its spend counted.
+#[derive(Clone)]
+struct Tally(Arc<Mutex<Option<f64>>>);
+
+impl Tally {
+    fn new() -> Self {
+        Tally(Arc::new(Mutex::new(None)))
+    }
+
+    /// Take the figure off a line if it is one, and if it is money. `price` is the same
+    /// check the quote goes through, so a `nan`, an `inf` or a negative total is no more
+    /// bookable coming out than going in.
+    fn heard(&self, line: &str) {
+        if let Some(usd) = line.trim().strip_prefix(SPENT).and_then(price) {
+            *lock(&self.0) = Some(usd);
+        }
+    }
+
+    fn last(&self) -> Option<f64> {
+        *lock(&self.0)
+    }
+}
+
+/// What to book for a child that printed no last line, and what to say about it.
+///
+/// Three answers and they are three different claims, which is S-58's rule applied one
+/// process-death further out: a figure the brain reported, a reported nothing, and no report
+/// at all. Only the first is money; the other two are both zero and are not the same zero,
+/// so the line says which.
+fn announced(reported: Option<f64>) -> (f64, String) {
+    match reported {
+        Some(usd) if usd > 0.0 => (
+            usd,
+            format!(
+                "the ${usd:.4} it had reported spending by then has been booked, and \
+                 anything it spent after that is lost"
+            ),
+        ),
+        Some(_) => (0.0, "it had reported spending nothing by then".to_string()),
+        None => (
+            0.0,
+            "it reported nothing on the way either, so nothing could be booked for it"
+                .to_string(),
+        ),
+    }
+}
+
 // --- the clock ------------------------------------------------------------------------
 
 /// When the child has to have said something by, shared with everything that hears it.
@@ -530,10 +591,11 @@ fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
     };
 
     let deadline = Deadline::new(jobs.limit);
+    let tally = Tally::new();
     let child = Arc::new(Mutex::new(child));
     let watch = watchdog(Arc::clone(&child), deadline.clone());
 
-    let outcome = converse(jobs, db, id, &spawn, pipes, &deadline);
+    let outcome = converse(jobs, db, id, &spawn, pipes, &deadline, &tally);
     if outcome.is_err() {
         let _ = lock(&child).kill();
     }
@@ -547,20 +609,16 @@ fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
         // conversation the kill broke, and the limit is why it ended either way. Said before
         // the plumbing's own account of it, which is a closed pipe and true but not the
         // reason anybody needs.
-        _ if silent => finish(
-            records,
-            id,
-            FAILED,
-            None,
-            0.0,
-            spawn.org,
-            &format!(
-                "the brain said nothing for {:?} and was stopped; anything it spent before \
-                 that went unbooked, because a killed process prints no last line",
-                jobs.limit
-            ),
-        ),
-        Err(e) => finish(records, id, FAILED, None, 0.0, spawn.org, &format!("{e:#}")),
+        _ if silent => {
+            let (usd, said) = announced(tally.last());
+            let note =
+                format!("the brain said nothing for {:?} and was stopped; {said}", jobs.limit);
+            finish(records, id, FAILED, None, usd, spawn.org, &note)
+        }
+        Err(e) => {
+            let (usd, said) = announced(tally.last());
+            finish(records, id, FAILED, None, usd, spawn.org, &format!("{e:#}; {said}"))
+        }
         Ok(Outcome::Expired) => finish(
             records,
             id,
@@ -584,7 +642,7 @@ fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
         ),
         Ok(Outcome::Ran { last, quote }) => {
             let ok = matches!(status, Ok(s) if s.success());
-            classify(records, id, &spawn, ok, last.as_deref(), quote)
+            classify(records, id, &spawn, ok, last.as_deref(), quote, tally.last())
         }
     }
 }
@@ -693,6 +751,7 @@ fn converse(
     spawn: &Spawn,
     pipes: Pipes,
     deadline: &Deadline,
+    tally: &Tally,
 ) -> Result<Outcome> {
     let Pipes {
         mut stdin,
@@ -706,7 +765,8 @@ fn converse(
     let log = Arc::clone(db);
     let redact = spawn.redact.clone();
     let heard = deadline.clone();
-    let logger = thread::spawn(move || drain(&log, id, stderr, &redact, &heard));
+    let told = tally.clone();
+    let logger = thread::spawn(move || drain(&log, id, stderr, &redact, &heard, &told));
 
     writeln!(stdin, "{}", spawn.body).context("writing the request to the brain")?;
     stdin.flush()?;
@@ -805,13 +865,23 @@ fn go(mut stdin: std::process::ChildStdin) -> Result<()> {
 }
 
 /// Copy the child's stderr into its log, line by line, while it is still running.
-fn drain(db: &Arc<Mutex<Db>>, id: i64, stderr: ChildStderr, redact: &Redact, deadline: &Deadline) {
+fn drain(
+    db: &Arc<Mutex<Db>>,
+    id: i64,
+    stderr: ChildStderr,
+    redact: &Redact,
+    deadline: &Deadline,
+    tally: &Tally,
+) {
     let mut written = 0usize;
     for line in BufReader::new(stderr).lines() {
         let Ok(line) = line else { return };
         // Before the cap, and deliberately: a child looping on stderr has its lines dropped
         // but is plainly not the child this clock is for.
         deadline.heard();
+        // Before the cap as well, and for a second reason: what the engine books for a
+        // child that is killed must not depend on how much the child said first.
+        tally.heard(&line);
         // Past the cap the pipe is still read and the line is dropped. Stopping the read
         // instead would fill the pipe and block the child for ever.
         if written >= LOG_BYTES {
@@ -834,6 +904,7 @@ fn classify(
     ok: bool,
     last: Option<&str>,
     quote: Option<f64>,
+    reported: Option<f64>,
 ) {
     // Scrubbed here as well as in the log: a result the brain printed goes into a column
     // the browser reads, and it was written by something that had the keys.
@@ -859,12 +930,10 @@ fn classify(
             // It did not get far enough to say, which a killed process never does. Zero is
             // the only number available and it is not the same claim as the arm above, so
             // the log says which one this is (S-58).
-            None => (
-                0.0,
-                "this job failed without saying what it had spent, so nothing could be \
-                 booked for it"
-                    .to_string(),
-            ),
+            None => {
+                let (usd, said) = announced(reported);
+                (usd, format!("this job failed without saying what it had spent; {said}"))
+            }
         };
         finish(records, id, FAILED, last, usd, spawn.org, &note);
         return;

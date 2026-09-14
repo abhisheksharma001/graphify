@@ -858,3 +858,25 @@ def test_the_calls_a_failed_run_never_reached_are_still_read_tomorrow(store, led
     assert second["read"] == 20, "the twenty the failure never reached"
     assert second["error"] is None
     assert len(llm_matches(store, p)) == 80
+
+
+# --- what the run has spent so far (S-62) -----------------------------------------------
+
+
+def test_every_pattern_says_what_the_run_has_spent_so_far(store, batches):
+    """A killed brain prints no last line, so what the engine books for it is the last
+    running total it heard. That total has to keep arriving, and it arrives beside
+    `PROGRESS` — the point where a provider has just been billed and the brain is about to
+    go and be billed again."""
+    seed(store, 20)
+    pattern(store, name="one")
+    pattern(store, name="two")
+    batches()
+
+    result = run(store)
+
+    said = [x for x in result.stderr.splitlines() if x.startswith("SPENT ")]
+    # Four and not two: `daily` runs `label` for each pattern, so the wave inside each one
+    # announces as well as the pattern around it. Both are the same running total said at a
+    # different moment, and the engine keeps the last of them whenever it is killed.
+    assert len(said) == 4, result.stderr

@@ -128,6 +128,10 @@ class Silent:
         class Collector:
             def __init__(self):
                 self.last = type("Last", (), {"usage": FakeUsage(None, None)})()
+                # The real one carries this too, and since S-62 it is read while the run is
+                # still going: `cost.announce` totals the process ledger after every wave.
+                # A stand-in without it is a stand-in for a different class.
+                self.logs = []
 
         return Collector
 

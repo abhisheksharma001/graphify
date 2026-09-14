@@ -18,6 +18,7 @@ import json
 import subprocess
 import sys
 import threading
+from io import StringIO
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -237,3 +238,44 @@ def test_the_complaint_still_goes_to_stderr_and_only_the_number_to_stdout() -> N
     assert died.stderr.strip(), "the complaint went missing"
     assert json.loads(died.stdout.strip().splitlines()[-1]) == {"usd": 0.0}
     assert "criterion" not in died.stdout, died.stdout
+
+
+# --- the running total, said out loud ---------------------------------------------------
+
+
+def test_the_running_total_is_announced_in_the_shape_the_engine_parses() -> None:
+    """`SPENT ` and a number, which is what `Tally::heard` strips and parses.
+
+    Six decimal places rather than four: the engine books this figure against a day's cap
+    when a killed process leaves nothing else to book, and rounding a total the brain
+    already knows exactly is money invented at the last step.
+    """
+    cost._LEDGER = FakeCollector(FakeLog(FakeCall("Sonnet", 1_000_000, 0)))
+    said = StringIO()
+
+    cost.announce(said)
+
+    assert said.getvalue() == "SPENT 2.000000\n"
+
+
+def test_a_run_that_has_spent_nothing_yet_says_so() -> None:
+    """Zero is a real answer here and not a missing one. The engine has an arm for it that
+    is not the arm for a brain that never said, which is S-58's rule one death further out."""
+    cost._LEDGER = FakeCollector()
+    said = StringIO()
+
+    cost.announce(said)
+
+    assert said.getvalue() == "SPENT 0.000000\n"
+
+
+def test_a_total_that_cannot_be_finished_is_not_announced() -> None:
+    """`spent` gives up on the whole total for a client it cannot price, rather than
+    returning part of one. Announcing that part would put the defect it refuses back — the
+    engine would book an incomplete figure as if it were the whole cost."""
+    cost._LEDGER = FakeCollector(FakeLog(FakeCall("Mystery", 1_000, 1_000)))
+    said = StringIO()
+
+    cost.announce(said)
+
+    assert said.getvalue() == ""
