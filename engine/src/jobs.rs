@@ -46,6 +46,12 @@ pub const FAILED: &str = "failed";
 /// Nobody approved the price in time, so the child was killed unspent. Not a failure:
 /// there is nothing wrong with walking away from a quote.
 pub const EXPIRED: &str = "expired";
+/// Somebody stopped it while it was working. A status of its own and not one of the two
+/// above: `expired` means killed *unspent*, and this one has spent — `cost_usd` says how
+/// much and the day's ledger has been told. Not `failed` either. Nothing went wrong; a
+/// person who had approved a price changed their mind about it, which the product is
+/// supposed to let them do.
+pub const STOPPED: &str = "stopped";
 
 /// The brain binary when `GRAPHIFY_BRAIN` does not name one. Found on `PATH`, which is
 /// where `uv sync` and `pip install` both put it.
@@ -151,6 +157,12 @@ enum Verdict {
 /// died with the engine, and their rows are `waiting` against a process that is gone.
 pub struct Jobs {
     waiting: Mutex<HashMap<i64, SyncSender<Verdict>>>,
+    /// The jobs that are past their go and working, by id — each against the flag that
+    /// stops it. The other map says which jobs a `POST /go` can still reach; this one says
+    /// which a `POST /stop` can, and between them they are every job this process can still
+    /// do anything to. Empty after a restart for the same reason: the children died with
+    /// the engine.
+    live: Mutex<HashMap<i64, Halt>>,
     /// How long a parked job waits. A field rather than a constant so a test can watch a
     /// job expire without sitting through half an hour of it.
     wait: Duration,
@@ -162,6 +174,7 @@ impl Default for Jobs {
     fn default() -> Self {
         Jobs {
             waiting: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
             wait: GO_WAIT,
             limit: RUN_LIMIT,
         }
@@ -202,6 +215,31 @@ impl Jobs {
     /// asked twice, so the second of them finds an empty map either way.
     pub fn stop(&self, id: i64) -> bool {
         self.tell(id, Verdict::No)
+    }
+
+    /// Stop one job that is already working. `false` means nothing live was under that id:
+    /// a job that has finished, one that was never started, one still parked on its go —
+    /// that one is `stop`'s, above — or the second of two clicks on the same button.
+    ///
+    /// This returns as soon as the flag is set, which is before the child is dead: the
+    /// watchdog is the only thing that may touch a child while the conversation is still
+    /// going (S-61), and it looks at this flag every `WATCH_TICK`. What is true the moment
+    /// this answers is that the job will be stopped and cannot now finish normally, which
+    /// is what the caller is entitled to be told.
+    pub fn cancel(&self, id: i64) -> bool {
+        lock(&self.live).get(&id).is_some_and(Halt::ask)
+    }
+
+    /// Put a running job where `cancel` can find it, and take it back out. Paired by
+    /// `supervise` around the whole of the child's life: registered once the watchdog that
+    /// would do the killing is running, removed before the row is written, so a job the map
+    /// holds is one a stop can still do something about.
+    fn live_from(&self, id: i64, halt: Halt) {
+        lock(&self.live).insert(id, halt);
+    }
+
+    fn live_until(&self, id: i64) {
+        lock(&self.live).remove(&id);
     }
 
     fn tell(&self, id: i64, verdict: Verdict) -> bool {
@@ -504,6 +542,37 @@ fn announced(reported: Option<f64>) -> (f64, String) {
     }
 }
 
+// --- the stop ---------------------------------------------------------------------------
+
+/// Asked to stop, shared between whoever asked and the thread that can do it.
+///
+/// A flag and not a channel, for the reason the go is a channel and this is not: the go is
+/// an answer the child is blocked waiting for and has to be handed to it, and this is a
+/// decision about the child that the child is never told. The watchdog reads it on the tick
+/// it already wakes for.
+///
+/// Set once and never cleared. A stop asked twice is asked once — the second `ask` finds it
+/// already set and says so, which is what makes `cancel` answer `false` for the second click
+/// the way `tell` does.
+#[derive(Clone)]
+struct Halt(Arc<Mutex<bool>>);
+
+impl Halt {
+    fn new() -> Self {
+        Halt(Arc::new(Mutex::new(false)))
+    }
+
+    /// Ask for the stop. `false` if somebody already had.
+    fn ask(&self) -> bool {
+        let mut asked = lock(&self.0);
+        !std::mem::replace(&mut *asked, true)
+    }
+
+    fn asked(&self) -> bool {
+        *lock(&self.0)
+    }
+}
+
 // --- the clock ------------------------------------------------------------------------
 
 /// When the child has to have said something by, shared with everything that hears it.
@@ -592,24 +661,40 @@ fn supervise(jobs: &Jobs, records: Records, id: i64, spawn: Spawn) {
 
     let deadline = Deadline::new(jobs.limit);
     let tally = Tally::new();
+    let halt = Halt::new();
     let child = Arc::new(Mutex::new(child));
-    let watch = watchdog(Arc::clone(&child), deadline.clone());
+    let watch = watchdog(Arc::clone(&child), deadline.clone(), halt.clone());
+    // Registered once the thread that would act on a stop is running, and taken back out
+    // below before the row is written. A job in this map is one a stop can still do
+    // something about, which is the same claim the parked map makes about a go.
+    jobs.live_from(id, halt);
 
     let outcome = converse(jobs, db, id, &spawn, pipes, &deadline, &tally);
     if outcome.is_err() {
         let _ = lock(&child).kill();
     }
     // Reaped whatever happened: a child nobody waits on is a zombie, including the one
-    // just killed for expiring or for going quiet.
+    // just killed for expiring, for going quiet, or because somebody said stop.
     let status = reap(&child);
-    let silent = watch.stop();
+    let why = watch.stop();
+    // Out of the map before the row is written, so a stop that arrives after this job is
+    // finished is refused rather than answered for a child that is already gone.
+    jobs.live_until(id);
 
     match outcome {
+        // Somebody stopped it. Said before the plumbing's own account of what that did to
+        // the pipes, and before the silence arm, because a child killed on purpose stops
+        // saying things immediately afterwards and the reason it stopped is not that.
+        _ if why == Some(Killed::Asked) => {
+            let (usd, said) = announced(tally.last());
+            let note = format!("this job was stopped while it was working; {said}");
+            finish(records, id, STOPPED, None, usd, spawn.org, &note)
+        }
         // A child killed for saying nothing reaches this through whichever end of the
         // conversation the kill broke, and the limit is why it ended either way. Said before
         // the plumbing's own account of it, which is a closed pipe and true but not the
         // reason anybody needs.
-        _ if silent => {
+        _ if why == Some(Killed::Silence) => {
             let (usd, said) = announced(tally.last());
             let note =
                 format!("the brain said nothing for {:?} and was stopped; {said}", jobs.limit);
@@ -693,25 +778,51 @@ fn take_pipes(child: &mut Child) -> Result<Pipes> {
     })
 }
 
-/// A thread that kills the child once it has been quiet for too long.
+/// Why a child was killed. Two reasons, and the row's sentence is not the same for both: a
+/// brain that went quiet was stopped *for* something, and one a person stopped was not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Killed {
+    /// It said nothing for `RUN_LIMIT` (S-61).
+    Silence,
+    /// Somebody asked it to stop (S-63).
+    Asked,
+}
+
+/// A thread that kills the child once it has been quiet for too long, or once somebody has
+/// asked for it to be stopped.
 ///
 /// It is the only thing in this file that touches the child while the conversation is still
 /// going: the reads block, so nothing on the supervisor's own thread can notice a silence it
-/// is part of. The kill closes both pipes, the blocked read sees end-of-file, and the
-/// supervisor unwinds through the path it already has for a child that died.
-fn watchdog(child: Arc<Mutex<Child>>, deadline: Deadline) -> Watch {
+/// is part of, and nothing on it can take an instruction while it is part of one either. The
+/// kill closes both pipes, the blocked read sees end-of-file, and the supervisor unwinds
+/// through the path it already has for a child that died.
+///
+/// The two reasons are one loop because they are one question asked on one tick — is there a
+/// reason to kill this child yet — and a second thread asking the other half of it would be
+/// a second thread racing for the same lock to do the same thing.
+fn watchdog(child: Arc<Mutex<Child>>, deadline: Deadline, halt: Halt) -> Watch {
     let done = Arc::new(Mutex::new(false));
-    let killed = Arc::new(Mutex::new(false));
+    let killed = Arc::new(Mutex::new(None));
     let (over, fired) = (Arc::clone(&done), Arc::clone(&killed));
     let handle = thread::spawn(move || {
         while !*lock(&over) {
-            if deadline.passed() {
+            // Asked first. A run stopped on the same tick its silence ran out was stopped,
+            // and the sentence a person reads about a button they pressed should be about
+            // the button.
+            let why = if halt.asked() {
+                Some(Killed::Asked)
+            } else if deadline.passed() {
+                Some(Killed::Silence)
+            } else {
+                None
+            };
+            if let Some(why) = why {
                 // Killed under the same lock that `supervise` waits under, so a child that
                 // finished on its own between the two lines is reaped and not signalled.
                 let mut child = lock(&child);
                 if matches!(child.try_wait(), Ok(None)) {
                     let _ = child.kill();
-                    *lock(&fired) = true;
+                    *lock(&fired) = Some(why);
                 }
                 return;
             }
@@ -725,18 +836,18 @@ fn watchdog(child: Arc<Mutex<Child>>, deadline: Deadline) -> Watch {
     }
 }
 
-/// The watchdog's end of things: told to stop, and asked whether it did anything first.
+/// The watchdog's end of things: told to stop, and asked what it did first.
 struct Watch {
     done: Arc<Mutex<bool>>,
-    killed: Arc<Mutex<bool>>,
+    killed: Arc<Mutex<Option<Killed>>>,
     handle: thread::JoinHandle<()>,
 }
 
 impl Watch {
-    /// Wind the thread up and answer whether it killed the child. Joined rather than left to
-    /// finish on its own, so the answer is the whole answer: a watchdog still deciding is one
-    /// whose verdict would arrive after the row was written.
-    fn stop(self) -> bool {
+    /// Wind the thread up and answer whether it killed the child, and why. Joined rather than
+    /// left to finish on its own, so the answer is the whole answer: a watchdog still
+    /// deciding is one whose verdict would arrive after the row was written.
+    fn stop(self) -> Option<Killed> {
         *lock(&self.done) = true;
         let _ = self.handle.join();
         *lock(&self.killed)

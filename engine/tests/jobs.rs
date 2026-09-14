@@ -190,14 +190,27 @@ const GO_WAIT: Duration = Duration::from_secs(600);
 /// The same, for the other clock.
 const RUN_LIMIT: Duration = Duration::from_secs(600);
 
+/// One client for the whole file, so the connections are pooled.
+///
+/// `reqwest::get` and `Client::new()` each build a client that is dropped with the request,
+/// which means a fresh TCP connection per call and a socket left in `TIME_WAIT` after it.
+/// `until` polls every 20ms and this file runs most of its tests at once, so that is
+/// thousands of sockets against the sixteen thousand ports a machine has to hand out — and
+/// the failure when they run out is `AddrNotAvailable` on a connect, in whichever test
+/// happened to ask next rather than in whichever one was greedy.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn get(url: &str) -> (u16, Value) {
-    let res = reqwest::get(url).await.unwrap();
+    let res = client().get(url).send().await.unwrap();
     let status = res.status().as_u16();
     (status, res.json().await.unwrap_or(Value::Null))
 }
 
 async fn send(method: reqwest::Method, url: &str, body: Value) -> (u16, Value) {
-    let res = reqwest::Client::new()
+    let res = client()
         .request(method, url)
         .json(&body)
         .send()
@@ -1123,17 +1136,24 @@ async fn a_job_turned_down_gives_its_slot_back_at_once() {
     until(&server, body["id"].as_i64().unwrap(), jobs::WAITING).await;
 }
 
+/// The quote is answered once, whichever way it is answered.
+///
+/// S-38's claim, and it is about the parked map alone. Since S-63 a `/stop` after the go is
+/// no longer a refusal — it reaches the running job instead — so the go asked twice is what
+/// says the map answers once. That a stop after the go is a *different* answer rather than
+/// no answer is asserted below, with a brain that is still running when it arrives.
 #[tokio::test]
 async fn a_stop_and_a_go_are_the_same_decision_asked_twice() {
     let server = served(LABELS).await;
 
-    // A go, then a no: the run is already reading, and there is nothing left to decline.
+    // A go, then a second go: the run is already reading and the map it was parked in is
+    // empty, so there is nothing left to approve.
     let going = parked(&server).await;
     assert_eq!(post(&server.url(&format!("/api/jobs/{going}/go")), json!({})).await.0, 200);
-    let (late, body) = post(&server.url(&format!("/api/jobs/{going}/stop")), json!({})).await;
-    assert_eq!(late, 409, "a job that had already been told to go accepted a no: {body}");
+    let (late, body) = post(&server.url(&format!("/api/jobs/{going}/go")), json!({})).await;
+    assert_eq!(late, 409, "a job that had already been told to go accepted a second go: {body}");
     let done = until(&server, going, jobs::DONE).await;
-    assert_eq!(done["cost_usd"], 0.0123, "the no took money off a run that had started");
+    assert_eq!(done["cost_usd"], 0.0123, "the second click took money off a run that had started");
 
     // A no, then a go: the child is dead, and the second click finds an empty map.
     let stopping = parked(&server).await;
@@ -2026,4 +2046,154 @@ exec sleep 300
     let done = until(&server, id, jobs::FAILED).await;
     assert_eq!(done["cost_usd"], 0.0, "{done}");
     assert!(done["log"].as_str().unwrap().contains("reported nothing on the way"), "{done}");
+}
+
+// --- a run a person can stop (S-63) ---------------------------------------------------
+
+/// A healthy long labelling run: forty waves, never silent, spending as it goes. The
+/// silence limit never fires on this one, which is the point — `RUN_LIMIT` is a bound on
+/// a brain that has stopped talking and says nothing about one that is working.
+const LONG_RUN: &str = r#"
+read -r request
+echo "ESTIMATE 1.0000"
+read -r go
+i=1
+while [ $i -le 40 ]; do
+  echo "PROGRESS $i/40" >&2
+  echo "SPENT 0.$(printf '%06d' $((i * 25000)))" >&2
+  sleep 0.2
+  i=$((i + 1))
+done
+echo '{"labels":[],"usd":1.000000,"stopped":null}'
+"#;
+
+/// Start a labelling run on `LONG_RUN` and wait until it is properly under way.
+async fn running(server: &Server) -> i64 {
+    let id = parked(server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    until_log(server, id, "PROGRESS 3/40").await;
+    id
+}
+
+#[tokio::test]
+async fn a_running_job_can_be_stopped() {
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+
+    let (code, said) = post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await;
+    assert_eq!(code, 200, "a run that was spending refused to stop: {said}");
+    // The answer names the status the row will carry, not `expired`: this one has spent.
+    assert_eq!(said["status"], jobs::STOPPED, "{said}");
+
+    let row = until(&server, id, jobs::STOPPED).await;
+    let log = row["log"].as_str().unwrap();
+    assert!(log.contains("stopped while it was working"), "{log}");
+}
+
+#[tokio::test]
+async fn a_stopped_run_stops_reading() {
+    // The defect this closes, and the only assertion in the file that is about a child
+    // still being alive: before S-63 the stop was refused and the run went on to read every
+    // call it had been quoted for.
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+
+    let at_stop = get(&server.url(&format!("/api/jobs/{id}"))).await.1;
+    let before = at_stop["progress"]["done"].as_i64().unwrap();
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 200);
+    let row = until(&server, id, jobs::STOPPED).await;
+
+    // Forty waves is what it was going to read. It stopped within a few of where it was
+    // when the button was pressed, and nowhere near the end.
+    let done = row["progress"]["done"].as_i64().unwrap();
+    assert!(done < 40, "the run read every wave it had been quoted for: {row}");
+    assert!(done >= before, "the run went backwards: {before} then {done}");
+}
+
+#[tokio::test]
+async fn a_stopped_run_is_booked_at_what_it_had_spent() {
+    // S-62 is what makes the stop safe, and this is the assertion that says so: the figure
+    // is the last `SPENT` line the child got out before it was killed, which is a quarter of
+    // a cent times however many waves it had reached.
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 200);
+
+    let row = until(&server, id, jobs::STOPPED).await;
+    let log = row["log"].as_str().unwrap();
+    let cost = row["cost_usd"].as_f64().unwrap();
+    // Against the child's own last announcement rather than against a sum worked out here:
+    // what the row should carry is the figure that came off the wire, and a second
+    // arithmetic in the test is a second thing to be wrong.
+    let announced: f64 = log
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("SPENT "))
+        .next_back()
+        .expect("the child announced nothing")
+        .parse()
+        .unwrap();
+    assert_eq!(cost, announced, "booked something other than what it announced: {log}");
+    assert!(cost > 0.0, "a run that had spent was booked at nothing: {log}");
+    assert!(log.contains("has been booked"), "{log}");
+}
+
+#[tokio::test]
+async fn what_a_stopped_run_spent_reaches_the_days_ledger() {
+    // The row is what the browser shows; the ledger is what the day's remaining budget is
+    // worked out from. A stop that booked into one and not the other would be a cap raised
+    // by exactly the amount the stop saved, which is the second Must-never.
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 200);
+    let row = until(&server, id, jobs::STOPPED).await;
+
+    let day = graphify::now().split('T').next().unwrap().to_string();
+    assert_eq!(server.db().spend_on(&day, 1).unwrap(), row["cost_usd"].as_f64().unwrap());
+}
+
+#[tokio::test]
+async fn the_slot_a_stopped_run_held_comes_back() {
+    // A stopped job that stayed `running` would hold one of `MAX_LIVE` until the engine was
+    // restarted, which is the 429 the stop exists to relieve.
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 200);
+    until(&server, id, jobs::STOPPED).await;
+
+    let (again, body) = post(
+        &server.url("/api/patterns/label?org=1"),
+        json!({"criterion": "one more", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
+    )
+    .await;
+    assert_eq!(again, 202, "the stopped run was still holding its slot: {body}");
+}
+
+#[tokio::test]
+async fn a_run_is_stopped_once() {
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 200);
+
+    // The second click, while the first is still being carried out. Nothing is left to
+    // answer it — the same `false` the parked map gives the second of two clicks.
+    let (twice, body) = post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await;
+    assert_eq!(twice, 409, "a run was stopped twice: {body}");
+
+    let row = until(&server, id, jobs::STOPPED).await;
+    // And once it is over, which is the other way of asking the same thing.
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/stop")), json!({})).await.0, 409);
+    assert_eq!(row["status"], jobs::STOPPED);
+}
+
+#[tokio::test]
+async fn a_run_that_was_not_stopped_is_not_marked_stopped() {
+    // The flag is asked for and never set by anything else: a run nobody touched ends where
+    // it was going to end, and `stopped` is not a status the engine reaches on its own.
+    let server = served(LABELS).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    let row = until(&server, id, jobs::DONE).await;
+    assert_eq!(row["cost_usd"], 0.0123);
+    assert!(!row["log"].as_str().unwrap().contains("stopped while it was working"), "{row}");
 }

@@ -5,9 +5,9 @@
 // thing worth holding: the guess is right for the two shapes the brain actually produces
 // and there is no type that says so.
 
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { JobFailed } from './jobs'
+import { Cancelled, JobFailed, settle } from './jobs'
 import type { Job } from './api'
 
 const failed = (log: string): Job => ({
@@ -78,5 +78,51 @@ describe('what a failed job says it was', () => {
     const job = failed('first\nValueError: second\nthird')
 
     expect(new JobFailed(job).log).toBe('first\nValueError: second\nthird')
+  })
+})
+
+// --- a job somebody stopped (S-63) ----------------------------------------------------
+
+describe('a job that was stopped while it was working', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** `GET /api/jobs/{id}` answering with one status and nothing else. */
+  const answering = (status: Job['status']) =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({ ...failed('nothing went wrong'), status }),
+      })),
+    )
+
+  test('is not reported as a failure to a screen that was not waiting for it', async () => {
+    // Somebody pressed a button. The screen that pressed it waits for `stopped` itself;
+    // any other screen watching the same job is no longer owed an answer, and a red panel
+    // saying "the plan job ended stopped without saying why" would be wrong twice over.
+    answering('stopped')
+
+    await expect(
+      settle(1, ['done'], () => true, () => {}),
+    ).rejects.toBeInstanceOf(Cancelled)
+  })
+
+  test('and the statuses that really are failures still are', async () => {
+    answering('failed')
+
+    await expect(
+      settle(1, ['done'], () => true, () => {}),
+    ).rejects.toBeInstanceOf(JobFailed)
+  })
+
+  test('a screen that is waiting for a stop is handed the job, not an exception', async () => {
+    // The wizard's own watch names `stopped` among the endings it wants, because the button
+    // that caused it is on that page and the row carries what the run cost.
+    answering('stopped')
+
+    const job = await settle(1, ['done', 'stopped'], () => true, () => {})
+    expect(job.status).toBe('stopped')
   })
 })

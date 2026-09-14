@@ -923,24 +923,41 @@ async fn go_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response,
     Ok(Json(json!({ "id": id, "status": jobs::RUNNING })).into_response())
 }
 
-/// Turn a parked job's price down. The other answer to the same question, and the one the
-/// 429 above has always told people to give without giving them anywhere to give it.
+/// Turn this job off, wherever it has got to. One button and one meaning; which of the two
+/// things it does depends on whether the job has been told to go yet.
 ///
-/// Refuses on exactly the terms `/go` refuses on, because it is the same map and the same
-/// removal: a job that has finished, expired, already gone or already been stopped is not
-/// waiting for an answer, and there is nothing here to say no to. Nothing running is
-/// touched — that job has spent, and stopping it would be a refund the engine cannot give.
+/// **Parked** (S-38): the price is turned down. The other answer to the same question, and
+/// the one the 429 above has always told people to give without giving them anywhere to give
+/// it. The child is killed with its stdin still open, having read nothing, so this costs what
+/// walking away from a quote costs.
+///
+/// **Running** (S-63): the child is stopped where it is. That used to be refused here on the
+/// grounds that the job had spent and stopping it would be a refund the engine cannot give —
+/// which was not the real objection. The real one was that a killed child booked nothing, so
+/// a stop would have left the day's ledger short by whatever the run had got through. S-62
+/// fixed that: the brain says its running total as it goes and the engine books the last
+/// figure it heard. So this is not a refund and never claimed to be. It is a stop, and the
+/// row afterwards says `stopped` and carries what it cost.
+///
+/// The parked map is asked first, because a job in it has spent nothing and turning its price
+/// down is the cheaper of the two answers to the same click. Refusing is what is left when
+/// neither map holds the job: it has finished, it expired, it was already stopped, or this is
+/// the second of two clicks.
 async fn stop_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
-    if !app.jobs.stop(id) {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            format!("job {id} is not waiting for an answer"),
-        ));
+    // `expired` and `stopped` are what the rows will say, and neither is written here: the
+    // supervisor owns that write and has a child to kill first. What is true the moment this
+    // returns is that the job cannot now finish on its own, and the slot it was holding is
+    // nobody's.
+    if app.jobs.stop(id) {
+        return Ok(Json(json!({ "id": id, "status": jobs::EXPIRED })).into_response());
     }
-    // `expired` is what the row will say, and it is not written here: the supervisor owns
-    // that write and has a child to kill first. What is true the moment this returns is
-    // that the slot is nobody's.
-    Ok(Json(json!({ "id": id, "status": jobs::EXPIRED })).into_response())
+    if app.jobs.cancel(id) {
+        return Ok(Json(json!({ "id": id, "status": jobs::STOPPED })).into_response());
+    }
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        format!("job {id} is not running and is not waiting for an answer"),
+    ))
 }
 
 // --- patterns -------------------------------------------------------------------------

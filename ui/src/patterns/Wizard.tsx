@@ -116,6 +116,11 @@ export default function Wizard({
   // priced against, the labels it bought and the pattern written from them are one run and
   // are never separately true.
   const [run, setRun] = useState<Run | null>(null)
+  /** The run that was stopped, kept only so the screen can say what it cost. Held apart
+   * from `run` because it is a note about the last thing that happened and not a state the
+   * wizard is in: the quote is gone, the slot is back, and the next click prices afresh.
+   * Cleared when it does. */
+  const [halted, setHalted] = useState<Job | null>(null)
   const [name, setName] = useState('')
 
   const [busy, setBusy] = useState<string | null>(null)
@@ -290,6 +295,7 @@ export default function Wizard({
       })
       const parked = await watch(id, ['waiting'])
       went.current = false
+      setHalted(null)
       setRun({ of: settings, job: parked, ids, labelled: null, saved: null })
     })
 
@@ -299,10 +305,35 @@ export default function Wizard({
       if (live === null || went.current) return
       went.current = true
       await api.go(live.job.id)
-      const done = await watch(live.job.id, ['done'], tick)
-      const labelled = done.output as Labelled
-      setRun((r) => (r === null || r.of !== settings ? r : { ...r, job: done, labelled }))
+      // `stopped` is an ending this screen waits for rather than one it reports: the button
+      // that reaches it is on this page. The row that comes back carries what the run cost
+      // before it was stopped, which is the only thing left to show for it.
+      const end = await watch(live.job.id, ['done', 'stopped'], tick)
+      if (end.status === 'stopped') {
+        // Back where the wizard was before the quote, the way a declined one leaves it: the
+        // run is over, its slot is back, and there is nothing here left to approve. What is
+        // kept is the sentence saying what it cost.
+        went.current = false
+        setHalted(end)
+        setRun(null)
+        return
+      }
+      const labelled = end.output as Labelled
+      setRun((r) => (r === null || r.of !== settings ? r : { ...r, job: end, labelled }))
     })
+
+  /** Stop a run that is already reading.
+   *
+   * Not wrapped in `during`: the go is still holding that, and this is the one button on
+   * the page whose whole purpose is to be pressable while something else is running. The
+   * answer is not awaited for the same reason `decline` ignores its refusal — what the run
+   * did is what the watch above reports, and a stop that arrived too late is a run that
+   * finished, which that watch is about to say.
+   */
+  const stopRun = () => {
+    if (live === null) return
+    void api.stop(live.job.id).catch(() => {})
+  }
 
   /** The other answer to click two. Turns the quote down: the engine kills the child with
    * its stdin still open, having read nothing, and the slot the job was holding is free
@@ -574,7 +605,7 @@ export default function Wizard({
                     back without a price — especially then, since that is the run there is
                     no way to approve. Not disabled by the gate: declining is the one
                     answer that is always available and always costs nothing. */}
-                {live !== null && (
+                {live !== null && live.job.status !== 'running' && (
                   <button type="button" className="no" onClick={decline} disabled={busy !== null}>
                     Not now
                   </button>
@@ -598,6 +629,28 @@ export default function Wizard({
                   <p className="hint">
                     <progress value={live.job.progress.done} max={live.job.progress.of} />{' '}
                     {live.job.progress.done} of {live.job.progress.of}
+                  </p>
+                )}
+                {/* The stop. Never disabled by `busy`: a run is what it is for, and `busy`
+                    is that run. Drawn off the engine's own status rather than off the click
+                    that started the run, so it is offered exactly while there is something
+                    to stop. */}
+                {live?.job.status === 'running' && (
+                  <>
+                    <button type="button" className="no" onClick={stopRun}>
+                      Stop this run
+                    </button>
+                    <p className="hint">
+                      Stopping keeps what has already been read and does not get back what
+                      it cost. What it saves is the rest of the run.
+                    </p>
+                  </>
+                )}
+                {halted !== null && (
+                  <p className="hint">
+                    Stopped. It read {halted.progress?.done ?? 0} of {halted.progress?.of ?? 0}{' '}
+                    batches and cost {money(halted.cost_usd)}. Nothing was saved; price it
+                    again to start over.
                   </p>
                 )}
               </div>
