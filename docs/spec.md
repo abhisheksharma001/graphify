@@ -6077,5 +6077,113 @@ directions of the arithmetic.
   `ESTIMATE` and `PROGRESS`, and the same answer: the child is a process this engine started.
 
 
-**The register is complete through S-62.** Anything after that is a new step appended
+### S-63 — A run a person can stop [Rust]
+
+**PR:** one. **Depends on:** S-38, which built `/stop` and gave the parked quote somewhere to
+be turned down; S-61, which built the thread that kills a child on purpose; and S-62, which
+is the one that makes this safe — a killed child now books what it had spent.
+
+**Files:** `engine/src/jobs.rs`, `engine/src/server.rs`, `engine/tests/jobs.rs`,
+`ui/src/api.ts`, `ui/src/jobs.ts`, `ui/src/patterns/Wizard.tsx`, `ui/src/patterns/Wizard.test.tsx`,
+`docs/spec.md`. No brain change, no schema change, no new dependency.
+
+**Today:** the only control the product offers over a run that is spending money refuses to
+work, and the run spends its whole cap.
+
+`POST /api/jobs/{id}/stop` answers off the map of *parked* jobs. Once the go has been given
+that map is empty, so the stop has nothing to find. Its own doc comment says so and gives the
+reason:
+
+> Nothing running is touched — that job has spent, and stopping it would be a refund the
+> engine cannot give.
+
+Measured, with a healthy forty-wave labelling run — never silent, so `RUN_LIMIT` never fires
+— and a stop pressed four waves in:
+
+| | |
+|---|---|
+| the analyst presses stop | **409** *"job 1 is not waiting for an answer"* |
+| the job at that moment | `running`, 4 of 40 |
+| one second after the refusal | `running`, **7 of 40** |
+| where it actually ended | `done`, **$1.0000** — the whole cap |
+| the day's ledger | $1.0000 |
+
+So the run carried on through the refusal and read every call it had been quoted for. The
+two exits that do exist are neither: `RUN_LIMIT` is ten minutes of *silence*, which a working
+run never has, and `GO_WAIT` is for a job that has not started. What is left is stopping the
+engine.
+
+The second Must-never is that a model is not called without a shown cost and an explicit go.
+The go is a consent to a number, and a consent that cannot be withdrawn while the thing it
+bought is still running is a weaker thing than it reads as — an analyst who starts a
+four-thousand-call run against the wrong pattern watches it spend.
+
+**And the reason it was left is gone.** "A refund the engine cannot give" was true when it
+was written: before S-62 a child killed mid-run printed no last line, booked `$0.0000`, and
+left the day's ledger short by everything it had spent. Stopping a run would have been the
+S-62 defect on purpose, every time. S-62 made the brain say its running total out loud and
+the engine keep it, so a stop now books what was spent and the ledger is right. The same
+shape as S-62's own lesson (b): a decision resting on an absence, and a later step removed
+the absence.
+
+**Change:** the stop reaches a running job, and the child it kills is booked at what it said
+it had spent.
+
+1. **`Jobs` gains a second map.** It holds the parked jobs by id; now it holds the live ones
+   too, each against a flag the supervisor and the watchdog share. Registered where the
+   watchdog starts and taken out where the supervisor is done with it, so the map holds
+   exactly the jobs a stop can reach — the same claim the parked map already makes, and the
+   same reason it is empty after a restart.
+
+2. **The watchdog gets a second reason to fire.** It is already a loop that wakes every
+   `WATCH_TICK` and kills under the child's lock; it now looks at one more flag beside the
+   deadline. Nothing else can kill a child safely — the supervisor's own thread is blocked on
+   a read it is part of, which is why S-61 put the thread there.
+
+3. **`Watch::stop` says which reason it was**, because the row's sentence differs and the two
+   are different claims: a brain that went quiet was stopped *for* something, and a brain a
+   person stopped was not.
+
+4. **A status of its own: `stopped`.** `expired` is documented as killed *unspent* and this
+   one has spent; `failed` is not what a person pressing a button did. `purge_jobs` names the
+   two live statuses and purges the rest, so a terminal status added here is retained and
+   purged on the org's clock without being told about it — which is what that design was for.
+
+5. **Booked through S-62's `announced(tally.last())`**, unchanged. There is no new arithmetic
+   here and deliberately none: the three answers a killed child can give about its spending
+   were settled one step ago, and a second copy of them is a second account of what the day
+   cost.
+
+6. **The browser gets the button it has been told about.** `POST /stop` keeps its URL and its
+   meaning — turn this job off — and answers from whichever map holds the job. The wizard
+   draws a stop beside the progress bar it already draws, `settle` learns that `stopped` is
+   not a fault to report, and the run that was stopped says what it cost.
+
+**Why not a signal to the brain.** The same answer as S-62's: a handler competing with BAML's
+threads, only for the kills that are polite. The child is a process this engine started and
+`Child::kill` is how it ends; what made that unsafe was the booking, and the booking is fixed.
+
+**Why not let the brain finish the wave it is on.** It would be a kinder stop and it needs a
+channel the brain reads while it is working, which is stdin — and stdin is held open for the
+`GO` and nothing else in the protocol. That is a bigger change than this one and it belongs
+behind a decision about whether a stop should be able to keep what it has paid for.
+
+**Must not:** refund, or write anything but what was spent — the row says `stopped` and
+carries the cost. Book the spend twice, or write it anywhere but `finish`. Leave a stopped
+job `running`, holding one of `MAX_LIVE`. Stop a job by killing anything but the child this
+engine started. Add a resume. Change what `/go` does, or `GO_WAIT`, `RUN_LIMIT`, `MAX_LIVE`,
+the 429, `sweep_abandoned`, or what a parked `/stop` already does. Change `PROGRESS`,
+`ESTIMATE`, `SPENT`, or the stdout contract. Touch the brain, the schema, or `clients.baml`.
+Send anything but GET to a provider. Render a missing value as 0. Add a dependency.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean;
+`uv run pytest -q` untouched and green; `pnpm test` and `pnpm build` green; guard 1 red if a
+stop on a running job is refused; guard 2 red if the child outlives the stop; guard 3 red if
+the row does not end `stopped`; guard 4 red if what it had spent is not booked; guard 5 red if
+that figure does not reach the day's ledger; guard 6 red if the slot it held is not freed;
+guard 7 red if a parked job's stop stops answering the way S-38 built it; guard 8 red if the
+wizard reports a stop as a failure; CI 4/4.
+
+
+**The register is complete through S-63.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
