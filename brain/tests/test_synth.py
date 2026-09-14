@@ -746,3 +746,21 @@ def test_the_rule_shape_this_sends_is_the_one_the_engine_will_read():
 
     assert fields == set(types.Rule.model_fields)
 
+
+
+# --- what the run has spent so far (S-62) -----------------------------------------------
+
+
+def test_every_stage_says_what_the_run_has_spent_so_far(store, engine, model):
+    """A killed brain prints no last line, so what the engine books for it is the last
+    running total it heard. That total has to keep arriving, and it arrives beside
+    `PROGRESS` — the point where a provider has just been billed and the brain is about to
+    go and be billed again."""
+    ids = seed(store, 250)
+    engine.matches(ids[:38] + ids[40:42])
+    model()
+
+    result = run(store, request(ids, set(ids[:40])))
+
+    said = [x for x in result.stderr.splitlines() if x.startswith("SPENT ")]
+    assert len(said) == 3, result.stderr

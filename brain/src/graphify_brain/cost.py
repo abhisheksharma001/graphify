@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, TextIO
 
 #: The day the prices below were read from the vendors' own pricing pages:
 #: https://platform.claude.com/docs/en/about-claude/pricing and
@@ -243,3 +243,41 @@ def spent(collector: Any = None) -> float | None:
                 return None
             total += estimate(tokens_in, tokens_out, name)
     return total
+
+
+#: The word the engine reads a running total off. It goes down the same stderr channel that
+#: already carries `PROGRESS` and `ESTIMATE`, and `engine/src/jobs.rs` holds the other half
+#: of the spelling.
+SPENT = "SPENT"
+
+
+def announce(stderr: TextIO) -> None:
+    """Say what this process has been billed so far, so that a killed one is not free.
+
+    S-58's rule is that the last line a brain prints on the way out is what the engine
+    books, and a process that is killed does not get to print one. `Child::kill` is
+    `SIGKILL`; so is an out-of-memory kill and so is a `kill -9`. What that leaves is a
+    labelling run twenty waves and eighty cents in, booked at zero, against a day's cap
+    `engine/src/sync.rs` works out by subtracting the ledger from it. Money spent and not
+    written down is a cap raised by the amount nobody wrote down, which is the second
+    Must-never reached without any arithmetic being wrong.
+
+    So the figure is put where it survives the process: on stderr, line by line, as it
+    changes. The engine keeps the last one it saw and books that when there is nothing
+    better — and there is something better nearly always, because a brain that exits on its
+    own says what the whole run cost and that line still wins.
+
+    Nothing is printed when `spent` gives up. It returns `None` for a ledger holding a
+    client it cannot price, and the whole reason it refuses to total that is that a part of
+    a figure booked as if it were the figure is the defect one layer in. Announcing it here
+    would undo that at the last moment. Saying nothing leaves the engine with the previous
+    line, or with no line and S-58's third tier, both of which are honest.
+
+    Called beside every `PROGRESS`, which is where a provider has just been billed and the
+    brain is about to go and be billed again — a wave in `label`, a pattern in `daily`, a
+    stage in `synth`.
+    """
+    usd = spent()
+    if usd is None:
+        return
+    print(f"{SPENT} {usd:.6f}", file=stderr, flush=True)

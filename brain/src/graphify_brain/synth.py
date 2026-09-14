@@ -225,10 +225,12 @@ def _spent(collector: Any, model: str, ceiling: float) -> float:
 def _synthesize(job: Job, conn: Any, stderr: TextIO) -> dict[str, Any]:
     """Write the rule, measure it, refine it if it needs it, store what wins."""
     print("PROGRESS 1/3", file=stderr, flush=True)
+    cost.announce(stderr)
     first, spent = synthesize_rule(job)
     rule, reason = first.rule, first.reason
 
     print("PROGRESS 2/3", file=stderr, flush=True)
+    cost.announce(stderr)
     scored = _score(job, rule)
     refined = False
     if scored.agreement < MIN_AGREEMENT:
@@ -248,6 +250,7 @@ def _synthesize(job: Job, conn: Any, stderr: TextIO) -> dict[str, Any]:
             )
 
     print("PROGRESS 3/3", file=stderr, flush=True)
+    cost.announce(stderr)
     pattern_id = _store(conn, job, rule, first.chart, scored)
     return {
         "pattern_id": pattern_id,

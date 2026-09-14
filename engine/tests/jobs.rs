@@ -1841,7 +1841,9 @@ async fn a_brain_that_stops_answering_is_stopped() {
     // Nothing is booked for it. The child printed no last line, so there is no figure to
     // read, and S-58's rule is that a number nobody has is not zero — it is said out loud.
     assert_eq!(done["cost_usd"], 0.0);
-    assert!(log.contains("went unbooked"), "{log}");
+    // This brain announces nothing on its way, so there is no figure to fall back on and
+    // S-62's third tier says so rather than passing a zero off as a price (S-58's rule).
+    assert!(log.contains("reported nothing on the way"), "{log}");
 }
 
 #[tokio::test]
@@ -1913,4 +1915,115 @@ async fn a_job_parked_on_its_price_is_not_a_job_saying_nothing() {
     assert_eq!(body["status"], jobs::WAITING, "the parked child was killed by the wrong clock");
     assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
     assert_eq!(until(&server, id, jobs::DONE).await["cost_usd"], 0.0123);
+}
+
+// --- what a killed brain had already spent (S-62) ---------------------------------------
+
+/// A labelling brain that reads twenty waves, says what each one has cost it, and then
+/// stalls on the twenty-first. `exec` for the reason `GOES_QUIET` says.
+const SPENDS_THEN_QUIET: &str = r#"
+read -r request
+echo "ESTIMATE 1.0000"
+read -r go
+i=1
+while [ $i -le 20 ]; do
+  echo "PROGRESS $i/21" >&2
+  echo "SPENT 0.$(printf '%06d' $((i * 41050)))" >&2
+  i=$((i + 1))
+done
+exec sleep 300
+"#;
+
+/// What the last of those twenty lines says.
+const TWENTY_WAVES: f64 = 0.821_000;
+
+#[tokio::test]
+async fn a_killed_child_is_booked_at_what_it_said_it_had_spent() {
+    let server = served_within(SPENDS_THEN_QUIET, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    let done = until(&server, id, jobs::FAILED).await;
+    let log = done["log"].as_str().unwrap();
+    assert_eq!(done["cost_usd"], TWENTY_WAVES, "{log}");
+    assert!(log.contains("said nothing for 6s and was stopped"), "{log}");
+    assert!(log.contains("$0.8210 it had reported spending"), "{log}");
+}
+
+#[tokio::test]
+async fn what_a_killed_child_spent_reaches_the_days_ledger() {
+    // The row is what the browser shows; the ledger is what the cap is worked out from, and
+    // `sync.rs` subtracts one from the other. A cost booked into the row alone is a day
+    // whose remaining budget is still wrong.
+    let server = served_within(SPENDS_THEN_QUIET, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    until(&server, id, jobs::FAILED).await;
+
+    let day = graphify::now().split('T').next().unwrap().to_string();
+    assert_eq!(server.db().spend_on(&day, 1).unwrap(), TWENTY_WAVES);
+}
+
+#[tokio::test]
+async fn a_child_that_finishes_is_booked_at_its_own_last_line() {
+    // The announcement is a fallback and never more than that. A brain that exits on its own
+    // has said what the whole run cost, and that figure is the complete one.
+    let brain = r#"
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+echo "PROGRESS 1/1" >&2
+echo "SPENT 0.900000" >&2
+echo '{"labels":[{"call_id":"c1","match":true}],"usd":0.0123,"stopped":null}'
+"#;
+    let server = served_within(brain, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    assert_eq!(until(&server, id, jobs::DONE).await["cost_usd"], 0.0123);
+}
+
+#[tokio::test]
+async fn a_failed_child_that_printed_no_result_is_booked_at_what_it_announced() {
+    // The other way to reach the same gap, and the one that does not need a watchdog: a
+    // brain that was billed and then died on its own without printing S-58's last line.
+    let brain = r#"
+read -r request
+echo "ESTIMATE 1.0000"
+read -r go
+echo "SPENT 0.500000" >&2
+echo "died on the way home" >&2
+exit 1
+"#;
+    let server = served_within(brain, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    let done = until(&server, id, jobs::FAILED).await;
+    assert_eq!(done["cost_usd"], 0.5, "{done}");
+    assert!(done["log"].as_str().unwrap().contains("$0.5000 it had reported"), "{done}");
+}
+
+#[tokio::test]
+async fn a_spend_line_that_is_not_money_is_not_taken_for_money() {
+    // Same four ways in as S-37's quote, on the same parser. A total that does not parse, a
+    // non-finite one that serialises as `null`, and a negative one that would reach the row
+    // looking like a refund.
+    let brain = r#"
+read -r request
+echo "ESTIMATE 1.0000"
+read -r go
+echo "SPENT nought" >&2
+echo "SPENT nan" >&2
+echo "SPENT inf" >&2
+echo "SPENT -5" >&2
+exec sleep 300
+"#;
+    let server = served_within(brain, A_SHORT_SILENCE).await;
+    let id = parked(&server).await;
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+
+    let done = until(&server, id, jobs::FAILED).await;
+    assert_eq!(done["cost_usd"], 0.0, "{done}");
+    assert!(done["log"].as_str().unwrap().contains("reported nothing on the way"), "{done}");
 }

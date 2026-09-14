@@ -699,3 +699,20 @@ def test_the_columns_this_reads_are_the_ones_the_engine_makes():
     assert "CREATE TABLE pattern_labels" in schema
     for column in ("pattern_id", "call_id", "llm_match", "rule_match", "evidence"):
         assert f"  {column} " in schema, column
+
+
+# --- what the run has spent so far (S-62) -----------------------------------------------
+
+
+def test_every_wave_says_what_the_run_has_spent_so_far(store, batches):
+    """A killed brain prints no last line, so what the engine books for it is the last
+    running total it heard. That total has to keep arriving, and it arrives beside
+    `PROGRESS` — the point where a provider has just been billed and the brain is about to
+    go and be billed again."""
+    ids = seed(store, 45)
+    batches()
+
+    result = run(store, request(ids, batch_size=5) + "\nGO\n")
+
+    said = [x for x in result.stderr.splitlines() if x.startswith("SPENT ")]
+    assert len(said) == 3, result.stderr

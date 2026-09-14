@@ -104,6 +104,7 @@ def run(stdin: TextIO, stdout: TextIO, stderr: TextIO, conn: Any) -> None:
         spent += report["usd"]
         done.append(report)
         print(f"PROGRESS {i + 1}/{len(patterns)}", file=stderr, flush=True)
+        cost.announce(stderr)
 
     print(json.dumps({"usd": round(spent, 6), "patterns": done, "stopped": stopped}), file=stdout)
 
