@@ -5895,5 +5895,104 @@ written where the constant is.
   the obvious spelling of it does nothing.
 
 
+### S-62 — What a killed brain had already spent [Rust]
+
+**PR:** one. **Depends on:** S-61, which built the thing that kills a child on purpose, and
+S-58, which decided what a failed one is booked at. It closes the first item in S-61's own
+Not-done.
+
+**Files:** `engine/src/jobs.rs`, `engine/tests/jobs.rs`,
+`brain/src/graphify_brain/cost.py`, `brain/src/graphify_brain/label.py`,
+`brain/src/graphify_brain/daily.py`, `brain/src/graphify_brain/synth.py`, `brain/tests/`,
+`docs/spec.md`. No UI change, no schema change, no new dependency.
+
+**Today:** a child that is killed books nothing, however much it spent.
+
+S-58's rule is that the last line a brain prints on its way out is what the engine books.
+`Child::kill` is `SIGKILL`, so a killed child has no way out and prints no last line, and
+`classify` never runs for it at all — S-61's arm writes the row directly with `0.0`.
+
+Measured, with a labelling brain that reads twenty waves, says in prose what that cost, and
+then stalls on the twenty-first:
+
+| | |
+|---|---|
+| what the child said before it went quiet | *"twenty waves read; $0.8210 spent of $1.0000"* |
+| what the row was booked at | **$0.0000** |
+| what the quote it was holding said | $0.8600 |
+| **the day's `spend` ledger afterwards** | **$0.0000** |
+
+The last row is the one that matters. `sync.rs` works out what is left of the day by
+subtracting that ledger from the cap, so money spent and not booked is a cap raised by the
+amount nobody wrote down — the second Must-never, reached not by a bug in the arithmetic but
+by a process that was not alive to do it.
+
+**And the number existed the whole time.** `cost.ledger()` is a process-wide BAML collector
+that every one of the six model call sites already passes, and `cost.spent()` already prices
+it call by call — including the log of a call that raised, which is what S-56 and S-58 were
+built on. It is read in exactly one situation today: `cli` on the way down. Measured over a
+ledger the size of a real run:
+
+| after | calls in the ledger | `cost.spent()` says | and takes |
+|---|---|---|---|
+| wave 1 | 3 | $0.0750 | 0.002 ms |
+| wave 50 | 150 | $3.7500 | 0.033 ms |
+| wave 200 | 600 | $15.0000 | 0.133 ms |
+
+A tenth of a millisecond a wave, for the figure that is currently thrown away.
+
+**Change:** the brain says what it has spent as it goes, and the engine books the last thing
+it said when there is nothing else to book.
+
+1. **`cost.announce(stderr)`** prints `SPENT <usd>` — one more word on the same stderr
+   channel that already carries `PROGRESS` and `ESTIMATE`. It prints nothing at all when
+   `spent()` returns `None`, which is the case where a client does not price: a partial total
+   announced as a complete one is the defect `spent` exists to refuse, one layer out.
+
+2. **It is called beside every `PROGRESS`** — after each wave in `label.run`, after each
+   pattern in `daily.run`, at each stage in `_synthesize`. Those are the points where a
+   provider has just been billed and the brain is about to go and be billed again.
+
+3. **`drain` keeps the last one it can read as money.** Parsed where `PROGRESS` is already
+   parsed and where S-61's clock is already pushed forward, before the log cap, into a cell
+   the supervisor shares — the same shape as `Deadline`, and for the same reason
+   `Outcome::Ran` carries its quote rather than reading it back out of the log.
+
+4. **It is booked in exactly the three arms that write a zero for "the brain never said"**:
+   S-61's silent-kill arm, the plumbing-error arm beside it, and `classify`'s `None` arm from
+   S-58. A brain that *did* say what it spent is untouched — its own last line is the complete
+   figure and this one is not.
+
+**Why a running announcement rather than a `SIGTERM` the brain handles.** S-61's Not-done
+proposed the signal, and the signal only covers the kills graphify itself sends politely. An
+announcement already written down covers those and also the ones nobody gets to be polite
+about: an OOM kill, a `kill -9`, a machine that goes away. It needs no signal handler
+competing with BAML's own threads, and it is a line on a channel the engine has read since
+S-28.
+
+**Why not fall back to the quote.** The engine is holding one — $0.8600 in the table above —
+and `classify` already falls back to it on the success path. It is a ceiling for the *whole*
+run. A run killed in its third wave of two hundred would be booked at two hundred waves'
+worth, which stops the day dead. Over-booking is the direction a cap survives being wrong in,
+but not by two orders of magnitude, and not when a true figure is available.
+
+**Must not:** change what a brain that exits on its own reports, or the figure booked for it —
+the last line still wins wherever there is one. Book the quote for a killed child. Announce a
+total `cost.spent()` could not finish. Write the running figure into the `jobs` row or the
+`spend` ledger before the job is closed out; there is one booking, at the end, and a second
+writer of that ledger is a second answer to what the day cost. Touch `GO_WAIT`, `RUN_LIMIT`,
+the watchdog, `MAX_LIVE`, the 429, `stop_job` or `sweep_abandoned`. Add a way to stop a
+running job. Change `PROGRESS`, `ESTIMATE`, or the stdout contract. Send anything but GET to
+a provider. Touch the UI, the schema, or `clients.baml`. Add a dependency.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean;
+`uv run pytest -q` green; `pnpm test` untouched and green; guard 1 red if a killed child that
+announced its spend is booked at zero; guard 2 red if that figure does not reach the day's
+`spend` ledger; guard 3 red if a child that announced nothing is booked at anything but zero;
+guard 4 red if a child that exits normally is booked at the announcement instead of its own
+last line; guard 5 red if a line that is not money is taken for money; guard 6 red if a loop
+stops announcing; CI 4/4.
+
+
 **The register is complete through S-61.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
