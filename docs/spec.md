@@ -6077,7 +6077,7 @@ directions of the arithmetic.
   `ESTIMATE` and `PROGRESS`, and the same answer: the child is a process this engine started.
 
 
-### S-63 — A run a person can stop [Rust]
+### S-63 — A run a person can stop [Rust] ☑ (PR #64, 9968211)
 
 **PR:** one. **Depends on:** S-38, which built `/stop` and gave the parked quote somewhere to
 be turned down; S-61, which built the thread that kills a child on purpose; and S-62, which
@@ -6183,6 +6183,97 @@ the row does not end `stopped`; guard 4 red if what it had spent is not booked; 
 that figure does not reach the day's ledger; guard 6 red if the slot it held is not freed;
 guard 7 red if a parked job's stop stops answering the way S-38 built it; guard 8 red if the
 wizard reports a stop as a failure; CI 4/4.
+
+**Files (as built):** `engine/src/jobs.rs` (+135 −17: `STOPPED`, a `live` map on `Jobs` with
+`cancel`/`live_from`/`live_until`, a `Halt` flag, a `Killed` enum so the watchdog says which
+of its two reasons fired, and the arm that books a stopped run), `engine/src/server.rs`
+(+32 −15: `stop_job` asks the parked map then the live one), `engine/tests/jobs.rs` (+165: a
+`LONG_RUN` brain, a `running` helper and seven tests; S-38's two-clicks test changed, and a
+pooled `reqwest::Client` — see (d)), `ui/src/api.ts` (+16 −2: `stopped` on `JobStatus`, and
+what the two answers to `stop` now mean), `ui/src/jobs.ts` (+7 −2: `settle` throws `Cancelled`
+for a stop), `ui/src/jobs.test.ts` (+50: three tests on that), `ui/src/patterns/Wizard.tsx`
+(+61 −6: the stop button, the `halted` note, and `spend` waiting for `stopped` as an ending),
+`ui/src/patterns/Wizard.test.tsx` (+130: a stub that keeps reading, and five tests),
+`docs/spec.md`. No brain change, no schema change, no new dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the endpoint never asks the live map | 6 | the defect |
+| 2 · the watchdog ignores the flag | 6 | the flag is what kills it, not the answer |
+| 3 · a stopped run is booked at zero | 1 | S-62's figure is what makes this safe |
+| 4 · a stopped run is filed as a failure | 9 | `stopped` is its own status |
+| 5 · a finished job is never taken out of the live map | 1 | a late stop is refused |
+| 6 · the stop can be asked for twice | 1 | one click, one stop |
+| 7 · the button is drawn whatever the job is doing | 1 | offered only while there is something to stop |
+| 8 · `settle` treats a stop as a fault | 1 | a person pressing a button is not an error |
+| 9 · the stopped note is not shown | 3 | what it cost is said |
+
+Break 4's nine are every test that asserts a terminal status for a job that was stopped, from
+both S-38's side and S-63's. Break 5 first reported eighty red, which is the shape S-60 warned
+about; re-run on its own it is one, and the eighty was cargo rebuilding underneath a restore
+in the break script rather than anything the break proved.
+
+**Learned:**
+
+**(a) The comment said why, and the why had expired.** `stop_job` refused running jobs because
+stopping one "would be a refund the engine cannot give". That sentence is about money the
+engine cannot return, and it was standing in for a different fact: a killed child booked
+nothing, so a stop would have left the ledger short. S-62 changed that fact and nothing went
+back to the sentence resting on it. This is S-62's own lesson (b) arriving a second time in
+two steps, from the other direction — there it was a Must-not resting on an absence, here a
+refusal resting on a consequence — and both times the fix was to notice that a later step had
+moved the ground. Worth a habit: when a step removes a limitation, the thing to grep for is
+the code that was written around it.
+
+**(b) Two clocks and no button is not two ways out.** `GO_WAIT` and `RUN_LIMIT` both look like
+controls and neither is one. `GO_WAIT` bounds a job that has not started; `RUN_LIMIT` bounds
+silence, and a run that is working is the least silent thing in the system — the measurement
+had it printing twice a second right up to the point it was refused. A product can have
+several timers and still have no way for a person to say stop, and the timers make it harder
+to notice, because the list of things that end a run is not empty.
+
+**(c) The stop had to be a third status, and that is the same argument as S-58's two zeros.**
+`expired` means killed unspent and `failed` means something went wrong. A stopped run is
+neither: it spent, and nothing went wrong. Three steps running now where the honest answer was
+that two existing cases were not two, they were three — S-58's zeros, S-62's killed child,
+and this. The pattern is that a new way for something to end almost never fits an old word,
+and reusing one costs a reader the difference.
+
+**(d) The suite had been running on borrowed sockets, and this step spent the rest.** Tests
+failed intermittently with `AddrNotAvailable` at the same line, in whichever test happened to
+ask next. The cause was `reqwest::get` and `Client::new()` per request — a fresh connection
+each time and a `TIME_WAIT` socket after it — against `until`, which polls every 20ms. There
+were **5,487** such sockets against a machine with 16,384 ports; one pooled client took it to
+**121** and three back-to-back runs went green. It was always fragile and S-63's seven new
+tests were what tipped it over, which is the useful part: the flakiness was not random and was
+not the new tests being wrong. A test helper that builds a client per call is a leak with a
+threshold, and the failure surfaces nowhere near the test that caused it.
+
+**Not done:**
+
+- **Only the wizard has the button.** The stop reaches any job by id, and `ask` is the other
+  kind a person watches. It is one model call and usually over before a button could be
+  pressed, which is why it is not there rather than an oversight.
+- **A scheduled `daily` run cannot be stopped.** Those are spawned down `sync.rs`'s path, not
+  the server's, so nothing registers them and there is no browser open to press anything.
+  That is the run that spends unattended, so it is the one where a stop would matter most.
+- **The stop kills, it does not ask.** The child loses the wave it is on: whatever those
+  batches cost is spent and their labels are gone, since `_write` runs after a wave and not
+  during. A kinder stop would let the brain finish what it had sent and needs a channel the
+  brain reads while working, which stdin is not.
+- **Nothing stops a forking child.** `Child::kill` signals the process this engine started,
+  and `GRAPHIFY_BRAIN` names one executable rather than a shell line, so a wrapper is not
+  really expressible today — but a brain that spawns its own workers would outlive the stop,
+  and nothing says so.
+- **The stopped run's labels are lost to the analyst even where they were stored.** In the
+  wizard `pattern_id` is null so nothing was written anyway, which is why the screen says
+  nothing was saved. A stopped `daily` run does write per wave, and nothing reads those back.
+- **A stop is not authenticated beyond the session gate**, and neither is a go. Same answer as
+  S-62's about `SPENT`: the surface is the session, and this adds no new trust.
+- **`Instant` and the tick are unchanged**, so a stop is acted on within `WATCH_TICK` and no
+  faster; the browser is told the job will stop, not that it has.
 
 
 **The register is complete through S-63.** Anything after that is a new step appended
