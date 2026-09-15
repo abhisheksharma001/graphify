@@ -6275,6 +6275,109 @@ threshold, and the failure surfaces nowhere near the test that caused it.
 - **`Instant` and the tick are unchanged**, so a stop is acted on within `WATCH_TICK` and no
   faster; the browser is told the job will stop, not that it has.
 
+---
 
-**The register is complete through S-63.** Anything after that is a new step appended
+### S-64 — What a dead engine spent [Rust]
+
+**PR:** one. **Depends on:** S-58, which made the last line a brain prints the thing that
+gets booked; S-62, which made the brain say its running total out loud on stderr so that a
+figure survives a kill; and S-63, which spent that figure on a stop a person asks for. This
+is the same figure spent on the death nobody asks for.
+
+**Files:** `engine/src/jobs.rs`, `engine/src/db.rs`, `engine/src/server.rs`,
+`engine/tests/jobs.rs`, `ui/src/api.ts`, `docs/spec.md`. No brain change, no schema change,
+no new dependency.
+
+**Today:** the engine dies with a run in flight, and the money that run had already spent is
+never written down. The next boot writes `expired` over the row — a word whose own
+definition is *killed unspent* — and books nothing.
+
+Measured, on the same forty-wave run S-63 used, taken to ten waves and then handed to
+exactly what the next boot does about it:
+
+| | |
+|---|---|
+| the run, mid-flight | `running`, cost $0.0000 |
+| what it had announced | `SPENT 0.250000` |
+| the day's ledger | $0.0000 |
+| the boot sweep said | nothing — it succeeded |
+| the row after the boot | **`expired`**, cost **$0.0000** |
+| the ledger after | **$0.0000** |
+
+So twenty-five cents left the org's account and no ledger counted it. `sync.rs:222` sizes a
+day's remaining budget as `cap − spend_on(day, org)`, which makes unbooked spend a hard cap
+raised by exactly the amount nobody wrote down — the second Must-never, reached for the third
+time and by a third door. S-62 closed the door where the *watchdog* killed the child. S-63
+closed the one where a *person* did. This is the one where the thing that would have done the
+booking is itself what died: Ctrl-C on `graphify serve`, a container stopped, an OOM kill, a
+laptop shut, a crash.
+
+**The row also lies about what happened.** `expired` is defined against `stopped` in
+`jobs.rs` as the status for a job killed *unspent*. A run ten waves in is not that. And
+`sweep_abandoned`'s own comment states the belief the sweep was built on —
+
+> Whatever was running or waiting belonged to a process that is gone, and its children went
+> with it.
+
+— which is half true and the wrong half. Measured: a child that writes to the pipes it
+inherited dies on the next write, because the pipes closed with the engine; a `/bin/sh` child
+was gone inside 1.5 seconds. A Python child is the one the product actually runs, and Python
+ignores `SIGPIPE` and raises `BrokenPipeError` instead — a child that catches it kept working
+for as long as it was watched. So the sentence is a claim about children, and the defect is
+about money, and the money is lost either way: everything the run had spent before the engine
+died was held in the supervisor's `Tally`, in memory, in the process that just went.
+
+**Why the fix is at the next boot and not on the way down.** A signal handler covers the
+deaths that are polite and none of the others, and it has to race the shutdown it is part of.
+The figure the engine needs is already written somewhere that survives every kind of death,
+including the ones no handler sees: the brain announced it on stderr and the engine wrote it
+into the job's log, in the database, per wave. So the sweep that already runs at boot to free
+the slots can read it back and book it, and one mechanism covers Ctrl-C, `SIGKILL`, a power
+cut and a disk that went away — because the healing is a read of durable state and not a
+promise made at exit.
+
+**Change:** the boot sweep closes each job it finds the way `finish` closes one, instead of
+overwriting the status and walking away.
+
+1. **`spent_so_far(log)`** — the last `SPENT` line read back out of the log, exactly as
+   `estimate(log)` reads back the last `ESTIMATE`. Same `price`, so `nan`, `inf` and a
+   negative total are no more bookable here than anywhere else.
+
+2. **A status of its own: `abandoned`.** Neither `expired` (killed unspent) nor `stopped`
+   (a person changed their mind) nor `failed` (something went wrong). The process that was
+   watching this job died and nobody knows how it would have ended. The word is already in
+   the codebase's mouth — the sweep is called `sweep_abandoned`.
+
+3. **The sweep books through `finish_job`**, which is the one place a cost and a status are
+   written in the same transaction. Not a second ledger writer and not a second arithmetic:
+   the same call `finish` makes.
+
+4. **A job whose org cannot be read is closed at zero and says so.** `finish_job` books
+   against an org, and a row with no `org_id` has nowhere to book. A cost written on a row
+   that no ledger counted is the defect one layer in, so that row gets `abandoned`, `$0.0000`
+   and a log line naming what could not be attributed.
+
+5. **`'abandoned'` on `JobStatus`.** That is the whole UI change: `settle` already treats
+   anything that is not `running`, `waiting` or the status it was waiting for as a failure to
+   report, which is the right answer for a run whose engine died under it.
+
+**Must not:** refund, or book anything but what the log actually says was announced. Book the
+spend twice, or write it anywhere but through `finish_job`. Write a cost on a row whose org is
+unknown. Kill anything — this runs at boot, when there is nothing of ours left alive to kill.
+Add a signal handler. Sweep from any process but the one booting a server, or on any schedule
+but that boot. Change `GO_WAIT`, `RUN_LIMIT`, `MAX_LIVE`, `WATCH_TICK`, `LOG_BYTES`, the 429,
+`/stop`, `/go`, or what `expired` and `stopped` mean. Change `PROGRESS`, `ESTIMATE`, `SPENT`
+or the stdout contract. Touch the brain, the schema or `clients.baml`. Send anything but GET
+to a provider. Render a missing value as 0. Add a dependency.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean;
+`uv run pytest -q` untouched and green; `pnpm test` and `pnpm build` green; guard 1 red if a
+run that announced spending is booked at zero by the sweep; guard 2 red if that figure does
+not reach the day's ledger; guard 3 red if the row does not end `abandoned`; guard 4 red if a
+run that announced nothing is booked at anything; guard 5 red if a row with no org gets a
+cost; guard 6 red if the slots are not freed; guard 7 red if the sweep's failure stops saying
+what it costs the operator; CI 4/4.
+
+
+**The register is complete through S-64.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
