@@ -22,7 +22,7 @@
 //! a key to end up in one. The engine knows exactly which strings it passed, so it does not
 //! have to guess at what a key looks like.
 
-use crate::db::Db;
+use crate::db::{Db, Ending};
 use crate::notices::Notices;
 use crate::secrets::{self, Secret, Secrets};
 use anyhow::{anyhow, bail, Context, Result};
@@ -603,13 +603,25 @@ pub fn abandon(db: &Db, now: &str) -> Result<usize> {
                 (usd, format!("the process running this job is gone; {said}"))
             }
         };
-        // Best-effort, the way `finish` writes its note: the close below is the part that
-        // must land, and a lost sentence is not worth abandoning the booking for.
+        // Into the log as well as onto the row, the way `finish` writes its note. The row
+        // is the copy the browser headlines and the copy that lands or does not land with
+        // the booking it describes; this one is the trail a person scrolls, where the
+        // sentence belongs at the end of everything that led to it.
         let _ = db.append_job_log(job.id, &said);
         // The org the ledger is not written to when there is none: every arm above that
         // can reach a missing org books zero, and `finish_job` writes the ledger only for
         // a cost above zero, so this stands in for an org that is never asked for.
-        db.finish_job(job.id, ABANDONED, None, usd, job.org_id.unwrap_or(0), now)?;
+        db.finish_job(
+            job.id,
+            Ending {
+                status: ABANDONED,
+                output: None,
+                cost_usd: usd,
+                org_id: job.org_id.unwrap_or(0),
+                note: Some(&said),
+                finished_at: now,
+            },
+        )?;
     }
     Ok(left.len())
 }
@@ -1205,10 +1217,27 @@ fn finish(
     // books its cost against one day and closes on another.
     let now = crate::now();
     let db = lock(records.db);
-    if !note.is_empty() {
+    // An empty note is not an empty sentence. `classify` leaves it empty for the one
+    // ending the engine has nothing to add to — a brain that raised, said what it spent
+    // and exited — and that silence is what leaves the brain's own complaint as the thing
+    // the browser headlines. `None` on the row carries it; an empty string would not.
+    let note = (!note.is_empty()).then_some(note);
+    // Twice, on purpose, and from one variable so there is nothing to fall out of step
+    // with. The row is what the browser reads and the only copy that lands in the same
+    // transaction as the money it explains; the log is the chronological trail, where the
+    // sentence reads in the order it happened and can be lost without costing the booking.
+    if let Some(note) = note {
         let _ = db.append_job_log(id, note);
     }
-    if let Err(e) = db.finish_job(id, status, output, usd, org, &now) {
+    let end = Ending {
+        status,
+        output,
+        cost_usd: usd,
+        org_id: org,
+        note,
+        finished_at: &now,
+    };
+    if let Err(e) = db.finish_job(id, end) {
         // What it costs, and not only what failed. The row is still `running`, which is
         // truthful and is also one of the four live slots, and nothing frees it before the
         // next boot's sweep. S-40's lesson, applied where it is now due: this sentence is

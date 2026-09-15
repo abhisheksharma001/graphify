@@ -896,6 +896,14 @@ async fn start_ask(
 /// The progress and the price are read back out of the log the brain wrote rather than
 /// kept in columns beside it, so there is one account of what the job said and nothing to
 /// fall out of step with it.
+///
+/// `note` is the exception and is not one, because it is not something the job said. Four
+/// of the five endings are the engine's — a quote nobody approved, a child the watchdog
+/// stopped, a run the engine died under, a last line that would not parse — and for three
+/// of those the engine's sentence is the only one naming money it has just booked. Reading
+/// that back out of the same log would be reading the engine's words out of the child's
+/// stderr, where the browser's guess at which line matters has a traceback from a pattern
+/// that already recovered to lose to.
 async fn get_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response, ApiError> {
     let Some(job) = app.db().job(id)? else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, format!("no job {id}")));
@@ -908,6 +916,7 @@ async fn get_job(State(app): State<App>, Path(id): Path<i64>) -> Result<Response
         "progress": progress,
         "estimate_usd": jobs::estimate(&job.log),
         "cost_usd": job.cost_usd,
+        "note": job.note,
         "output": job.output.as_deref().and_then(|t| serde_json::from_str::<Value>(t).ok()),
         "log": job.log,
         "created_at": job.created_at,

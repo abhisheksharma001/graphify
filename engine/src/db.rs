@@ -11,6 +11,7 @@ use std::time::Duration;
 const INIT: &str = include_str!("../migrations/0001_init.sql");
 const GLOBAL_SECRETS: &str = include_str!("../migrations/0002_global_secrets.sql");
 const JOBS_ORG: &str = include_str!("../migrations/0003_jobs_org.sql");
+const JOBS_NOTE: &str = include_str!("../migrations/0004_jobs_note.sql");
 
 /// How long an open connection waits for another one to let go before giving up. Long
 /// enough to cover any statement this file runs; short enough that a genuinely stuck
@@ -51,8 +52,35 @@ pub struct Job {
     pub output: Option<String>,
     pub cost_usd: f64,
     pub log: String,
+    /// What the engine said about this ending, if it said anything.
+    ///
+    /// `None` while the job runs, and `None` for an ending the engine had nothing to add
+    /// to — a brain that raised, said what it had spent and exited on its own. That
+    /// silence is the point and not a spare value: it is what leaves the brain's own
+    /// complaint as the thing to show. Everything else here is the brain's words; this is
+    /// the one column that is the engine's.
+    pub note: Option<String>,
     pub created_at: Option<String>,
     pub finished_at: Option<String>,
+}
+
+/// How a job ended: everything `finish_job` writes in the one transaction that closes it.
+///
+/// A struct and not six more arguments, for one reason that is not tidiness. `output` and
+/// `note` are both `Option<&str>` and sit either side of two numbers; positionally they are
+/// interchangeable and the compiler would accept them swapped, which would put the brain's
+/// result where the engine's sentence goes and show one as the other. Named fields make
+/// that transposition impossible to write.
+#[derive(Debug)]
+pub struct Ending<'a> {
+    pub status: &'a str,
+    /// The brain's last line, as it printed it. `None` when there was not one.
+    pub output: Option<&'a str>,
+    pub cost_usd: f64,
+    pub org_id: i64,
+    /// The engine's sentence about this ending. `None` when the engine has nothing to add.
+    pub note: Option<&'a str>,
+    pub finished_at: &'a str,
 }
 
 /// A job whose process died while it was still live, as the boot sweep needs to see it.
@@ -247,7 +275,12 @@ impl Db {
         // short transaction — so waiting is the whole fix.
         conn.busy_timeout(BUSY_TIMEOUT)
             .context("setting the busy timeout")?;
-        Migrations::new(vec![M::up(INIT), M::up(GLOBAL_SECRETS), M::up(JOBS_ORG)])
+        Migrations::new(vec![
+            M::up(INIT),
+            M::up(GLOBAL_SECRETS),
+            M::up(JOBS_ORG),
+            M::up(JOBS_NOTE),
+        ])
             .to_latest(&mut conn)
             .context("running migrations")?;
         Ok(Self {
@@ -692,7 +725,8 @@ impl Db {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, kind, status, input, output, cost_usd, log, created_at, finished_at
+                "SELECT id, kind, status, input, output, cost_usd, log, note, created_at,
+                        finished_at
                    FROM jobs WHERE id = ?1",
                 params![id],
                 |r| {
@@ -704,8 +738,9 @@ impl Db {
                         output: r.get(4)?,
                         cost_usd: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
                         log: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                        created_at: r.get(7)?,
-                        finished_at: r.get(8)?,
+                        note: r.get(7)?,
+                        created_at: r.get(8)?,
+                        finished_at: r.get(9)?,
                     })
                 },
             )
@@ -740,16 +775,28 @@ impl Db {
     /// fail and the second still run. Inside a transaction they move together or not at
     /// all, and the invariant holds without anyone having to remember it.
     ///
+    /// `note` joins them for the same reason, one step out. It is the engine's sentence
+    /// about this ending, and for three of the four endings the engine writes it is the
+    /// only sentence naming the money being booked on the line above. A row that closed
+    /// with a cost and without the sentence explaining it is not a wrong number, but it is
+    /// a number nobody was told about. So it is written here, with the cost, and not
+    /// afterwards: `jobs::finish` also appends it to the log, and that copy is best-effort
+    /// and can be lost without costing the booking. This one cannot be.
+    ///
+    /// `None` for an ending the engine has nothing to add to, which is `classify`'s brain
+    /// that raised and said what it spent: the complaint is already on stderr and in the
+    /// log, and adding to it there would only push it further from the top.
+    ///
     /// The only helper here that runs more than one statement, for that reason.
-    pub fn finish_job(
-        &self,
-        id: i64,
-        status: &str,
-        output: Option<&str>,
-        cost_usd: f64,
-        org_id: i64,
-        finished_at: &str,
-    ) -> Result<()> {
+    pub fn finish_job(&self, id: i64, end: Ending<'_>) -> Result<()> {
+        let Ending {
+            status,
+            output,
+            cost_usd,
+            org_id,
+            note,
+            finished_at,
+        } = end;
         // The ledger is keyed by day and the row by the instant, and they are the same
         // moment: taking the date off the timestamp is what keeps them from being two.
         let day = finished_at.get(..10).unwrap_or(finished_at);
@@ -765,9 +812,10 @@ impl Db {
             )?;
         }
         tx.execute(
-            "UPDATE jobs SET status = ?2, output = ?3, cost_usd = ?4, finished_at = ?5
+            "UPDATE jobs SET status = ?2, output = ?3, cost_usd = ?4, note = ?5,
+                    finished_at = ?6
               WHERE id = ?1",
-            params![id, status, output, cost_usd, finished_at],
+            params![id, status, output, cost_usd, note, finished_at],
         )?;
         tx.commit()?;
         Ok(())
