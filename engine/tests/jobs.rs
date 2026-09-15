@@ -2369,3 +2369,88 @@ async fn the_sweep_books_off_a_log_a_real_run_wrote() {
         "the sweep booked a different figure from the last one the run announced"
     );
 }
+
+// --- what the engine says wins (S-65) ---------------------------------------------------
+
+/// A `daily` run's stderr, where pattern 3 fell over, its traceback was printed, its
+/// verdicts were salvaged (S-60) and the run carried on.
+///
+/// `brain/src/graphify_brain/daily.py` catches per pattern and keeps going, so a line
+/// naming an exception sitting above everything that happened afterwards is the ordinary
+/// shape of a long run's log rather than an unlucky one.
+const SALVAGED: &str = "
+PROGRESS 1/9
+SPENT 0.041000
+Traceback (most recent call last):
+ValueError: pattern 3 asked about a column that is not there
+pattern 3 refund window: failed after reading 40 calls, whose verdicts have been applied
+PROGRESS 3/9
+SPENT 0.213000
+";
+
+#[tokio::test]
+async fn the_engines_sentence_about_an_ending_is_on_the_row() {
+    // The defect this step is for. The sentence existed and was only ever in `log`, mixed
+    // into everything the child had written, where the browser's guess at which line
+    // matters could lose it to a traceback from work that recovered.
+    let (_server, job) = died(r#"echo '{"usd":0.039}'"#).await;
+
+    let note = job["note"].as_str().expect("the engine's ending carries no sentence");
+    assert!(note.contains("failed after spending $0.0390"), "{job}");
+    // And still in the log, in the order it happened, for whoever is reading the trail.
+    assert!(job["log"].as_str().unwrap().contains(note), "{job}");
+}
+
+#[tokio::test]
+async fn an_ending_the_brain_wrote_itself_carries_no_sentence() {
+    // The null is the point. A brain that raised and said it had spent nothing is an
+    // ending the engine has nothing to add to, and its own complaint is what a reader
+    // wants. An empty string here would be a headline of nothing at all.
+    let (_server, job) = died(r#"echo '{"usd":0}'"#).await;
+
+    assert!(job["note"].is_null(), "the engine added a sentence it had no business adding: {job}");
+    assert!(
+        job["log"].as_str().unwrap().contains("will not parse"),
+        "the brain's own complaint is not there to fall back on: {job}"
+    );
+}
+
+#[test]
+fn a_job_still_running_has_no_ending_to_describe() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, SALVAGED);
+
+    assert!(db.job(id).unwrap().unwrap().note.is_none(), "a live job was given an ending");
+}
+
+#[test]
+fn the_sweeps_sentence_is_on_the_row_and_not_only_in_the_log() {
+    // The abandon path (S-64), which is the one whose sentence matters most: it names
+    // money booked against the org on a run that produced nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, SALVAGED);
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    let note = row.note.expect("the sweep closed the row without saying why");
+    assert!(note.contains("the process running this job is gone"), "{note}");
+    assert!(note.contains("$0.2130"), "the sentence does not name what was booked: {note}");
+    assert!(row.log.contains(&note), "the log lost its copy of the sentence");
+}
+
+#[test]
+fn the_sentence_and_the_cost_are_written_together() {
+    // One transaction, not two statements in an order somebody has to remember. A row
+    // carrying a cost and no sentence is a figure nobody was told about; the reverse is a
+    // sentence about money that was never booked.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, SALVAGED);
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    assert_eq!(row.cost_usd, 0.213);
+    assert_eq!(ledger_of(&db), 0.213);
+    assert!(row.note.is_some(), "the cost landed and the sentence explaining it did not");
+}

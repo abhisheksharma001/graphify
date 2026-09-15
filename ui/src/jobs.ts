@@ -21,21 +21,38 @@ export class Cancelled extends Error {}
  * happens to mention an error does not win over the one that names the fault. */
 const NAMES_A_FAULT = /^[\w.]*(Error|Exception)\b/
 
-/** What went wrong, in the brain's own words.
+/** What went wrong, in whichever words are the right ones.
  *
- * A failed job's complaint is what it wrote to stderr, and the engine has already replaced
- * every key it handed the child with `***` on the way into that column. So showing the log
- * is safe, and the whole of it is offered under this headline.
+ * `note` first, and it decides the question rather than joining the guess. Four of the
+ * five endings are the engine's and not the brain's — a quote nobody approved, a child the
+ * watchdog stopped, a run the engine died under, a last line that would not parse — and
+ * for those the engine wrote a sentence saying so, and usually saying what has just been
+ * booked against the org. It is on the row because the log is the child's, and a headline
+ * picked out of the child's stderr is one the child can shape.
  *
- * The headline is the last line naming an exception, and the last non-empty line only when
- * there is none. A guess, and a load-bearing one. The brain's own refusals are a single
- * tidy line and have no exception name, so they fall to the second branch and are quoted
- * whole. Anything it did not expect arrives as a Python traceback whose last line is the
- * tail of a wrapped sentence: "to be set but it is not" is a true last line and tells
- * nobody that no model key is configured, while "BamlError: LLM client 'Sonnet' requires
- * environment variable 'ANTHROPIC_API_KEY'" is four lines above it and is the answer.
+ * It is also one the child can drown. `daily` catches a pattern that falls over, prints
+ * its traceback, salvages its verdicts and carries on, so a nine-pattern run's log holds
+ * tracebacks from work that recovered. The guess below picks the last of them, which for
+ * an abandoned run meant an analyst was shown `ValueError: …` from pattern 3 instead of
+ * being told the engine had restarted and $0.2130 had been booked.
+ *
+ * Null is not an omission. The one ending the engine adds nothing to is a brain that
+ * raised, said what it had spent and exited on its own — and there the complaint below is
+ * the answer, so the engine stays quiet and this falls through.
+ *
+ * The guess, for that case: the last line naming an exception, and the last non-empty line
+ * only when there is none. Load-bearing. The brain's own refusals are a single tidy line
+ * and have no exception name, so they fall to the second branch and are quoted whole.
+ * Anything it did not expect arrives as a Python traceback whose last line is the tail of a
+ * wrapped sentence: "to be set but it is not" is a true last line and tells nobody that no
+ * model key is configured, while "BamlError: LLM client 'Sonnet' requires environment
+ * variable 'ANTHROPIC_API_KEY'" is four lines above it and is the answer.
+ *
+ * Either way the whole log is offered underneath, which is safe: the engine has already
+ * replaced every key it handed the child with `***` on the way into that column.
  */
 function complaint(job: Job): string {
+  if (job.note) return job.note
   const lines = job.log
     .split('\n')
     .map((line) => line.trim())

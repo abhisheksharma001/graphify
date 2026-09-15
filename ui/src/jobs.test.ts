@@ -1,9 +1,11 @@
 // The headline on a failed job.
 //
-// `JobFailed`'s message is picked out of whatever the brain wrote to stderr by a regex
-// its own comment calls "a guess, and a load-bearing one". That is exactly the kind of
-// thing worth holding: the guess is right for the two shapes the brain actually produces
-// and there is no type that says so.
+// Two sources and the split between them is the thing under test. An ending the engine
+// wrote carries the engine's own sentence on the row, and that is the headline. An ending
+// the brain wrote carries none, and the headline is picked out of whatever the brain wrote
+// to stderr by a regex its own comment calls "a guess, and a load-bearing one" — which is
+// exactly the kind of thing worth holding: the guess is right for the two shapes the brain
+// actually produces and there is no type that says so.
 
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
@@ -18,6 +20,8 @@ const failed = (log: string): Job => ({
   estimate_usd: null,
   cost_usd: null,
   output: null,
+  // The brain's own ending: the engine had nothing to add, so the headline is the guess.
+  note: null,
   log,
   created_at: '2026-01-01T00:00:00Z',
   finished_at: '2026-01-01T00:00:01Z',
@@ -78,6 +82,76 @@ describe('what a failed job says it was', () => {
     const job = failed('first\nValueError: second\nthird')
 
     expect(new JobFailed(job).log).toBe('first\nValueError: second\nthird')
+  })
+})
+
+// --- what the engine says wins (S-65) -------------------------------------------------
+
+/// A job the engine ended, carrying the sentence the engine wrote about the ending.
+const ended = (status: Job['status'], note: string | null, log: string): Job => ({
+  ...failed(log),
+  kind: 'daily',
+  status,
+  note,
+})
+
+// A `daily` run's stderr where pattern 3 fell over, its traceback was printed, its verdicts
+// were salvaged and the run carried on — which is what `daily.py` does, so this is the
+// ordinary shape of a long run's log and not an unlucky one.
+const SALVAGED = [
+  'PROGRESS 1/9',
+  'SPENT 0.041000',
+  'Traceback (most recent call last):',
+  'ValueError: pattern 3 asked about a column that is not there',
+  'pattern 3 refund window: failed after reading 40 calls, whose verdicts have been applied',
+  'PROGRESS 3/9',
+  'SPENT 0.213000',
+].join('\n')
+
+const ABANDONED_NOTE =
+  'the process running this job is gone; the $0.2130 it had reported spending by then has ' +
+  'been booked, and anything it spent after that is lost'
+
+describe('an ending the engine wrote', () => {
+  test('is headlined by the engine, not by a traceback the brain recovered from', () => {
+    // The defect. The analyst was told `ValueError: pattern 3 …` — a pattern that failed,
+    // was salvaged and was left behind six lines ago — instead of being told that graphify
+    // had restarted under the run and that $0.2130 had been booked against the org.
+    const job = ended('abandoned', ABANDONED_NOTE, SALVAGED + '\n' + ABANDONED_NOTE)
+
+    expect(new JobFailed(job).message).toBe(ABANDONED_NOTE)
+  })
+
+  test('wins even when its own line never reached the log', () => {
+    // The row is written in the transaction that books the cost; the log copy is
+    // best-effort. The headline comes off the row, so losing the copy costs nothing.
+    const job = ended('abandoned', ABANDONED_NOTE, SALVAGED)
+
+    expect(new JobFailed(job).message).toBe(ABANDONED_NOTE)
+  })
+
+  test('still carries the whole log underneath it', () => {
+    const job = ended('abandoned', ABANDONED_NOTE, SALVAGED)
+
+    expect(new JobFailed(job).log).toBe(SALVAGED)
+  })
+})
+
+describe('an ending the brain wrote itself', () => {
+  test('is still headlined by the brain, which is what the null is for', () => {
+    // The guess is right here and has to stay. `note` is null exactly when the engine had
+    // nothing to add, and then the brain's own complaint is the answer.
+    const job = ended('failed', null, SALVAGED)
+
+    expect(new JobFailed(job).message).toBe(
+      'ValueError: pattern 3 asked about a column that is not there',
+    )
+  })
+
+  test('with nothing in the log falls back to the status, not to a note that is not there', () => {
+    expect(new JobFailed(ended('failed', null, '  \n\n')).message).toBe(
+      'the daily job ended failed without saying why',
+    )
   })
 })
 

@@ -335,6 +335,17 @@ export type Job = {
   estimate_usd: number | null
   /** What it actually cost. Null until the job is over. */
   cost_usd: number | null
+  /** What the engine said about this ending — its words, not the brain's.
+   *
+   * Four of the five endings are the engine's: `expired` is a quote nobody approved,
+   * `abandoned` is the engine dying under a run, and a `failed` can be a child the
+   * watchdog stopped or a last line that would not parse. For three of those this is the
+   * only sentence naming money that has just been booked against the org.
+   *
+   * Null while the job runs, and null for the one ending the engine has nothing to add
+   * to: a brain that raised, said what it had spent and exited. Its complaint is already
+   * in `log` and is the right thing to show, which is what the null is for. */
+  note: string | null
   /** The brain's last line, parsed. `null` while the job is still running. */
   output: unknown
   /** Everything the brain wrote to stderr, keys already scrubbed by the engine. */

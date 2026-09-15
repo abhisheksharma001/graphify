@@ -1,0 +1,15 @@
+-- What the engine had to say about how a job ended, on the row rather than in the log.
+--
+-- Four of the five endings are the engine's and not the brain's: a quote nobody approved,
+-- a child the watchdog stopped, a run the engine died under, a result that would not parse.
+-- `finish` writes one sentence for each — usually the only sentence naming money that was
+-- booked against the org — and it went into `log`, mixed in with everything the child had
+-- written to stderr. The browser picked its headline out of that by looking for the last
+-- line naming an exception, which a `daily` run supplies from any pattern that failed and
+-- was salvaged, so the engine's sentence lost to a traceback from work that recovered.
+--
+-- No backfill. The column is a record of what was said at the moment a job closed, and for
+-- a row already closed that moment is gone; the sentence is still in its log, where the
+-- old guess will still find it. `NULL` here means the same for an old row as for a new one
+-- with nothing to add: no sentence of the engine's, use the brain's words.
+ALTER TABLE jobs ADD COLUMN note TEXT;

@@ -1,4 +1,4 @@
-use graphify::db::{Call, Db, ToolCall};
+use graphify::db::{Call, Db, Ending, ToolCall};
 use graphify::jobs::{DONE, RUNNING, WAITING};
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -405,11 +405,14 @@ fn purging_an_org_takes_the_jobs_that_read_its_calls() {
     let new = job(&db, org, DONE, "2026-09-07T00:00:00.000Z");
     db.finish_job(
         old,
-        DONE,
-        Some(r#"{"evidence":"User: I want a refund on order 5512"}"#),
-        0.0,
-        org,
-        "2020-01-01T00:00:00.000Z",
+        Ending {
+            status: DONE,
+            output: Some(r#"{"evidence":"User: I want a refund on order 5512"}"#),
+            cost_usd: 0.0,
+            org_id: org,
+            note: None,
+            finished_at: "2020-01-01T00:00:00.000Z",
+        },
     )
     .unwrap();
 

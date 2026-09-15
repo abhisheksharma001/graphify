@@ -63,6 +63,7 @@ const done = (id: number, output: unknown, cost: number | null): Job => ({
   estimate_usd: 0.0438,
   cost_usd: cost,
   output,
+  note: null,
   log: '',
   created_at: '2026-01-01T00:00:00Z',
   finished_at: '2026-01-01T00:00:02Z',
