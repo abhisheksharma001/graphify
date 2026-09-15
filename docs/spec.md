@@ -6466,7 +6466,7 @@ much is a break measuring slightly the wrong thing.
   and `schedule.log` still never rotates.
 
 
-### S-65 — What the engine says wins [Rust]
+### S-65 — What the engine says wins [Rust] ☑ (PR #66, 29befc1)
 
 **PR:** one. **Depends on:** S-58, which made the brain's last line the thing that gets
 booked; S-62 and S-63 and S-64, each of which ends a run the brain did not end and writes one
@@ -6554,6 +6554,90 @@ written in the same transaction as the cost; guard 3 red if a job still running 
 guard 4 red if the browser headlines a traceback over it; guard 5 red if an ending the brain
 wrote stops being headlined by the brain's own words; guard 6 red if a missing note is
 rendered as anything but the fallback; guard 7 red if the log loses its copy; CI 4/4.
+
+
+**Files (as built):** `engine/migrations/0004_jobs_note.sql` (+15: `ALTER TABLE jobs ADD
+COLUMN note TEXT`, no backfill and the reason for that), `engine/src/db.rs` (+63 −15: `note`
+on `Job`, the new `Ending` struct, and `finish_job` writing the sentence in the transaction
+that books the cost), `engine/src/jobs.rs` (+35 −6: `finish` turns an empty note into `None`
+and writes it both places; `abandon` hands its own sentence to `finish_job`),
+`engine/src/server.rs` (+9: `note` on the job JSON, and why it is not read back off the log
+the way the progress and the price are), `engine/tests/jobs.rs` (+85: five tests),
+`engine/tests/db.rs` (+11 −4: the one existing `finish_job` caller moved to `Ending`),
+`ui/src/api.ts` (+11: `note` on `Job`), `ui/src/jobs.ts` (+29 −10: `complaint` prefers it),
+`ui/src/jobs.test.ts` (+80 −2: five tests and a new header), `ui/src/patterns/Wizard.test.tsx`
+(+1), `docs/spec.md`. No brain change, no new dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · `finish_job` writes no note | 3 | the sentence is on the row, not only in the log |
+| 2 · an empty note becomes a note | 1 | the null is a claim and not a gap |
+| 3 · the sweep passes no note | 2 | S-64's ending carries its own sentence |
+| 4 · the browser ignores the note | 2 | the row decides the headline |
+| 5 · a null note is preferred anyway | 6 | the fall-through to the brain's words is load-bearing |
+| 6 · the API does not send it | 1 | the wire carries it |
+| 7 · the log loses its copy | 20 | the trail keeps the sentence in order |
+
+Break 5's six are this step's two and four from S-33/S-34, all asserting the one thing — that
+a job the engine said nothing about is headlined by the brain. Break 7's twenty are every test
+since S-58 that reads the engine's prose back out of a log, which is what that copy is for.
+
+**Learned:**
+
+**(a) Three steps made sure the money was written down and none of them checked that anybody
+was told.** S-62, S-63 and S-64 each end with a row carrying a cost and a sentence explaining
+it, and each was verified by reading the row. Nobody read the screen. The sentence was reaching
+the database and losing a regex competition on the way to a person, and it lost to a traceback
+from a pattern that had already recovered — so an analyst whose engine restarted mid-run was
+shown a Python error about something that went fine. A number is not booked until somebody can
+read what it was for.
+
+**(b) Whose words are these.** The defect was not the guess; the guess is careful, anchored,
+and right for the two shapes the brain produces. The defect was running it over text two
+different processes wrote. `log` is the child's stderr — scrubbed of keys on the way in, which
+is S-37 saying out loud that it is not trusted — and the engine had been appending its own
+sentences into the middle of it. Once the question is *whose words are these*, the answer is a
+column, and the null in that column is as load-bearing as the text: it is the engine declining
+to speak for an ending it had nothing to add to.
+
+**(c) A lint that was right for a reason it did not give.** `finish_job` reached eight
+arguments and clippy refused it. The tempting answer was `#[allow(clippy::too_many_arguments)]`,
+which `vapi.rs` already does once. The real problem was narrower and worse: `output` and `note`
+are both `Option<&str>`, separated by two numbers, and a caller that swapped them would compile
+and would show the brain's result where the engine's sentence goes. `Ending`'s named fields
+make that unwriteable. The lint counted arguments; what it caught was two interchangeable ones.
+
+**(d) The same string in two places, when the places are for different readers.** The note is
+written to the row and appended to the log. That is the duplication the `Tally` comment warns
+about — except it is written once, from one variable, in one function, and the two copies
+answer different questions: the row is what a screen headlines and lands with the money it
+explains, the log is the trail in the order things happened. The rule the `Tally` comment is
+really about is *parsed twice*, not *stored twice*.
+
+**Not done:**
+
+- **The abandoned run still reads as a failure.** `settle` throws `JobFailed` for it and the
+  screen says the labelling failed, which is true and is not what happened. The headline is now
+  the engine's sentence; the frame around it still belongs to the brain.
+- **No backfill.** A job that closed before this step has `note` NULL and falls to the guess,
+  which for those rows is exactly what it was. Nothing distinguishes an old row from a new one
+  the engine had nothing to say about, and nothing needs to yet.
+- **A note is never updated.** It is written once, when the row closes. A job whose close
+  failed — `finish`'s error arm — still has the operator's sentence pushed to the notices board
+  and appended to the log, and no note at all, because the transaction that would carry one is
+  the one that failed.
+- **Nothing tells a stale tab that anything changed.** The banner polls and nothing pushes; an
+  analyst who walked away still learns nothing until they come back and the poll lands.
+- **`expired` was already right and is now right for a different reason.** Nothing ran, so its
+  log has no traceback for the guess to find. That was luck. The column removes the luck without
+  anything in the tests being able to tell the difference.
+- **The `LOG_BYTES` under-count S-64 named is untouched.** A run loud enough to fill 64 KiB
+  still has its later `SPENT` lines dropped, and the sweep still books the last one that fit.
+  The note now says what was booked, which makes the under-count legible and not smaller.
+- Unchanged: nothing prunes `jobs` by row count, `schedule.log` still never rotates, and no
+  process but a booting server runs the sweep.
 
 
 **The register is complete through S-65.** Anything after that is a new step appended
