@@ -64,19 +64,23 @@ pub struct App {
     brain: String,
 }
 
-/// Clear whatever the last process left live, and hand back what the operator has to be
-/// told if it could not be done.
+/// Close out whatever the last process left live, and hand back what the operator has to
+/// be told if it could not be done.
 ///
 /// Returns the sentence rather than a `Result` because the sentence is the part worth
-/// proving. That SQLite can refuse an `UPDATE` is not in doubt; what matters is that the
+/// proving. That SQLite can refuse a statement is not in doubt; what matters is that the
 /// person running this finds out the queue has been disabled, and finds it out in words
 /// that say so rather than in a rusqlite error about a statement they did not write.
+///
+/// The closing itself is `jobs::abandon`, which is where the statuses and the money live.
+/// Since S-64 that is a booking and not a relabel: a run the last process died on had
+/// usually spent something, and this is the only chance anything has to write it down.
 ///
 /// Nothing here is scrubbed and nothing needs to be, on S-37's rule: this error comes from
 /// SQLite about the engine's own statement, and carries no key, no brain output and no
 /// operator text.
 pub fn sweep_abandoned(db: &Db) -> Option<String> {
-    match db.abandon_live_jobs(jobs::RUNNING, jobs::WAITING, jobs::EXPIRED, &crate::now()) {
+    match jobs::abandon(db, &crate::now()) {
         Ok(_) => None,
         Err(e) => Some(format!(
             "could not clear the jobs left behind by the last run: {e:#}. They still count \
@@ -89,16 +93,19 @@ pub fn sweep_abandoned(db: &Db) -> Option<String> {
 
 impl App {
     pub fn new(db: Db, secrets: Secrets, auth: Auth) -> Self {
-        // Whatever was running or waiting belonged to a process that is gone, and its
-        // children went with it. Left alone, four abandoned `waiting` rows would count
-        // against the live cap for ever and no job would ever start again — `live_jobs`
-        // counts rows and not children, and the next boot runs this same sweep against the
-        // same database, so a failure here does not heal on a restart.
+        // Whatever was running or waiting belonged to a process that is gone. Its children
+        // went with it, near enough — they hold the pipes it held, and a child that writes
+        // to a closed one does not last long — but the money is the part that does not take
+        // care of itself, and since S-64 that is what this is mostly for. Left alone, four
+        // abandoned `waiting` rows would also count against the live cap for ever and no job
+        // would ever start again: `live_jobs` counts rows and not children, and the next
+        // boot runs this same sweep against the same database, so a failure here does not
+        // heal on a restart.
         //
         // Said and not obeyed: serving is still right, because what is lost is the job
         // queue and not the product — charts, sync, patterns and settings read other
         // tables and are unharmed — and refusing to boot would turn one feature's outage
-        // into all of them on the evidence of a single `UPDATE`. The rows it could not
+        // into all of them on the evidence of one refused statement. The rows it could not
         // touch stay readable through the API, which is the one thing that keeps this
         // honest rather than merely quiet.
         //

@@ -55,6 +55,16 @@ pub struct Job {
     pub finished_at: Option<String>,
 }
 
+/// A job whose process died while it was still live, as the boot sweep needs to see it.
+#[derive(Debug)]
+pub struct LeftBehind {
+    pub id: i64,
+    /// `None` for a row written before the column existed, or by a path that did not set
+    /// it. Money cannot be booked against nobody, so the sweep closes one of these at zero.
+    pub org_id: Option<i64>,
+    pub log: String,
+}
+
 /// A `patterns` row. The four JSON columns come back as the text they were stored as;
 /// parsing them is the API's, which is where a column that will not parse can be dropped
 /// without taking the row with it.
@@ -776,20 +786,27 @@ impl Db {
         )?)
     }
 
-    /// Close out every job that a dead process left mid-flight. Called once at startup:
-    /// the children died with the engine, so a row still claiming to be running is a row
-    /// about a process that no longer exists.
-    pub fn abandon_live_jobs(
-        &self,
-        running: &str,
-        waiting: &str,
-        status: &str,
-        finished_at: &str,
-    ) -> Result<usize> {
-        Ok(self.conn.execute(
-            "UPDATE jobs SET status = ?3, finished_at = ?4 WHERE status = ?1 OR status = ?2",
-            params![running, waiting, status, finished_at],
-        )?)
+    /// Every job a dead process left mid-flight, with what it needs to be closed out.
+    ///
+    /// Called once at startup, where a row still claiming to be running is a row about a
+    /// process that no longer exists. It reads rather than writes, which is the S-64
+    /// change: closing one of these is booking what it spent as well as restating its
+    /// status, and those two are one transaction that `finish_job` already owns.
+    ///
+    /// Three columns and not a whole `Job`: the id to close, the org to book against, and
+    /// the log, which is where the figure it announced survived the process that heard it.
+    pub fn jobs_left_behind(&self, running: &str, waiting: &str) -> Result<Vec<LeftBehind>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, org_id, log FROM jobs WHERE status = ?1 OR status = ?2 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![running, waiting], |r| {
+            Ok(LeftBehind {
+                id: r.get(0)?,
+                org_id: r.get(1)?,
+                log: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Book money against an org on a day, added to whatever is already there: the cap in

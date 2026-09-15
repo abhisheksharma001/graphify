@@ -307,8 +307,21 @@ export type Plan = {
 /** Where a job has got to.
  *
  * `waiting` is the interesting one: the brain has printed its price and is parked with
- * its stdin open, having read nothing and spent nothing, until it is told to go. */
-export type JobStatus = 'running' | 'waiting' | 'done' | 'failed' | 'expired' | 'stopped'
+ * its stdin open, having read nothing and spent nothing, until it is told to go.
+ *
+ * The four endings are four different claims and none of them is a synonym. `done` and
+ * `failed` are about the run. `expired` is a quote nobody approved in time, killed before
+ * it read anything. `stopped` is a person who had approved one and changed their mind.
+ * `abandoned` is neither: the engine itself died — a restart, a crash, a stopped container
+ * — and the row was closed by the next boot at whatever the run had last said it spent. */
+export type JobStatus =
+  | 'running'
+  | 'waiting'
+  | 'done'
+  | 'failed'
+  | 'expired'
+  | 'stopped'
+  | 'abandoned'
 
 export type Job = {
   id: number

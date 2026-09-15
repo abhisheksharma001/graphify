@@ -745,7 +745,10 @@ async fn a_job_left_running_by_a_dead_engine_does_not_block_the_next_one() {
     until(&server, body["id"].as_i64().unwrap(), jobs::DONE).await;
 
     let (_, swept) = get(&server.url("/api/jobs/1")).await;
-    assert_eq!(swept["status"], jobs::EXPIRED);
+    // `abandoned` since S-64 and not `expired`. The same sweep and the same row: what
+    // changed is that `expired` is defined as killed *unspent* at a deadline, and a job a
+    // dead engine left behind has neither a deadline nor, usually, an unspent run.
+    assert_eq!(swept["status"], jobs::ABANDONED);
     assert!(swept["finished_at"].is_string(), "{swept}");
 }
 
@@ -2196,4 +2199,173 @@ async fn a_run_that_was_not_stopped_is_not_marked_stopped() {
     let row = until(&server, id, jobs::DONE).await;
     assert_eq!(row["cost_usd"], 0.0123);
     assert!(!row["log"].as_str().unwrap().contains("stopped while it was working"), "{row}");
+}
+
+// --- what a dead engine spent (S-64) ----------------------------------------------------
+
+/// A database holding one job that a dead process left mid-flight, with `log` as the lines
+/// that process had already written into it.
+///
+/// Built by hand rather than by running a child, because what is under test is the sweep
+/// and a real child would have a real supervisor still alive to finish the row underneath
+/// it. The last test in this section runs one anyway, against a log the engine wrote.
+fn mid_flight(dir: &TempDir, log: &str) -> (Db, i64) {
+    let db = Db::open(dir.path().join("graphify.db")).unwrap();
+    let org = db.create_org("acme").unwrap();
+    let id = db
+        .create_job("label", jobs::RUNNING, org, "{}", "2026-09-03T00:00:00.000Z")
+        .unwrap();
+    for line in log.lines() {
+        db.append_job_log(id, line.trim()).unwrap();
+    }
+    (db, id)
+}
+
+/// The same figure as `ledger` above, off a `Db` this section already has open. Two
+/// helpers because the sweep tests have no server to ask through.
+fn ledger_of(db: &Db) -> f64 {
+    db.spend_on(&graphify::now()[..10], 1).unwrap()
+}
+
+/// Waves of a run that was reporting its running total the way `cost.announce` does.
+const ANNOUNCED: &str = "
+PROGRESS 1/40
+SPENT 0.025000
+PROGRESS 10/40
+SPENT 0.250000
+";
+
+#[test]
+fn a_run_a_dead_engine_left_is_booked_at_what_it_announced() {
+    // The defect. Before this step the sweep wrote `expired` over the row and booked
+    // nothing, so a quarter of a dollar left the org's account and no ledger counted it —
+    // and `sync` sizes a day's remaining budget by subtracting that ledger from the cap.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, ANNOUNCED);
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    assert_eq!(row.cost_usd, 0.25, "the run was closed at the wrong price: {row:?}");
+    assert!(
+        row.log.contains("the process running this job is gone"),
+        "the row does not say why it was closed: {}",
+        row.log
+    );
+}
+
+#[test]
+fn what_a_dead_engine_left_reaches_the_days_ledger() {
+    // The row carrying a cost is half of it. The cap is computed off `spend`, so a cost on
+    // a row that the ledger never heard about is the same silence with a figure on it.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _) = mid_flight(&dir, ANNOUNCED);
+    assert_eq!(ledger_of(&db), 0.0);
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    assert_eq!(ledger_of(&db), 0.25, "the day's cap was raised by what nobody booked");
+}
+
+#[test]
+fn a_run_a_dead_engine_left_is_not_called_expired() {
+    // `expired` is defined in `jobs.rs` as killed *unspent*, and this one has spent. The
+    // same argument S-63 made for `stopped`, one death further out.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, ANNOUNCED);
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    assert_eq!(row.status, jobs::ABANDONED);
+    assert!(row.finished_at.is_some(), "{row:?}");
+}
+
+#[test]
+fn a_run_that_announced_nothing_is_booked_at_nothing_and_says_so() {
+    // A job killed before it ever reached a model — a parked quote, most of the time. There
+    // is no figure to read and S-58's rule is that a number nobody has is not zero, so the
+    // row says that rather than carrying a zero that looks like a price.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, "PROGRESS 1/40\n");
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    assert_eq!(row.cost_usd, 0.0);
+    assert_eq!(ledger_of(&db), 0.0);
+    assert!(row.log.contains("reported nothing on the way"), "{}", row.log);
+}
+
+#[test]
+fn a_run_that_announced_zero_is_not_a_run_that_announced_nothing() {
+    // S-58's two zeros, reached through the sweep. Both book nothing and they are different
+    // claims, so the sentence in the row has to be the other one.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, id) = mid_flight(&dir, "PROGRESS 1/40\nSPENT 0.000000\n");
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    assert_eq!(row.cost_usd, 0.0);
+    assert!(
+        row.log.contains("reported spending nothing by then"),
+        "a run that said zero was filed as one that said nothing: {}",
+        row.log
+    );
+}
+
+#[test]
+fn a_run_with_no_org_is_closed_without_a_cost() {
+    // Money is booked against an org and this row has none, so there is nowhere to put the
+    // figure. Writing it on the row anyway would be this step's own defect one layer in: a
+    // cost that no ledger counted. It is said in the log instead.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path().join("graphify.db")).unwrap();
+    db.create_org("acme").unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO jobs (id, kind, status, org_id, input, cost_usd, log, created_at)
+             VALUES (7, 'label', ?1, NULL, '{}', 0, 'SPENT 0.250000', '2026-09-03T00:00:00.000Z')",
+            [jobs::RUNNING],
+        )
+        .unwrap();
+
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(7).unwrap().unwrap();
+    assert_eq!(row.status, jobs::ABANDONED);
+    assert_eq!(row.cost_usd, 0.0, "a cost was written that no ledger counted");
+    assert_eq!(ledger_of(&db), 0.0);
+    assert!(row.log.contains("nowhere to book it"), "{}", row.log);
+}
+
+#[tokio::test]
+async fn the_sweep_books_off_a_log_a_real_run_wrote() {
+    // The one test here that does not build its own log. Everything above asserts about
+    // lines this file typed; this one asserts that what the engine actually writes into the
+    // column while a child is working is a thing the sweep can read back.
+    let server = served(LONG_RUN).await;
+    let id = running(&server).await;
+    let db = server.db();
+    let announced = db
+        .job(id)
+        .unwrap()
+        .unwrap()
+        .log
+        .lines()
+        .rev()
+        .find_map(|l| l.trim().strip_prefix("SPENT ").map(str::to_string))
+        .expect("the run wrote no running total at all");
+
+    // What the next boot does about the row this process is holding.
+    assert_eq!(sweep_abandoned(&db), None);
+
+    let row = db.job(id).unwrap().unwrap();
+    assert_eq!(row.status, jobs::ABANDONED);
+    assert_eq!(
+        format!("{:.6}", row.cost_usd),
+        announced,
+        "the sweep booked a different figure from the last one the run announced"
+    );
 }
