@@ -6466,5 +6466,95 @@ much is a break measuring slightly the wrong thing.
   and `schedule.log` still never rotates.
 
 
-**The register is complete through S-64.** Anything after that is a new step appended
+### S-65 — What the engine says wins [Rust]
+
+**PR:** one. **Depends on:** S-58, which made the brain's last line the thing that gets
+booked; S-62 and S-63 and S-64, each of which ends a run the brain did not end and writes one
+sentence saying so and how much it cost; and S-36, which is the same defect in a button —
+a number the screen could not know, shown as if it did.
+
+**Files:** `engine/migrations/0004_jobs_note.sql`, `engine/src/db.rs`, `engine/src/jobs.rs`,
+`engine/src/server.rs`, `engine/tests/*`, `ui/src/api.ts`, `ui/src/jobs.ts`,
+`ui/src/jobs.test.ts`, `docs/spec.md`. No brain change, no new dependency.
+
+**Today:** four of the five endings a job can have are written by the *engine*, not the brain.
+`expired` is a quote nobody approved. `abandoned` is the engine dying under a run (S-64).
+A `failed` the watchdog produced is a child that went silent (S-62). Each of those calls
+`finish`, and `finish` writes one sentence into the job's log saying what happened and — for
+three of them — what has just been booked against the org.
+
+The browser never looks for that sentence. `ui/src/jobs.ts`'s `complaint()` takes the whole
+log, keeps the last line matching `/^[\w.]*(Error|Exception)\b/`, and falls back to the last
+non-empty line only when there is none. It is a guess at *the brain's* words, run over every
+ending including the ones the brain had no part in.
+
+And `daily` hands it something to pick. A pattern that falls over is caught, its traceback is
+printed to stderr, its verdicts are salvaged (S-60) and **the run carries on** —
+`brain/src/graphify_brain/daily.py:138` and `:232`. So a daily run's log routinely holds a
+Python traceback from work that was already recovered, sitting above everything that came
+after it.
+
+Measured, on a nine-pattern `daily` log where pattern 3 fell over, was salvaged and the run
+continued, then ended four different ways:
+
+| the ending | the headline the analyst is shown |
+|---|---|
+| `abandoned` — the engine died (S-64) | **`ValueError: pattern 3 asked about a column that is not there`** |
+| `failed` — the watchdog stopped a silent child (S-62) | **`ValueError: pattern 3 asked about a column that is not there`** |
+| `expired` — nobody approved the quote | `nobody approved the price in time, so this was stopped before it read anything` |
+| `failed` — the brain raised and exited | `ValueError: pattern 3 asked about a column that is not there` |
+
+Rows one and two are the defect and row four is the design. The sentence that was dropped in
+row one is *"the process running this job is gone; the $0.2130 it had reported spending by
+then has been booked, and anything it spent after that is lost"*, and in row two the same
+figure under the watchdog's words. Three steps were spent making sure that money is written
+down; the one screen that would tell a person it was spent shows them a stale traceback from a
+pattern that recovered.
+
+**The second half: the log is written by the child.** Keys are scrubbed out of it on the way
+in (S-37), which is the acknowledgement that the brain's stderr is not the engine's own voice.
+A headline recovered by string-matching that blob is a headline the child can shape — including
+by printing a line that reads like the engine's. A sentence the engine wrote belongs where the
+brain cannot write: on the row.
+
+**Change:** the engine's closing sentence becomes a column, and the browser prefers it.
+
+1. **`jobs.note`**, added by `0004_jobs_note.sql`, the way `0003_jobs_org.sql` added
+   `jobs.org_id`. `NULL` for a job still running, and `NULL` for an ending the engine had
+   nothing to add to — which is the real distinction and not a spare value: `classify` already
+   passes an empty note for a brain that failed after spending nothing, and that silence is
+   what makes row four right.
+
+2. **`finish_job` writes it**, in the transaction that already closes the row and books the
+   cost. Not a fourth best-effort write: the sentence about the money and the booking of the
+   money land together or neither does.
+
+3. **The log keeps its line too.** The column is what the headline is taken from; the log
+   stays the chronological trail a person scrolls, and the sentence belongs in it in order.
+   One string, written twice from one variable, in one function — not two copies that can
+   come to disagree.
+
+4. **`note` on the job JSON and on `Job`**, and `complaint()` returns it when it is there.
+   The `Error`/`Exception` guess stays exactly as it is for when it is not, which is every
+   ending the brain wrote itself.
+
+**Must not:** change what any of the five statuses mean, or add a sixth. Change what is
+booked, where it is booked, or when — this step moves a sentence, not a number. Write the
+note anywhere but through `finish_job`'s transaction. Show a note the brain could have
+written. Drop the log line, or change `PROGRESS`, `ESTIMATE`, `SPENT`, `GO` or the stdout
+contract. Touch the brain. Send anything but GET to a provider. Call a model without a shown
+cost and an explicit go. Return a key to the browser or write one to the DB in clear. Render
+a missing value as 0 — a job with no note has none, and the screen falls back to the brain's
+words rather than inventing any. Add a dependency.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean;
+`uv run pytest -q` untouched and green; `pnpm test` and `pnpm build` green; guard 1 red if the
+engine's sentence is not on the row after a job the engine ended; guard 2 red if it is not
+written in the same transaction as the cost; guard 3 red if a job still running carries one;
+guard 4 red if the browser headlines a traceback over it; guard 5 red if an ending the brain
+wrote stops being headlined by the brain's own words; guard 6 red if a missing note is
+rendered as anything but the fallback; guard 7 red if the log loses its copy; CI 4/4.
+
+
+**The register is complete through S-65.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
