@@ -52,6 +52,15 @@ pub const EXPIRED: &str = "expired";
 /// person who had approved a price changed their mind about it, which the product is
 /// supposed to let them do.
 pub const STOPPED: &str = "stopped";
+/// The process watching it died, and this is what the next boot makes of the row it left.
+///
+/// A fourth word and not one of the three above, because none of them is what happened.
+/// `expired` is killed *unspent* at a deadline; `stopped` is a person who changed their
+/// mind; `failed` is something that went wrong. Here the engine itself went — Ctrl-C, a
+/// container stopped, an out-of-memory kill, a power cut — and nobody knows how the run
+/// would have ended. What is known is what it had announced spending by then, which the
+/// sweep reads back out of the log and books; `cost_usd` says how much.
+pub const ABANDONED: &str = "abandoned";
 
 /// The brain binary when `GRAPHIFY_BRAIN` does not name one. Found on `PATH`, which is
 /// where `uv sync` and `pip install` both put it.
@@ -450,6 +459,19 @@ pub fn estimate(log: &str) -> Option<f64> {
         .find_map(|line| price(line.trim().strip_prefix(ESTIMATE)?))
 }
 
+/// The last running total the brain announced, read back out of the log.
+///
+/// The in-memory `Tally` below is the copy the supervisor books from, and it is the better
+/// copy for every reason given there. This is the copy for the case that outlives the
+/// supervisor: the process died, the `Tally` went with it, and what is left is the lines
+/// the engine had already written into the database, wave by wave. `None` for a run that
+/// announced nothing — which is not zero, and the sweep says which.
+pub fn spent_so_far(log: &str) -> Option<f64> {
+    log.lines()
+        .rev()
+        .find_map(|line| price(line.trim().strip_prefix(SPENT)?))
+}
+
 /// The number on an `ESTIMATE` line, if it is one that can be shown to someone.
 ///
 /// `f64` will read `nan` and `inf` out of a string quite happily, and serde_json writes
@@ -540,6 +562,56 @@ fn announced(reported: Option<f64>) -> (f64, String) {
                 .to_string(),
         ),
     }
+}
+
+// --- what a dead engine left behind -----------------------------------------------------
+
+/// Close out every job whose process died while it was still live, booking what each one
+/// had said it spent.
+///
+/// Run once, at the boot of a server, against rows written by a process that is gone. Two
+/// things are wrong with a row like that and only one of them was ever fixed: it holds one
+/// of `MAX_LIVE` slots for ever, and — the S-64 defect — the money the run had already
+/// spent was never written down. The supervisor that would have booked it is what died.
+///
+/// A boot and not a signal handler, deliberately. A handler covers only the deaths that are
+/// polite, and the figure is already somewhere that survives all of them: the brain
+/// announced it on stderr per wave (S-62) and the engine wrote it into the job's log, in
+/// this database. Reading durable state back covers Ctrl-C, a `SIGKILL`, a stopped
+/// container and a power cut with one mechanism, and promises nothing at exit.
+///
+/// Errors stop the sweep rather than being collected. Everything here is SQLite refusing a
+/// statement against a database the caller is about to serve from, which will refuse the
+/// next row for the same reason — and the caller's sentence about what an unswept queue
+/// costs an operator is already the right thing to say about a sweep that stopped early.
+pub fn abandon(db: &Db, now: &str) -> Result<usize> {
+    let left = db.jobs_left_behind(RUNNING, WAITING)?;
+    for job in &left {
+        let (usd, said) = match (job.org_id, spent_so_far(&job.log)) {
+            // Money is booked against an org, and a row with no org has nowhere to put it.
+            // A cost written on a row that no ledger counted is this step's own defect one
+            // layer in, so the figure is said and not booked.
+            (None, Some(usd)) => (
+                0.0,
+                format!(
+                    "the process running this job is gone. It had reported spending \
+                     ${usd:.4}, and this row carries no org, so there is nowhere to book it"
+                ),
+            ),
+            (_, reported) => {
+                let (usd, said) = announced(reported);
+                (usd, format!("the process running this job is gone; {said}"))
+            }
+        };
+        // Best-effort, the way `finish` writes its note: the close below is the part that
+        // must land, and a lost sentence is not worth abandoning the booking for.
+        let _ = db.append_job_log(job.id, &said);
+        // The org the ledger is not written to when there is none: every arm above that
+        // can reach a missing org books zero, and `finish_job` writes the ledger only for
+        // a cost above zero, so this stands in for an org that is never asked for.
+        db.finish_job(job.id, ABANDONED, None, usd, job.org_id.unwrap_or(0), now)?;
+    }
+    Ok(left.len())
 }
 
 // --- the stop ---------------------------------------------------------------------------
