@@ -6277,7 +6277,7 @@ threshold, and the failure surfaces nowhere near the test that caused it.
 
 ---
 
-### S-64 — What a dead engine spent [Rust]
+### S-64 — What a dead engine spent [Rust] ☑ (PR #65, 35657fb)
 
 **PR:** one. **Depends on:** S-58, which made the last line a brain prints the thing that
 gets booked; S-62, which made the brain say its running total out loud on stderr so that a
@@ -6377,6 +6377,93 @@ not reach the day's ledger; guard 3 red if the row does not end `abandoned`; gua
 run that announced nothing is booked at anything; guard 5 red if a row with no org gets a
 cost; guard 6 red if the slots are not freed; guard 7 red if the sweep's failure stops saying
 what it costs the operator; CI 4/4.
+
+**Files (as built):** `engine/src/jobs.rs` (+72: `ABANDONED`, `spent_so_far(log)` beside
+`estimate(log)`, and `abandon`, which closes each row the way `finish` does),
+`engine/src/db.rs` (+31 −14: `abandon_live_jobs` — one `UPDATE` over every live row —
+replaced by `jobs_left_behind`, which reads the id, the org and the log so the caller can
+close them one at a time and book each), `engine/src/server.rs` (+17 −10: `sweep_abandoned`
+calls `jobs::abandon`; the boot comment's claim about children corrected),
+`engine/tests/jobs.rs` (+174: seven tests, and S-38-era `a_job_left_running_by_a_dead_engine`
+updated to the new word), `ui/src/api.ts` (+17 −1: `'abandoned'` on `JobStatus` and what the
+five endings each mean), `docs/spec.md`. No brain change, no schema change, no new dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the log is never read | 5 | the figure comes off the log |
+| 2 · the row is restated and nothing is booked | 5 | the booking is the step, not the relabel |
+| 3 · the sweep writes `expired` | 4 | `abandoned` is a status of its own |
+| 4 · the two zeros collapse | 1 | a reported zero is not a missing figure |
+| 5 · a missing org is no obstacle | 1 | a cost no ledger counted is never written |
+| 6 · the sweep does nothing | 11 | the defect, and the slots it also frees |
+| 7 · the operator's sentence is dropped | 2 | a failed sweep still says what it costs |
+
+Break 4 was run twice. The first replacement hit `announced(reported)` and there are two of
+those in the file, so one of its two reds was S-62's arm rather than anything this step
+built; scoped to `abandon` it is one. Recorded as one, with the first reading in (d) below.
+
+**Learned:**
+
+**(a) Three steps to close one Must-never, because each fixed a death and not the class of
+them.** S-62 made the *watchdog's* kill book what the child had spent. S-63 spent that same
+figure on a kill *a person* asks for. Neither touched the case where the thing that does the
+booking is what died — which is the commonest of the three, because it is every restart,
+every crash, every stopped container and every Ctrl-C. Each step's own Not-done named the
+next gap in its own vocabulary and none of them named this one, because it is not a kind of
+kill; it is the absence of anybody to write the row. The habit worth keeping: after any step
+that ends "and now it books", ask who else can die here, including the bookkeeper.
+
+**(b) Durable state beats a promise made at exit.** The tempting shape was a signal handler:
+catch `SIGINT`, stop the children, book, exit. It covers the polite deaths and none of the
+others, it races the shutdown it is part of, and it needs a tokio feature and a second code
+path for `run_blocking`, which is not async. The figure was already written somewhere that
+survives everything — S-62 put it on stderr per wave and the engine had been writing it into
+the job's log all along — so the fix is a read at the next boot, and one mechanism covers
+`SIGKILL`, an OOM kill and a power cut as well as Ctrl-C. When a fix can be a read of state
+that is already durable, it should not be a promise about behaviour at exit.
+
+**(c) A comment can be about the right event and still hide the defect.** `App::new` said
+*"Whatever was running or waiting belonged to a process that is gone, and its children went
+with it."* That is a true sentence about the right moment, and it is about children. Measured:
+a `/bin/sh` child dies on the next write to the closed pipe, inside 1.5 seconds; a Python
+child — what the product actually runs — ignores `SIGPIPE`, and one that catches
+`BrokenPipeError` kept working for as long as it was watched. So the sentence is roughly true
+and entirely beside the point, because the thing that does not take care of itself is the
+money. A comment that answers a neighbouring question is harder to notice than one that is
+wrong, since reading it feels like the question has been asked.
+
+**(d) A break has to be exactly as narrow as its claim.** Break 4's first form replaced a
+call by its text and there were two call sites; it went red in S-62's arm as well as this
+step's, and a two-red break that proves two different things proves neither cleanly. Scoped
+to the one function it is one red and says one thing. The same lesson as S-60's "a break that
+fails everything is usually a broken break", one size down: a break that fails slightly too
+much is a break measuring slightly the wrong thing.
+
+**Not done:**
+
+- **The sweep runs at the boot of a *server* and nowhere else.** A `graphify sync` on cron
+  never calls it, so a daily run whose process died leaves its money unbooked until somebody
+  starts a server against the same database. Adding the sweep to `sync` is not the fix and was
+  not done: two processes over one file, and a sweep from one would close the other's live
+  rows. Two engines on one database is undefined today — true of nothing the product ships,
+  and not enforced anywhere.
+- **No signal handling, by the argument above.** A run in flight when Ctrl-C lands still loses
+  the wave it is on, and the analyst watching it sees the tab stop rather than a message.
+- **The figure is the last one announced, not what was spent.** Whatever the wave in flight
+  cost is lost, the same limit S-63's stop has and for the same reason: the brain announces
+  after a wave, not during.
+- **A log that hit `LOG_BYTES` is missing its later lines**, so the last `SPENT` the sweep can
+  read may be an under-count. The in-memory `Tally` has no such cap and is what books whenever
+  the supervisor survives; this copy is for when it did not. Strictly better than zero, and
+  nothing says by how much.
+- **Nothing tells the analyst what happened.** A stale tab polling an abandoned job gets the
+  ordinary failure path, whose headline is the brain's last complaint rather than "the engine
+  restarted under this run". The status is right and the sentence is not about the reader.
+- **`abandoned` is purged on the org's clock** like every other terminal status, which is what
+  `purge_jobs` naming only the live two was for. Unchanged: nothing prunes `jobs` by row count,
+  and `schedule.log` still never rotates.
 
 
 **The register is complete through S-64.** Anything after that is a new step appended
