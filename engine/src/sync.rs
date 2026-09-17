@@ -217,15 +217,27 @@ pub fn daily(db: &Arc<Mutex<Db>>, secrets: &Secrets, opts: &DailyOpts) -> Result
         bail!("a daily cap cannot be negative, and ${:.2} is", opts.cap_usd);
     }
 
-    let (org_id, org_name, applied, wanted, left) = {
+    let (org_id, org_name, applied, wanted, left, booked, flight) = {
         let mut db = lock(db);
         let Some(org) = db.org_by_name(&opts.org)? else {
             bail!("no org named {}", opts.org);
         };
         let applied = rules::apply_org(&mut db, org.id)?.len();
         let wanted = model_backed(&db, org.id)?;
-        let left = opts.cap_usd - db.spend_on(&now()[..10], org.id)?;
-        (org.id, org.name, applied, wanted, left)
+        // One reading of the clock for both halves, the way `jobs::finish` takes one for
+        // the ledger and the row: a run started in the last millisecond of a day must not
+        // subtract one day's bookings from another day's live jobs.
+        let today = now();
+        let day = &today[..10];
+        // In the air first, booked second, and the order is the safe one. They cannot be a
+        // single statement, and cron's `graphify daily` and the server are two processes,
+        // so a job that closes between the two reads is counted twice or missed entirely.
+        // This way it is twice: the cap comes out too small. The other way it is a cap
+        // that was exceeded, which is the Must-never.
+        let flight = jobs::spend_in_flight(&db, day, org.id)?;
+        let booked = db.spend_on(day, org.id)?;
+        let left = opts.cap_usd - booked - flight;
+        (org.id, org.name, applied, wanted, left, booked, flight)
     };
 
     let stop = |note: &str| {
@@ -242,14 +254,26 @@ pub fn daily(db: &Arc<Mutex<Db>>, secrets: &Secrets, opts: &DailyOpts) -> Result
         return stop("no pattern in this org has a model in the loop");
     }
     if left <= 0.0 {
-        return stop(&format!(
-            "the ${:.2} cap for today is already spent",
-            opts.cap_usd
-        ));
+        // Which of the two it is, when part of it is neither spent nor safe. Money in the
+        // air belongs to jobs that have not closed: it may yet be booked, and a run that
+        // fails before it books leaves the day with room the operator was told it did not
+        // have. Saying "already spent" of that is a figure the ledger cannot be checked
+        // against.
+        return stop(&if flight > 0.0 {
+            format!(
+                "the ${:.2} cap for today is accounted for: ${booked:.4} booked and \
+                 ${flight:.4} on jobs that have not closed",
+                opts.cap_usd
+            )
+        } else {
+            format!("the ${:.2} cap for today is already spent", opts.cap_usd)
+        });
     }
 
     // What is left of the day, not the whole cap: two runs on one morning must not be two
-    // caps. The brain takes each pattern's own `daily_cap_usd` off this in turn.
+    // caps, and that is true of two runs that overlap as well (S-66) — what an unclosed job
+    // has announced spending comes off alongside what the ledger holds. The brain takes each
+    // pattern's own `daily_cap_usd` off this in turn.
     let request = json!({ "org": org_id, "max_usd": left });
     let id = jobs::run_blocking(db, secrets, &opts.brain, jobs::Kind::Daily, org_id, &request)?;
     // The job is finished by the time `run_blocking` returns, so this is the row as it

@@ -870,7 +870,12 @@ impl Db {
         Ok(())
     }
 
-    /// What has been spent on this org today, for the cap and for the wizard to show.
+    /// What has been *booked* against this org today, for the cap and for the wizard.
+    ///
+    /// Half of what the cap has to subtract, and the half that is finished. A cost only
+    /// reaches this table when its job closes — `finish_job` writes it in the transaction
+    /// that writes the status — so a job still running has spent money this figure does
+    /// not include. `live_job_logs` below is the other half.
     pub fn spend_on(&self, day: &str, org_id: i64) -> Result<f64> {
         Ok(self
             .conn
@@ -881,6 +886,38 @@ impl Db {
             )
             .optional()?
             .unwrap_or(0.0))
+    }
+
+    /// The logs of this org's jobs that have not closed today.
+    ///
+    /// The other half of the cap's question. A job's cost is in exactly one of two places
+    /// and never in both: the ledger once it has closed, and until then the last `SPENT`
+    /// line the brain announced, which the engine wrote into the log wave by wave (S-62).
+    /// So the caller gets the text and reads the figure out of it — what a `SPENT` line
+    /// looks like is `jobs`', the way it is for `jobs_left_behind`.
+    ///
+    /// Today's rows only, and that is the one thing this bounds that the status does not.
+    /// A `running` row older than `RUN_LIMIT` is a corpse of a process that died, and its
+    /// money was spent on a day this cap does not govern; counted here it would shrink
+    /// every cap from now until a server boots and sweeps it. `day` is the same key the
+    /// ledger uses, and `created_at` is an RFC 3339 instant, so the prefix compares
+    /// straight and the `(org_id, created_at)` index carries the range.
+    pub fn live_job_logs(
+        &self,
+        day: &str,
+        org_id: i64,
+        running: &str,
+        waiting: &str,
+    ) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT log FROM jobs
+              WHERE org_id = ?1 AND created_at >= ?2 AND (status = ?3 OR status = ?4)
+              ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![org_id, day, running, waiting], |r| {
+            Ok(r.get::<_, Option<String>>(0)?.unwrap_or_default())
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn list_patterns(&self, org_id: i64) -> Result<Vec<Pattern>> {
