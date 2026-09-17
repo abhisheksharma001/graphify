@@ -6640,5 +6640,96 @@ really about is *parsed twice*, not *stored twice*.
   process but a booting server runs the sweep.
 
 
-**The register is complete through S-65.** Anything after that is a new step appended
+### S-66 — Money in the air counts [Rust]
+
+**PR:** one. **Depends on:** S-39, which made the ledger the one place a job's cost is
+written and made that write part of closing the row; S-62, which got what a killed brain had
+already spent onto the record; and S-64, which read that record back out of a job's log when
+the process that would have booked it was gone. This step asks the same record a different
+question.
+
+**Today:** `sync::daily` works out what a daily run may spend in one line —
+
+```rust
+let left = opts.cap_usd - db.spend_on(&now()[..10], org.id)?;
+```
+
+— and the comment six lines under it states the invariant the line is there for: *"What is
+left of the day, not the whole cap: two runs on one morning must not be two caps."* It holds
+for two runs that do not overlap, and only for those.
+
+`spend_on` reads the `spend` table. Nothing reaches the `spend` table until a job closes:
+`finish_job` books the cost in the transaction that writes the row's status (S-39), and that
+is the only write on the path. So a job that is still running has spent money the ledger has
+not heard of, and the cap subtracts nothing for it. `MAX_LIVE` is four, and a labelling run
+started from the wizard and a `daily` started by cron are two ordinary things that overlap.
+
+Measured, with one labelling job for the org two minutes old and still running:
+
+| | |
+|---|---|
+| the day's cap | `$5.0000` |
+| what that job's last `SPENT` line says it has spent | `$3.0000` |
+| the ledger, which nothing has written to because nothing has closed | `$0.0000` |
+| `max_usd` the daily run is handed | **`$5.0000`** |
+
+The day ends at `$8` against a `$5` cap, and neither run did anything wrong. Second
+Must-never: *"Daily modes have a hard USD cap and stop when reached."*
+
+**Labelling spending against the daily cap is not the defect.** The two money rules are
+different on purpose — a labelling run is governed by a shown cost and an explicit go, a
+daily run by the cap, because nobody is watching it. `spend_on` sums the whole table, so a
+labelling run's cost does come off the day, which is the design and stays. What is wrong is
+that it comes off only once it has closed.
+
+**The number already exists and is already durable.** S-62 put the brain's running total on
+stderr wave by wave and the engine writes those lines into the job's log; S-64 added
+`spent_so_far`, which reads the last one back, precisely because the log is what outlives the
+process. It is a column in the same database the ledger is in. Nothing has ever asked it.
+
+**Change:** the cap subtracts what has been booked *and* what is in the air.
+
+1. **A job's cost is in exactly one of two places and never in both.** Closed: the ledger.
+   Open: the last `SPENT` line in its log. `db.live_job_logs` returns the logs of this org's
+   jobs that have not closed today — one statement — and `jobs::spend_in_flight` sums
+   `spent_so_far` over them, so the `SPENT` vocabulary stays in `jobs.rs`. The same division
+   `jobs_left_behind` and `abandon` already use.
+
+2. **Today's jobs only.** `RUN_LIMIT` is ten minutes, so a `running` row from three days ago
+   is a corpse, and the money on it was spent on a day this cap does not govern. Left
+   unfiltered it would shrink every cap from now until a server boots and sweeps it. The day
+   is the same `&now()[..10]` the ledger is keyed by, and `0003`'s index on
+   `(org_id, created_at)` is what makes the range cheap.
+
+3. **The two reads are ordered so that the race over-counts.** They cannot be one statement,
+   and the two callers are two processes — cron's `graphify daily` and the server — so a job
+   that closes between them is counted twice or missed. In the air is read first: then the
+   money is counted twice, the cap comes out too small, and the run reads fewer patterns
+   today. The other order is the Must-never.
+
+4. **The refusal says which.** *"the $5.00 cap for today is already spent"* is not true of a
+   day whose money is mostly in the air and might yet be refunded by a job that fails before
+   it books. When there is any, the note names both figures.
+
+**Must not:** change what is booked, where, or when — this step reads, and adds no writer of
+`spend`. Cap a labelling run, or move it under the daily cap. Count a quote: a `waiting` job
+is parked before it has read anything, and an `ESTIMATE` is not money. Make a cap larger than
+it is today under any input. Add a column, a migration, a dependency, or a second reader of
+the `SPENT` line's format. Touch the brain or the engine↔brain contract. Send anything but
+GET to a provider. Call a model without a shown cost and an explicit go. Return a key to the
+browser or write one to the DB in clear. Render a missing value as 0 — a job that has
+announced nothing is `None` and adds nothing, which is not the same claim as a job that
+announced zero, and neither figure is shown to anybody by this step.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean; `uv
+run pytest -q`, `pnpm test` and `pnpm build` untouched and green; guard 1 red if a daily run
+started while an unclosed job for the org has announced spending is handed the whole cap;
+guard 2 red if the figure comes off instead of the ledger rather than on top of it; guard 3
+red if another org's live job moves this org's cap; guard 4 red if a live job from another
+day moves today's; guard 5 red if a job that has closed is counted by its log as well as by
+the ledger; guard 6 red if a parked quote moves it; guard 7 red if a day whose cap is
+exhausted by money in the air still starts a process; CI 4/4.
+
+
+**The register is complete through S-66.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
