@@ -103,4 +103,8 @@ suite can be spared by trimming — the budget is the thing that is wrong, not t
 tests. Fix shape: the silence budget these tests set is a product clock borrowed for a
 test, and the test wants "the child did not answer" rather than "the child did not answer
 within six seconds of wall clock on a machine doing something else". · Found while
-verifying S-66, and out of its scope: it is in `tests/jobs.rs` and S-66 is the daily cap.
+verifying S-66, and out of its scope: it is in `tests/jobs.rs` and S-66 is the daily cap. ·
+Fixed by S-67 (PR #68, a2d1ab1): `parked` reads the row instead of panicking on it, and a job
+that ended without ever quoting is started again rather than reported. Measured at the engine
+first: `Command::spawn` returns in under a millisecond and the child's first word arrives at
+a median of 2.2-4.0s, p90 up to 6.0s, worst seen 6.8s, against the 6s budget.

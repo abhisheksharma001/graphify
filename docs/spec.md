@@ -6812,7 +6812,7 @@ file run in a fifth of the time.
   but a booting server runs the sweep, and a job row whose `input` is not JSON keeps no org.
 
 
-### S-67 — A slow start is not a verdict [Rust]
+### S-67 — A slow start is not a verdict [Rust] ☑ (PR #68, a2d1ab1)
 
 **PR:** one. **Depends on:** S-61, which put a clock on a brain that has stopped talking;
 S-62, S-63 and S-64, whose tests drive that clock; and the bug logged out of S-66, which is
@@ -6893,5 +6893,75 @@ job whose first child was starved is reported as a failure rather than started a
 2 red if a job that quoted before it went quiet is read as a starved start; guard 3 red if
 an ending that is not the silence clock's is read as one; CI 4/4.
 
-**The register is complete through S-66.** Anything after that is a new step appended
+**Files (as built):** `engine/tests/jobs.rs` (+133 −5: `label` starts the job, `never_started`
+reads the row, `park_or_die` polls it, `parked` is the loop over the three, and
+`SLOW_TO_START` plus two tests), `docs/spec.md`, `docs/backlog/bugs.md`. No product file, no
+migration, no dependency, and nothing in the engine, the brain or the UI.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · `STARTUP_TRIES` is 1 | 1 | a starved start is started again, not reported |
+| 2 · the quote clause goes | 1 | a run that had spent money is never retried |
+| 3 · the silence-note clause goes | 1 | an ending that is not this clock's is a verdict |
+
+One each, and that is the whole of what this step claims. Break 1 reddens the test with the
+deliberately starved brain; breaks 2 and 3 redden the one that asks `never_started` about
+three rows and no processes at all. Four whole-suite runs on the branch were clean, as were
+the two before the change went in — a rate this bug does not show up in reliably, which is
+why the guard is a brain that starves its first start on purpose rather than a run count.
+
+**Learned:**
+
+**(a) A test that borrows a product clock inherits the machine.** Six seconds was never a
+claim about the engine: it is the smallest number that makes the watchdog fire inside a test,
+and its own comment says it was raised from three because three "was not always enough for a
+shell to reach its first line". The engine's clock starts when the child is spawned, so that
+number had to cover an interval the test was not measuring. Measured, the two halves are not
+close: spawning costs under a millisecond and a shell's first line costs seconds.
+
+**(b) The row already said which ending it was.** S-65 put the engine's own sentence in
+`note` because the log copy is best-effort, and the brain's words stay in the log. That split
+is what makes "the machine starved this start" a two-line reading rather than a guess: the
+reason off the row, the missing quote out of the log. A step that has to tell two endings
+apart should look for the step that already separated the two sources.
+
+**(c) Retrying setup is not retrying a test.** What is thrown away is a job that never
+quoted, which is the one outcome that contains no answer to anything asked here. The
+predicate is two clauses, the count is three, every other ending is asserted on with the
+whole row as before, and a regression that kills every child before it quotes still fails the
+suite. A retry with no predicate would have hidden all three.
+
+**(d) The cheap suspects were both wrong.** The fake brain's preamble forks a second process
+per spawn and taking it out moved nothing measurable; trimming the file would have bought
+headroom in proportion to what was trimmed and left the same test measuring the same machine.
+What settled it was instrumenting the engine itself — the return of `Command::spawn` and the
+first call to `Deadline::heard` — and reading the distribution rather than the failures.
+
+**Not done:**
+
+- **The budget is still shorter than the worst first word seen.** 6 s against 6.8 s. The
+  retry covers that rather than the number, and nothing stops a later test from setting a
+  shorter one: `A_SHORT_SILENCE` is a constant with a comment, not a floor with a guard.
+- **The retry is invisible.** A run that starved a start and recovered looks exactly like one
+  that did not — nothing counts them, so the suite cannot say the machine is getting slower.
+  Whether any of the four clean runs on the branch exercised it at all is not observable.
+- **Two of the nine tests set the short clock without needing it.** The children of
+  `a_child_that_finishes_is_booked_at_its_own_last_line` and
+  `a_failed_child_that_printed_no_result_is_booked_at_what_it_announced` exit on their own,
+  so no watchdog is involved. Left alone: the retry covers them and the clock costs them
+  nothing.
+- **The engine's clock still starts at spawn.** A brain whose cold start ran past `RUN_LIMIT`
+  would be killed the same way and booked as having said nothing. Ten minutes against a
+  Python interpreter and a BAML import, so it is not reachable — and nothing in the engine
+  says it is the same interval, because to this step's mind it is.
+- **A job starved three times running still fails.** Correctly; a machine that slow has
+  worse problems than this file.
+- Unchanged: nothing prunes `jobs` by row count, `schedule.log` never rotates, and every
+  residue from S-66 — two runs starting in the same instant still get two caps, the order of
+  the cap's two reads is a claim in a comment, `spent_so_far` still reads a log `LOG_BYTES`
+  truncates.
+
+**The register is complete through S-67.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
