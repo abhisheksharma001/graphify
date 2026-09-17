@@ -6812,5 +6812,86 @@ file run in a fifth of the time.
   but a booting server runs the sweep, and a job row whose `input` is not JSON keeps no org.
 
 
+### S-67 — A slow start is not a verdict [Rust]
+
+**PR:** one. **Depends on:** S-61, which put a clock on a brain that has stopped talking;
+S-62, S-63 and S-64, whose tests drive that clock; and the bug logged out of S-66, which is
+this. Nothing in the engine changes.
+
+**Today:** nine tests in `engine/tests/jobs.rs` need the watchdog to fire, so they wind the
+silence limit down to six seconds (`A_SHORT_SILENCE`), and all nine start a labelling job
+and wait for it to park on its price before the interval they are about begins. The engine's
+clock starts when the child is spawned — `Deadline::new(jobs.limit)`, `engine/src/jobs.rs` —
+and is stopped only once the job parks, so the whole of that setup runs on the budget the
+test set for something else.
+
+Measured at the engine, instrumented on the branch and taken out again: the return of
+`Command::spawn`, and the first call to `Deadline::heard`, which is the child's first line
+off either pipe. Whole-suite `cargo test -q`, five runs on this machine:
+
+| | |
+|---|---|
+| `Command::spawn` returns in | p50 0 ms, p90 1 ms, max 24 ms |
+| the child's first word, per run | p50 2.2 / 2.3 / 2.4 / 2.8 / 4.0 s |
+| the same, p90 | 2.5 s … 6.0 s |
+| the same, worst seen | 6.8 s |
+| the budget these nine tests set | **6 s** |
+
+The wait is not the engine's: starting the process costs nothing measurable, and what takes
+seconds is the shell's own start under a suite running the rest of itself beside it. The
+margin between a healthy child's first word and the deadline is routinely under a second,
+and one of these runs spent it:
+
+```
+job 1 never reached waiting in 34.07s; it is at {"created_at":"2026-09-17T06:34:23.850Z",
+"finished_at":"2026-09-17T06:34:29.873Z","status":"failed","cost_usd":0.0,"log":
+"the brain said nothing for 6s and was stopped; it reported nothing on the way either,
+so nothing could be booked for it\n", ...}
+```
+
+Six seconds and two milliseconds from row to kill, an empty log, and no quote on it. Nothing
+about the product is wrong in that row: the engine was asked to give up on a child that had
+said nothing for six seconds and it gave up on a child that had said nothing for six
+seconds. What is wrong is that the test called it an answer. Measured over eleven whole-suite
+runs while shipping S-66, four failed this way, two to four tests each, never the same set
+twice, every one of them passing alone; CI has not hit it.
+
+**It is not the fake brain's preamble and it is not the number of tests.** The preamble's
+`$(dirname "$0")` is a second process per brain; taking it out moves nothing — p50 4.7 s on
+a run whose neighbours measured 2.2 s and 2.8 s, which is inside the variance between runs.
+The cost is starting a shell at all. Trimming the file would buy headroom in proportion to
+what was trimmed and would leave the same test measuring the same machine.
+
+**Change:** setup the machine starved is thrown away and started again, and nothing else is.
+
+1. **`parked` reads the row instead of panicking on it.** Three outcomes: the job reaches
+   `waiting` and its id is the answer; the job ends without ever quoting, which is not an
+   answer and is tried again; the job ends any other way, which is the verdict the test came
+   for and is reported with the whole row, as today.
+
+2. **What counts as a starved start is narrow.** Three things at once: the row is over, the
+   engine's own reason is the silence clock, and there is no `ESTIMATE` line in its log. A
+   job that quoted and *then* went quiet ran out of the same clock and is exactly what six
+   of these tests came for.
+
+3. **Three tries and then the panic.** A regression that kills every child before it quotes
+   still fails the suite, three times slower. A machine that starves one start in ten is not
+   asked for a verdict it cannot give.
+
+**Must not:** retry an assertion, or anything but the setup of a job that never got as far
+as its price. Retry a job that quoted. Change the engine's clocks, add a seam to the engine
+for a test's benefit, or make `ESTIMATE` public so a test can name it. Loosen a single
+assertion about the silence note or about what a killed child is booked at. Leave a starved
+attempt where a later assertion can count it. Touch the brain, the UI, or any product file.
+Send anything but GET to a provider. Call a model without a shown cost and an explicit go.
+Return a key to the browser, print one to a log, or write one to the DB in clear. Render a
+missing value as 0.
+
+**Verify:** `cargo test -q` green and `cargo clippy --all-targets -- -D warnings` clean; `uv
+run pytest -q`, `pnpm test` and `pnpm build` untouched and green; guard 1 red if a labelling
+job whose first child was starved is reported as a failure rather than started again; guard
+2 red if a job that quoted before it went quiet is read as a starved start; guard 3 red if
+an ending that is not the silence clock's is read as one; CI 4/4.
+
 **The register is complete through S-66.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
