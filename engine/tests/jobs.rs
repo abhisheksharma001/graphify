@@ -250,17 +250,80 @@ async fn until(server: &Server, id: i64, want: &str) -> Value {
     panic!("job {id} never reached {want} in {:?}; it is at {last}", started.elapsed());
 }
 
-/// Start a labelling job and wait until it is parked on its go.
-async fn parked(server: &Server) -> i64 {
+/// Start a labelling job and answer with its id.
+async fn label(server: &Server) -> i64 {
     let (status, body) = post(
         &server.url("/api/patterns/label?org=1"),
         json!({"criterion": "asked for a human", "call_ids": ["c1"], "model": "sonnet", "max_usd": 1.0}),
     )
     .await;
     assert_eq!(status, 202, "{body}");
-    let id = body["id"].as_i64().unwrap();
-    until(server, id, jobs::WAITING).await;
-    id
+    body["id"].as_i64().unwrap()
+}
+
+/// Whether this row is a job the machine never let start.
+///
+/// Two things, and both are what keeps the reading narrow: the engine's own reason for
+/// ending the row is the silence clock, and the brain never got as far as a quote. So the
+/// interval that ran out is the one between spawning a shell and its first line, which is
+/// setup. A job that quoted and *then* went quiet ran out of the same clock and is exactly
+/// what the tests below came for. That the row is over at all is the caller's:
+/// `park_or_die` asks only about a row carrying a `finished_at`.
+///
+/// The reason is read off `note` and the quote out of the log, which is where each of them
+/// is the original: S-65 put the engine's sentence on the row because the log copy is
+/// best-effort, and the quote is the brain's own line, written to the log by the one append
+/// `converse` checks — a quote that did not reach the log is a job that never parked.
+fn never_started(body: &Value) -> bool {
+    let note = body["note"].as_str().unwrap_or_default();
+    let log = body["log"].as_str().unwrap_or_default();
+    note.contains("said nothing for") && !log.contains("ESTIMATE ")
+}
+
+/// How many labelling jobs a test will start before calling the machine an answer.
+const STARTUP_TRIES: usize = 3;
+
+/// Start a labelling job and wait until it is parked on its go.
+///
+/// The tests that wind the silence limit down to `A_SHORT_SILENCE` set it for the interval
+/// after the go, and this one runs on it too: the engine's clock starts when the child is
+/// spawned and stops only once the job parks. Measured over whole-suite runs, a healthy
+/// child's first word arrives at a median of two to four seconds and has been seen at 6.8,
+/// against a six-second budget — a shell starting on a machine running the rest of the
+/// suite, and no statement about the engine at all. That outcome is thrown away and another
+/// job started. Every other ending is the verdict the test came for and is reported whole.
+async fn parked(server: &Server) -> i64 {
+    let mut starved = Value::Null;
+    for _ in 0..STARTUP_TRIES {
+        let id = label(server).await;
+        match park_or_die(server, id).await {
+            Ok(id) => return id,
+            Err(body) => starved = body,
+        }
+    }
+    panic!("no labelling job got as far as its price in {STARTUP_TRIES} tries; last: {starved}");
+}
+
+/// Poll one labelling job until it parks, or hand back the row it ended on instead.
+///
+/// Every ending but a starved start is asserted on here rather than returned, because the
+/// caller's only answer to a row is to start another job and no other row deserves one.
+async fn park_or_die(server: &Server, id: i64) -> Result<i64, Value> {
+    let url = server.url(&format!("/api/jobs/{id}"));
+    let started = std::time::Instant::now();
+    for _ in 0..1500 {
+        let (status, body) = get(&url).await;
+        assert_eq!(status, 200, "{body}");
+        if body["status"] == jobs::WAITING {
+            return Ok(id);
+        }
+        if body["finished_at"].is_string() {
+            assert!(never_started(&body), "job {id} ended instead of parking: {body}");
+            return Err(body);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("job {id} never reached waiting in {:?}", started.elapsed());
 }
 
 // --- the acceptance -------------------------------------------------------------------
@@ -1938,6 +2001,71 @@ async fn a_job_parked_on_its_price_is_not_a_job_saying_nothing() {
     assert_eq!(body["status"], jobs::WAITING, "the parked child was killed by the wrong clock");
     assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
     assert_eq!(until(&server, id, jobs::DONE).await["cost_usd"], 0.0123);
+}
+
+// --- a start the machine starved (S-67) -----------------------------------------------
+
+/// A brain that says nothing the first time it is spawned and behaves the second.
+///
+/// What a machine too busy to start a shell looks like from the engine's side: the row is
+/// killed by the silence clock with an empty log and no quote on it. The marker is written
+/// before the stall rather than after, because the stall ends in a kill and nothing after
+/// `exec` runs.
+const SLOW_TO_START: &str = r#"
+if [ ! -f "$here/started" ]; then
+  : > "$here/started"
+  exec sleep 300
+fi
+read -r request
+echo "ESTIMATE 0.0428"
+read -r go
+echo '{"labels":[{"call_id":"c1","match":true}],"usd":0.0123,"stopped":null}'
+"#;
+
+#[tokio::test]
+async fn a_child_the_machine_never_let_start_is_started_again() {
+    let server = served_within(SLOW_TO_START, A_SHORT_SILENCE).await;
+    // The second row, not the first: the first is on the record as failed, and reading that
+    // row is how this was decided. Nothing is hidden and nothing is retried but the start.
+    let id = parked(&server).await;
+    assert_eq!(id, 2);
+
+    let (_, first) = get(&server.url("/api/jobs/1")).await;
+    assert_eq!(first["status"], jobs::FAILED, "{first}");
+    assert_eq!(first["cost_usd"], 0.0, "a job that never started booked money: {first}");
+
+    // And the job that did start is an ordinary one, all the way to its price and its go.
+    assert_eq!(post(&server.url(&format!("/api/jobs/{id}/go")), json!({})).await.0, 200);
+    assert_eq!(until(&server, id, jobs::DONE).await["cost_usd"], 0.0123);
+}
+
+#[test]
+fn a_job_that_quoted_before_it_went_quiet_is_an_answer_and_not_a_slow_start() {
+    // The reading from the other side, and the whole of what keeps it narrow. Both of these
+    // rows were killed by the same clock for the same reason; only one of them is setup.
+    let quiet = "the brain said nothing for 6s and was stopped";
+    let quiet_at_once = json!({
+        "status": "failed",
+        "note": format!("{quiet}; it reported nothing on the way either"),
+        "log": format!("{quiet}; it reported nothing on the way either\n"),
+    });
+    assert!(never_started(&quiet_at_once));
+
+    let quiet_after_working = json!({
+        "status": "failed",
+        "note": format!("{quiet}; the $0.8210 it had reported spending has been booked"),
+        "log": format!("ESTIMATE 1.0000\nSPENT 0.821000\n{quiet}; the $0.8210 it had \
+                        reported spending has been booked\n"),
+    });
+    assert!(!never_started(&quiet_after_working), "a run that had spent money was retried");
+
+    // An ending that is not this clock's is never setup, however little the job said.
+    let fell_over = json!({
+        "status": "failed",
+        "note": Value::Null,
+        "log": "BamlError: no key for 'Sonnet'\n",
+    });
+    assert!(!never_started(&fell_over));
 }
 
 // --- what a killed brain had already spent (S-62) ---------------------------------------
