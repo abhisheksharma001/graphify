@@ -472,6 +472,32 @@ pub fn spent_so_far(log: &str) -> Option<f64> {
         .find_map(|line| price(line.trim().strip_prefix(SPENT)?))
 }
 
+/// What this org's unclosed jobs have said they have spent today.
+///
+/// The cap's blind spot, and the whole of S-66. `db.spend_on` answers what has been booked,
+/// and nothing is booked until a job closes, so a daily run that starts beside a labelling
+/// run already halfway through its calls is told the whole day is still there to spend. Four
+/// jobs may be live at once and a cron `daily` overlapping a wizard's labelling run is an
+/// ordinary morning, not a race.
+///
+/// `None` from `spent_so_far` is a job that has announced nothing — a run that has not
+/// reached a model yet, or one parked on a quote nobody has approved — and it adds nothing
+/// rather than being read as a zero somebody reported. Both are worth nothing to a sum; only
+/// one of them would be worth printing, and this figure is not printed.
+///
+/// Read *before* the ledger, by the caller, and that order is load-bearing. The two cannot
+/// be one statement and the callers are two processes, so a job that closes between the
+/// reads is either counted twice or counted not at all. This one first makes it twice: the
+/// cap comes out too small and the run reads fewer patterns today. The other way round is a
+/// cap that was exceeded.
+pub fn spend_in_flight(db: &Db, day: &str, org_id: i64) -> Result<f64> {
+    Ok(db
+        .live_job_logs(day, org_id, RUNNING, WAITING)?
+        .iter()
+        .filter_map(|log| spent_so_far(log))
+        .sum())
+}
+
 /// The number on an `ESTIMATE` line, if it is one that can be shown to someone.
 ///
 /// `f64` will read `nan` and `inf` out of a string quite happily, and serde_json writes

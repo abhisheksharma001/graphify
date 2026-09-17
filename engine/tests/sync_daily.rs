@@ -7,6 +7,7 @@
 //! all" and mean it.
 
 use graphify::db::Db;
+use graphify::jobs;
 use graphify::rules;
 use graphify::secrets::Secrets;
 use graphify::sync::{self, Daily, DailyOpts};
@@ -118,6 +119,20 @@ impl Fixture {
             .query_map([pattern], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    }
+
+    /// A job row for an org, in whatever state and with whatever the brain had said by
+    /// then. `log` is where a `SPENT` line lives until the row closes and the ledger
+    /// hears about it.
+    fn job(&self, status: &str, org: i64, created_at: &str, log: &str) {
+        self.db()
+            .conn()
+            .execute(
+                "INSERT INTO jobs (kind, status, org_id, input, cost_usd, log, created_at)
+                 VALUES ('label', ?1, ?2, '{}', 0, ?3, ?4)",
+                rusqlite::params![status, org, log, created_at],
+            )
+            .unwrap();
     }
 
     /// Run the daily half against a brain of the test's choosing.
@@ -372,4 +387,115 @@ fn a_rule_re_run_leaves_the_models_own_matches_alone() {
     rules::apply_org(&mut f.db(), 1).unwrap();
 
     assert_eq!(f.matches(p), vec![("c1".to_string(), "llm".to_string())]);
+}
+
+// --- money in the air (S-66) -------------------------------------------------------------
+
+/// Two waves of a labelling run that is still going: twenty calls read, $3.00 announced.
+const IN_FLIGHT: &str = "PROGRESS 10/60\nSPENT 1.400000\nPROGRESS 20/60\nSPENT 3.000000";
+
+/// A day old enough that nothing about it is today, whatever today is.
+const LONG_AGO: &str = "2026-01-01T09:00:00.000Z";
+
+/// What this org's unclosed jobs have announced spending today.
+fn in_flight(f: &Fixture, org: i64) -> f64 {
+    jobs::spend_in_flight(&f.db(), &graphify::now()[..10], org).unwrap()
+}
+
+#[test]
+fn a_run_that_starts_beside_one_that_is_still_spending_is_told_what_is_left() {
+    // The defect. Four jobs may be live at once, and a wizard's labelling run overlapping
+    // cron's daily is an ordinary morning. Nothing reaches the ledger until a job closes,
+    // so the day looked untouched and the brain was handed the whole $5.
+    let f = Fixture::new();
+    f.calls(1);
+    f.pattern("full", r#"{}"#);
+    f.job("running", 1, &graphify::now(), IN_FLIGHT);
+
+    f.reading(5.0);
+
+    assert_eq!(request(f.dir.path())["max_usd"], 2.0);
+}
+
+#[test]
+fn what_is_in_the_air_comes_off_on_top_of_the_ledger_and_not_instead_of_it() {
+    // Two halves of one figure and neither replaces the other: $1.50 booked by a job that
+    // closed, $1.00 announced by one that has not.
+    let f = Fixture::new();
+    f.calls(1);
+    f.pattern("full", r#"{}"#);
+    f.db().add_spend(&graphify::now()[..10], 1, 1.5).unwrap();
+    f.job("running", 1, &graphify::now(), "SPENT 1.000000");
+
+    f.reading(5.0);
+
+    assert_eq!(request(f.dir.path())["max_usd"], 2.5);
+}
+
+#[test]
+fn a_day_whose_cap_is_in_the_air_starts_nothing_and_says_so() {
+    // The whole cap is committed to a run that has not closed. No process is started, and
+    // the refusal does not call it spent — it has not been booked, and a run that fails
+    // before it books gives the day its room back.
+    let f = Fixture::new();
+    f.calls(1);
+    f.pattern("full", r#"{}"#);
+    f.job("running", 1, &graphify::now(), "SPENT 5.000000");
+
+    let report = f.daily(NO_BRAIN, 5.0).unwrap();
+
+    assert_eq!(report.job, None);
+    let note = report.note.as_deref().unwrap();
+    assert!(note.contains("$5.0000 on jobs that have not closed"), "{note}");
+    assert!(note.contains("$0.0000 booked"), "{note}");
+}
+
+// The four below ask `spend_in_flight` directly rather than through a daily run. What they
+// are about is which rows the figure is made of, and a shell brain in the middle would only
+// turn every one of those answers into the same subtraction.
+
+#[test]
+fn another_orgs_live_job_does_not_move_this_ones_cap() {
+    // The cap is per-org and so is the ledger. A neighbour spending its own money is not
+    // this org's morning getting shorter.
+    let f = Fixture::new();
+    f.job("running", 1, &graphify::now(), "SPENT 1.000000");
+    f.job("running", 2, &graphify::now(), IN_FLIGHT);
+
+    assert_eq!(in_flight(&f, 1), 1.0);
+    assert_eq!(in_flight(&f, 2), 3.0);
+}
+
+#[test]
+fn a_live_job_from_another_day_does_not_move_todays_cap() {
+    // `RUN_LIMIT` is ten minutes, so a row still claiming to be running months later is a
+    // corpse of a process that died. Its money was spent on a day this cap does not
+    // govern, and counting it would shrink every cap until a server boots and sweeps it.
+    let f = Fixture::new();
+    f.job("running", 1, &graphify::now(), "SPENT 1.000000");
+    f.job("running", 1, LONG_AGO, IN_FLIGHT);
+
+    assert_eq!(in_flight(&f, 1), 1.0);
+}
+
+#[test]
+fn a_job_that_has_closed_is_counted_by_the_ledger_and_not_again_by_its_log() {
+    // A closed job keeps every `SPENT` line it printed. The ledger is the record for it,
+    // and reading both would charge the day twice for one run.
+    let f = Fixture::new();
+    f.job("running", 1, &graphify::now(), "SPENT 1.000000");
+    f.job("done", 1, &graphify::now(), IN_FLIGHT);
+
+    assert_eq!(in_flight(&f, 1), 1.0);
+}
+
+#[test]
+fn a_parked_quote_is_not_money_and_does_not_move_the_cap() {
+    // A waiting job has been priced and has read nothing: the go is what it is parked in
+    // front of, and it may never come. A quote is not a spend.
+    let f = Fixture::new();
+    f.job("running", 1, &graphify::now(), "SPENT 1.000000");
+    f.job("waiting", 1, &graphify::now(), "ESTIMATE 4.0000");
+
+    assert_eq!(in_flight(&f, 1), 1.0);
 }
