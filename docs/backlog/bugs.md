@@ -86,3 +86,21 @@ schedule --print --install` and answer `y`. · Fix shape: clap `conflicts_with`,
 is refused at parse time and neither flag has to win. Found while auditing `schedule.rs`
 for S-52; out of that step's scope because it is a `cli.rs` defect. · Fixed by S-53 (PR #54,
 8849cd9): clap refuses the pair at parse time.
+
+2026-09-17 · `engine/tests/jobs.rs:250` · Six tests in this file wait on a labelling job
+reaching `waiting`, and the brain they wait on is a shell script given a six-second silence
+budget by the deadline the test sets. `cargo test` runs the test binaries in parallel and
+this one starts about a hundred servers and shells, so on a loaded machine the shell does
+not get scheduled inside six seconds, the watchdog stops it, and the test times out thirty
+seconds later on a job that reads `failed` — *"the brain said nothing for 6s and was
+stopped"*. Nothing about the product is wrong when this happens: the run under test is one
+the engine correctly gave up on. · Reproduce: `cargo test -q` in `engine/` on a busy
+machine, repeatedly. Measured over eleven whole-suite runs while shipping S-66, on `main`
+and on the step's branch alike: four of them failed this way, two to four tests each, never
+the same set twice, and every one of those tests passed on its own
+(`cargo test -q --test jobs`, 102 passed). CI has not hit it. · Not a load problem this
+suite can be spared by trimming — the budget is the thing that is wrong, not the number of
+tests. Fix shape: the silence budget these tests set is a product clock borrowed for a
+test, and the test wants "the child did not answer" rather than "the child did not answer
+within six seconds of wall clock on a machine doing something else". · Found while
+verifying S-66, and out of its scope: it is in `tests/jobs.rs` and S-66 is the daily cap.

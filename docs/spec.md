@@ -6640,7 +6640,7 @@ really about is *parsed twice*, not *stored twice*.
   process but a booting server runs the sweep.
 
 
-### S-66 — Money in the air counts [Rust]
+### S-66 — Money in the air counts [Rust] ☑ (PR #67, c01dcc8)
 
 **PR:** one. **Depends on:** S-39, which made the ledger the one place a job's cost is
 written and made that write part of closing the row; S-62, which got what a killed brain had
@@ -6729,6 +6729,87 @@ red if another org's live job moves this org's cap; guard 4 red if a live job fr
 day moves today's; guard 5 red if a job that has closed is counted by its log as well as by
 the ledger; guard 6 red if a parked quote moves it; guard 7 red if a day whose cap is
 exhausted by money in the air still starts a process; CI 4/4.
+
+**Files (as built):** `engine/src/db.rs` (+38 −1: `live_job_logs`, one statement, and
+`spend_on`'s doc rewritten to say it is half an answer), `engine/src/jobs.rs` (+26:
+`spend_in_flight`, beside `spent_so_far` because it is the same line being read),
+`engine/src/sync.rs` (+32 −8: the cap subtracts both, the two reads are ordered, and the
+refusal names which is which), `engine/tests/sync_daily.rs` (+126: seven tests and a job
+builder), `docs/spec.md`. No migration, no column, no brain change, no UI change, no
+dependency.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · `spend_in_flight` answers nothing | 7 | every one of the seven rests on the figure |
+| 2 · the ledger stops coming off | 3 | in-flight is added to it, not swapped for it |
+| 3 · the org filter goes | 1 | a neighbour's run is not this org's morning |
+| 4 · the day filter goes | 1 | a corpse from another day does not shrink today |
+| 5 · a closed job counts as live | 1 | one run is charged once, by the ledger |
+| 6 · a quote counts as money | 1 | a parked `ESTIMATE` is not a spend |
+| 7 · the refusal always says "already spent" | 1 | the operator is told which it is |
+
+Break 2's three are this step's one and the two from S-39 that already held the ledger to
+the cap. Three of the seven tests go through `sync::daily` and a shell brain because what
+they are about is the subtraction; the other four ask `spend_in_flight` directly because
+what they are about is which rows the figure is made of.
+
+**Learned:**
+
+**(a) A cap is only as current as the thing it reads.** `spend_on` was never wrong about
+anything: every figure in the `spend` table is a job that closed, and a job that closed
+really did cost that. The arithmetic around it assumed the table was a complete account of
+the day, and it is a complete account of the *finished* part of the day. Nothing in the code
+said so — the comment above the subtraction claimed the invariant the reading could not
+support — and S-39, which made the booking atomic, is the step that made the booking late.
+Two correct pieces, one wrong sentence between them.
+
+**(b) The number was already there and already durable.** S-62 put the brain's running total
+on stderr because a killed process reports nothing; S-64 read it back out of the log because
+the supervisor that would have booked it was gone. Both of those were about death. The same
+record answers a question about a job that is perfectly alive, and no new writer, column or
+migration was needed to ask it — only a second reader. A step that needs a durable figure
+should look for one before adding one.
+
+**(c) When two reads cannot be one, the order is the design.** `spend_on` and
+`live_job_logs` are two statements, the callers are two processes, and a job closing between
+them lands in both or in neither. There is no version of this that is exact. In the air
+first makes the error a cap that came out too small; the ledger first makes it a cap that
+was exceeded. Only one of those is a Must-never, so the order is not a detail and it is
+written down where the reads are.
+
+**(d) A test that spends nothing should not start a process.** The first cut put all seven
+guards through `sync::daily` and a shell brain, because the fixture made that easy. Four of
+them were about which rows the query picks, and the daily run turned four different answers
+into the same subtraction while adding four interpreters to a suite that already runs a
+hundred servers in parallel. Asking the function directly made those four sharper and the
+file run in a fifth of the time.
+
+**Not done:**
+
+- **Two runs that start in the same instant still get two caps.** Each reads the other's
+  row before that row has a `SPENT` line on it. The window is the time between a job being
+  created and its first wave being announced, which is one model call — seconds, not
+  milliseconds. This step closes the overlap that lasts for minutes and leaves the one that
+  lasts for one call.
+- **The order of the two reads is a claim in a comment.** Nothing tests it, because the
+  window is between two SQLite statements in two different processes and a test that
+  reproduced it would be a test of the scheduler.
+- **`spent_so_far` reads a log that `LOG_BYTES` truncates.** S-64 named this and S-65 made
+  it legible; here it means a run loud enough to fill 64 KiB has its in-flight figure read
+  as of the moment its log filled. The cap under-subtracts by whatever came after, which is
+  the same direction as the defect this step fixes and a much smaller amount of it.
+- **A labelling run is not capped and this step does not cap it.** It spends against the
+  day — `spend_on` sums the whole table — but it is governed by a shown cost and an explicit
+  go, and an analyst clicking a $3 run after the day's cap is gone still gets it.
+- **The figure is not shown to anybody.** The operator sees it only in the refusal, and only
+  when it is what stopped the run. The wizard shows the ledger.
+- **`left` is still computed once per run.** The brain is handed a budget and tracks its own
+  spending against it; nothing re-reads the day while a run is going, which is what makes
+  the instant-overlap window above matter at all.
+- Unchanged: nothing prunes `jobs` by row count, `schedule.log` never rotates, no process
+  but a booting server runs the sweep, and a job row whose `input` is not JSON keeps no org.
 
 
 **The register is complete through S-66.** Anything after that is a new step appended
