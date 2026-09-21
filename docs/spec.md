@@ -7648,7 +7648,7 @@ e. **An amendment is smaller than it sounds when the axis was already there.** A
   and owns nothing we could damage" is a claim about a vendor, not a property a test can
   read. It is carried by the review that adds a name to the list, and by nothing else.
 
-### S-73 — The Jev adapter: pinned, timed out, size-capped `[Rust]` ☐
+### S-73 — The Jev adapter: pinned, timed out, size-capped `[Rust]` ☑ (PR #73, 2b575e6)
 
 **PR:** one. **Depends on:** S-71 (the seam), S-72 (A-1). **Research:** none.
 
@@ -7742,7 +7742,78 @@ reach the network from any test; write a real key into the repo; read or send a 
 touch `DATA_CONNECTORS` or anything under `engine/src` that is not this new file and the
 `mod` line that declares it.
 
+**Files (as built):** `engine/src/jev.rs` (new, 279 lines), `engine/tests/jev.rs` (new, 16
+tests), `engine/src/lib.rs` (one `mod` line), `engine/tests/outbound.rs`,
+`engine/tests/decide.rs`.
+
+**Breaks:** ten, each on the committed file, each restored with `git checkout --`.
+
+| # | break | went red | the message said |
+|---|---|---|---|
+| 1 | state cap removed | `a_state_over_the_cap_never_leaves_the_process` | *the state was over the cap and a request left anyway* — **after the fix below**; first time round it said the reply had no model in it |
+| 2 | request cap removed | `a_request_over_the_cap_never_leaves_the_process` | *the request was over the cap and left anyway* — same story |
+| 3 | a missing number returns 0.0 | `a_missing_probability_is_an_error_and_never_a_zero` | `Ok(... Binary(0.0) ...)` where an error was expected |
+| 4 | the pin believed over the reply | `the_model_carried_back_is_the_one_that_answered…` | left `jev-1.13.0`, right `jev-1.14.0` |
+| 5 | unasked answers read past | `an_answer_to_a_question_nobody_asked_is_refused` | `Ok(...)` with the extra answer quietly dropped |
+| 6 | a reply with no usage is free | `a_reply_that_does_not_say_what_it_cost_is_an_error` | `Usage { input_tokens: 0, usd: 0.0 }` |
+| 7 | the key put into the error | `a_provider_failure_…_does_not_carry_the_key` | *the key is in the error: … with key ts-key-0000-not-real-4f3a* |
+| 8 | the POST made a GET | `nothing_but_a_post_to_one_path_ever_leaves…` | *a GET left for the decision provider* |
+| 9 | `jev.rs` off `DECISION_CONNECTORS` | `only_a_named_connector_reaches_out` | *jev.rs names an HTTP client (reqwest) and is on neither connector list* |
+| 10 | `jev.rs` on both lists | `a_file_cannot_be_both_a_data_and_a_decision_connector` | *jev.rs is on both lists, which makes a data connector that may POST* |
+
+**Verified:** engine `cargo test -q` **404 passed over 22 suites** (from 388 over 21);
+`cargo clippy --all-targets -- -D warnings` clean; `git diff --stat main -- engine/src` is
+`jev.rs` plus one `mod` line and nothing else; `brain` 278 and `ui` 59 untouched; CI green.
+Every test runs against a mock — nothing has been sent to TypeSafe.
+
+**Learned:**
+
+- **A test can go red for the wrong reason twice in a row, and only breaking it shows which.**
+  Both cap tests asserted the error *text* first and "nothing left the process" second.
+  Removing the cap made them red — on the message assertion, reading *"the decision provider's
+  reply does not say which model answered"*, which says nothing about a cap or about a request
+  having left. The order is now: the claim the test exists for, then the message that proves
+  the claim was reached the intended way. S-71 found this once; S-72 found the harder version
+  (no red at all); this is the same fault in its plainest form, and it was still invisible
+  until the guard came out.
+- **A byte count is an upper bound on a token count**, because no tokeniser emits a token
+  shorter than one byte. That is the whole reason this adapter can hold a vendor's token limit
+  without a tokeniser, a dependency, or a guess — and why the cap can be checked before
+  anything leaves the process rather than by being refused over the wire.
+- **An adapter is not a caller.** S-71 wrote that S-73 would delete
+  `the_seam_has_no_caller_yet`. Deleting it would have given up the guard two steps early: what
+  that test protects is that `sync`, `jobs`, `rules`, the server and the CLI cannot make a
+  decision, and none of them can. It narrowed to `the_seam_still_has_no_caller` instead. A
+  planned deletion is still a decision to re-take when the step arrives.
+- **The reply's model, not the pin.** Believing the pin is the cheap mistake here: it reads
+  correct for as long as it is, and the moment it stops being true the numbers keep arriving
+  and only mean something else. Reading the id off the reply costs one line and makes the drift
+  a value somebody can compare.
+- **Refusing an answer nobody asked for was not free.** `Decisions::checked` already refuses
+  one — but only if it is handed one, and the obvious way to write the read loop (walk the
+  questions, pull each answer) never hands it one, which would have made that refusal
+  unreachable from the only adapter able to trigger it. The loop over the *reply's* keys is
+  three lines and a test.
+
+**Not done:**
+
+- **No retry, no circuit breaker, no kill switch.** `docs/prd-jev.md` §8 lists all three; none
+  is in S-73's line and each is testable alone. A 429 or a 503 currently fails the call.
+- **No ledger row and no cap enforcement.** `Usage` exists and is correct; nothing books it and
+  nothing counts it against the $0.50/org/day cap. That is A-2's step, S-79.
+- **No key storage.** `Jev::new(key)` is handed one. S-74 puts TypeSafe in Settings beside the
+  other three keys and refuses egress without one.
+- **No question loader.** Nothing reads `docs/jev/wants_human.question.json` into a `Questions`.
+  Parsing it is this file's job when it comes, because that file is in the vendor's shape; the
+  first caller that needs it is S-75.
+- **A new `reqwest::Client` per call**, the same as `vapi.rs`. No connection reuse. Fine at this
+  volume and worth revisiting if a shadow run makes it thousands.
+- **The timeout is not proved by a test.** It is one builder line; a test for it would have to
+  hold a socket open for real seconds, and `Jev::at` takes the duration so a later step can.
+- **Nothing checks the provider behind the name is really data-free.** Still carried by the
+  review that adds a name to `DECISION_CONNECTORS`, and by nothing else.
+
 ---
 
-**The register is complete through S-73**, with S-70 open and blocked and S-73 in flight. Anything after that is a new step appended
+**The register is complete through S-73**, with S-70 open and blocked. Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
