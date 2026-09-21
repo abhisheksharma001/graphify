@@ -7648,7 +7648,101 @@ e. **An amendment is smaller than it sounds when the axis was already there.** A
   and owns nothing we could damage" is a claim about a vendor, not a property a test can
   read. It is carried by the review that adds a name to the list, and by nothing else.
 
+### S-73 — The Jev adapter: pinned, timed out, size-capped `[Rust]` ☐
+
+**PR:** one. **Depends on:** S-71 (the seam), S-72 (A-1). **Research:** none.
+
+**Files:** `engine/src/jev.rs` (new), `engine/tests/jev.rs` (new), `engine/src/lib.rs`,
+`engine/tests/outbound.rs`, `engine/tests/decide.rs`.
+
+**Today:** `engine/src/decide.rs` holds the seam and exactly one implementation, `Fake`,
+which answers from a table a test wrote. Nothing in the tree can ask a real question of
+anything: `DECISION_CONNECTORS` in `engine/tests/outbound.rs` is empty, so no file may
+POST, and `the_seam_has_no_caller_yet` in `engine/tests/decide.rs` fails if any file
+outside `decide.rs` so much as names `DecisionModel`. Both of those are S-71 and S-72
+holding the door for this step. The decision provider is TypeSafe's Jev:
+`POST https://api.typesafe.ai/v1/systemone`, model pinned `jev-1.13.0`, $0.042 per 1M
+input tokens, 64k request / 32k state context (`docs/prd-jev.md` §13).
+
+**Change:**
+
+1. **`engine/src/jev.rs`, new.** The one file in the tree allowed to know TypeSafe exists
+   (D-13, the same rule that keeps Vapi's vocabulary in `vapi.rs`): the base URL, the
+   pinned model, the price, the wire shapes, and the word `noul`. Nothing outside it
+   learns any of those.
+2. **`Jev::new(key)`** for the real base and a 30-second timeout, matching `vapi.rs`, and
+   **`Jev::at(base, key, timeout)`** so a test can point at a mock and not wait. The key is
+   held in the struct and appears in exactly one place: the `Authorization: Bearer` header.
+   `DecisionModel::name` returns the pinned model id — never the key.
+3. **Translation out.** `Question::Binary` → `{"type": "noul", "instructions": …,
+   "criteria": {"true": …, "false": …}}`; `Question::Choice` → `"type": "choice"` with
+   `criteria` an object of option → criteria; `Question::Score` → `"type": "score"` with
+   `criteria` the ordered level list. Body: `{"state": …, "model": "jev-1.13.0",
+   "questions": {…}}`.
+4. **Translation back.** `answers[name].noul` → `Answer::Binary`, `.choice` + `.confidence`
+   → `Answer::Choice`, `.score` → `Answer::Score`. A field that is missing, not a number,
+   or not an object is an error naming the question — never a default, never 0.0
+   (**Must never** #5, and the reason `Decisions::checked` refuses a partial set). The
+   answers are handed to `Decisions::checked` with **the model the response named**, not
+   the pin, so a pin that has moved underneath us is visible at the boundary.
+5. **Size cap, refused before the request leaves.** A token never spans less than one
+   byte, so a byte count is an upper bound on a token count and no tokenizer is needed:
+   `STATE_MAX = 24_000` bytes and `BODY_MAX = 48_000` bytes on the assembled body, both
+   comfortably under the vendor's 32k state and 64k request, with the margin left for
+   whatever the vendor counts that we cannot see. Over either, the call fails saying which
+   cap and by how much, and **no request is made**.
+6. **Cost, computed here because only here knows the price.** `Usage { input_tokens, usd }`
+   from the response's `usage.input_tokens` and `USD_PER_M_INPUT = 0.042`. The inherent
+   `Jev::ask(state, questions) -> Result<(Decisions, Usage)>` does the work; the trait's
+   `decide` calls it and drops the `Usage`. **No ledger row and no cap enforcement in this
+   step** — the seam carries no cost field (S-71 refused to guess at one) and the ledger is
+   a later step's job. This step only makes the number exist and be correct.
+7. **Errors never carry the key.** A non-2xx becomes an error naming the status and at most
+   500 characters of the body; the key is not in the message, and no `Display` on `Jev`
+   prints it.
+8. **`jev.rs` becomes the first name on `DECISION_CONNECTORS`** in `engine/tests/outbound.rs`.
+   It uses `.post(` and no other request verb, which is exactly what A-1 grants it.
+9. **`the_seam_has_no_caller_yet` narrows rather than dies.** S-71 said this step deletes
+   it; deleting it would give up the guard two steps early, because an adapter is not a
+   caller. It becomes `the_seam_still_has_no_caller`, allowing `jev.rs` alongside
+   `decide.rs` as an implementation, and still failing if `sync`, `jobs`, `rules`, the
+   server or the CLI names the seam. The program still cannot make a decision; it now has
+   something that could answer one.
+10. **`every_request_that_leaves_is_a_get` is renamed** to
+    `every_request_the_data_connector_makes_is_a_get`. Its body only ever drove `vapi.rs`;
+    with a POST now expressible in the tree, the old name claims more than the test checks,
+    which is the exact fault S-72 was written about.
+
+**Acceptance:**
+
+WHEN `Jev::at` is pointed at a mock that answers one binary question THEN the engine SHALL
+send exactly one POST to `/v1/systemone` carrying the pinned model and the question in the
+vendor's shape, and SHALL return `Decisions` whose `model()` is the id the **response**
+named.
+
+WHEN any answer comes back missing, of the wrong kind, or outside its range THEN the call
+SHALL fail naming the question, and SHALL return no decisions at all.
+
+WHEN the state or the assembled body exceeds its cap THEN the call SHALL fail before any
+request leaves the process, and the mock SHALL have received nothing.
+
+**Verify:**
+
+```
+cd engine && cargo test -q && cargo clippy --all-targets -- -D warnings
+```
+
+Pass: every suite green, clippy silent, and `engine/tests/outbound.rs` green with `jev.rs`
+on `DECISION_CONNECTORS`.
+
+**Must not:** send anything but a POST, and only from `engine/src/jev.rs`; put a TypeSafe
+word anywhere else in the tree; print, log, or place the key in an error or a `Debug`;
+reach the network from any test; write a real key into the repo; read or send a transcript
+(nothing calls this yet, and nothing after S-74 sends a real one until §12 Q1 is closed);
+touch `DATA_CONNECTORS` or anything under `engine/src` that is not this new file and the
+`mod` line that declares it.
+
 ---
 
-**The register is complete through S-72**, with S-70 open and blocked. Anything after that is a new step appended
+**The register is complete through S-73**, with S-70 open and blocked and S-73 in flight. Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
