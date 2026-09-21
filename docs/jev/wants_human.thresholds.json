@@ -1,0 +1,47 @@
+{
+  "model": "jev-1.13.0",
+  "questions": {
+    "wants_human": {
+      "type": "noul",
+      "threshold": 0.5,
+      "costs": {
+        "fn": 2,
+        "fp": 1
+      },
+      "eval": {
+        "n": 19,
+        "tp": 8,
+        "fp": 0,
+        "fn": 1,
+        "tn": 10,
+        "tpr": 0.8888888888888888,
+        "tnr": 1.0
+      },
+      "band": {
+        "low": 0.52,
+        "high": 0.52
+      },
+      "bar": {
+        "tpr": 0.9,
+        "tnr": 0.85,
+        "written": "before any case was scored",
+        "met": false
+      }
+    }
+  },
+  "question_file": "wants_human.question.json",
+  "question_sha256": "d9a14d65031fbe042c4b3a6f6d03e553a830f81022fc3da9d0f45ede9f736ce6",
+  "cases": {
+    "file": "cases.jsonl",
+    "n": 44,
+    "positive": 20,
+    "negative": 24,
+    "synthetic": true
+  },
+  "split": {
+    "by": "sha256 of the case id",
+    "eval_fraction": 0.3,
+    "train": 25,
+    "eval": 19
+  }
+}
