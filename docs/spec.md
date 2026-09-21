@@ -6963,5 +6963,81 @@ first call to `Deadline::heard` — and reading the distribution rather than the
   the cap's two reads is a claim in a comment, `spent_so_far` still reads a log `LOG_BYTES`
   truncates.
 
-**The register is complete through S-67.** Anything after that is a new step appended
+### S-68 — An invented quote is not evidence
+
+**PR:** one. **Depends on:** S-23, which labels calls and writes what the model quoted;
+S-24, which reads those quotes to write a rule. **Research:** none.
+
+**Files:** `brain/src/graphify_brain/label.py`, `brain/tests/test_label.py`,
+`docs/backlog/bugs.md`, `docs/spec.md`. No engine file, no UI file, no migration, no
+dependency, and nothing in `brain/baml_src/`.
+
+**Today:** `brain/baml_src/label.baml` tells the model "Never quote a line that is not in
+the transcript you were given." Nothing enforces it. `brain/src/graphify_brain/synth.py`
+checks that `evidence` is a `str` and stops there, and `label.py` writes it straight to
+`pattern_labels`. A quote the model invented reaches three places that each treat it as
+what a person said: the row in `pattern_labels`, the call drawer
+(`engine/src/queries.rs` selects `l.evidence` into `CallRow`), and — the expensive one —
+`SynthesizeRule`, whose prompt tells it to "work from the evidence, not from the
+criterion" and that the quotes are "what people actually said". An invented quote can
+therefore shape a rule that then runs unattended on every call forever. No test covers it.
+
+**Change:** the quote is checked against the transcript it claims to come from, at the one
+seam that has both.
+
+1. **The seam is `_attach`.** It already holds the batch's `Call` objects, each carrying
+   the `transcript` that was sent, and the model's `Label` objects, each carrying its
+   `evidence`. Every path reaches it: the wizard's `label_calls`, `daily.py`'s
+   `labelling.label_calls`, and `_write`'s insert into `pattern_labels` all run downstream
+   of it. Checking anywhere else would be checking one path.
+
+2. **What counts as found.** The evidence is a quote from that call when, with runs of
+   whitespace collapsed to one space and both sides casefolded, it appears in that call's
+   transcript. Not exact-substring: a model that normalises a double space or a capital in
+   an otherwise honest quote is not inventing anything, and rejecting it would teach the
+   check to cry wolf. Not fuzzy either — a substring match on the normalised text is the
+   whole rule, so a line the transcript does not contain cannot pass it.
+
+3. **The prompt's own no-quote sentence passes.** `label.baml` instructs the model to
+   write "nothing in this call is about it" for a call that does not match and has no near
+   miss. That is not a quote and must not be reported as an invention. The exact sentence
+   is a constant in `label.py`, and a test reads `label.baml` and fails if the two ever
+   drift apart — the same pin `FIXED_PROMPT_CHARS` already has.
+
+4. **A quote that is not there is replaced, not dropped.** The label keeps its `match`:
+   the judgement was paid for and the transcript was read, and throwing it away would cost
+   money to buy nothing. What is thrown away is the sentence that was not said. In its
+   place goes one fixed line that says so, so that `SynthesizeRule` and the call drawer are
+   told the truth rather than a quote, and no downstream reader has to know about this
+   check to be safe from it.
+
+5. **The count goes to stderr.** One line per run when any were replaced, naming how many
+   of how many. A model inventing quotes is a thing the analyst paying for it should be
+   able to see in the job log, and a silent repair is how this bug lived this long. It is a
+   plain line: nothing parses it, and neither the `PROGRESS`/`SPENT` lines the engine reads
+   nor the cap sentence S-28 searches for changes.
+
+**Acceptance:** WHEN a label's evidence does not appear in the transcript of the call it is
+about THEN graphify SHALL store the label's match with a fixed line in place of the quote,
+SHALL write no invented quote to `pattern_labels`, and SHALL say in the job's log how many
+quotes were replaced.
+
+**Verify:** `uv run pytest -q` green; `cargo test -q` and `cargo clippy --all-targets -- -D
+warnings` untouched and green; `pnpm test` and `pnpm build` untouched and green; guard 1 red
+if an evidence string absent from the transcript is stored verbatim; guard 2 red if a
+genuine quote is replaced because its whitespace or case differs; guard 3 red if the
+prompt's own no-quote sentence is reported as an invention; guard 4 red if a replaced quote
+takes its label's `match` down with it; CI 4/4.
+
+**Must not:** change `match`, drop a label, or refuse a batch — the money is already spent
+and the judgement is not what is in doubt. Reach a provider to re-ask. Edit
+`brain/baml_src/` — the prompt already says the right thing and the defect is that nothing
+holds it to it. Add a column, a migration, or a field to `label`'s output. Touch
+`synth.py`'s own checking: labels handed to `synthesize` come from `label`, so fixing the
+source fixes them, and a hand-fed request is a separate step if it is ever wanted. Touch the
+engine or the UI. Send anything but GET to a provider. Call a model without a shown cost and
+an explicit go. Download or store audio. Return a key to the browser, print one to a log, or
+write one to the DB in clear. Render a missing value as 0.
+
+**The register is complete through S-68.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.

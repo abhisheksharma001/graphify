@@ -1,0 +1,26 @@
+{
+  "model": "jev-1.13.0",
+  "questions": {
+    "wants_human": {
+      "type": "noul",
+      "threshold": 0.5,
+      "costs": {
+        "fn": 2,
+        "fp": 1
+      },
+      "eval": {
+        "n": 19,
+        "tp": 8,
+        "fp": 0,
+        "fn": 1,
+        "tn": 10,
+        "tpr": 0.8888888888888888,
+        "tnr": 1.0
+      },
+      "band": {
+        "low": 0.52,
+        "high": 0.52
+      }
+    }
+  }
+}

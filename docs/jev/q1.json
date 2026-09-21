@@ -1,0 +1,4 @@
+{"wants_human": {"type": "noul",
+  "instructions": "The caller asked to be put through to a human.",
+  "criteria": {"true": "The caller asked to speak to a person, an agent, a representative, an operator, a supervisor or a manager.",
+               "false": "The caller did not ask to speak to a person."}}}
