@@ -6963,7 +6963,7 @@ first call to `Deadline::heard` — and reading the distribution rather than the
   the cap's two reads is a claim in a comment, `spent_so_far` still reads a log `LOG_BYTES`
   truncates.
 
-### S-68 — An invented quote is not evidence
+### S-68 — An invented quote is not evidence ☑ (PR #69, 11595fb)
 
 **PR:** one. **Depends on:** S-23, which labels calls and writes what the model quoted;
 S-24, which reads those quotes to write a rule. **Research:** none.
@@ -7038,6 +7038,86 @@ source fixes them, and a hand-fed request is a separate step if it is ever wante
 engine or the UI. Send anything but GET to a provider. Call a model without a shown cost and
 an explicit go. Download or store audio. Return a key to the browser, print one to a log, or
 write one to the DB in clear. Render a missing value as 0.
+
+**Files (as built):** `brain/src/graphify_brain/label.py` (+52 −1: `NO_QUOTE`,
+`NOT_IN_TRANSCRIPT`, `_flat`, `_quoted`, three lines inside `_attach`, and the count on
+stderr), `brain/tests/test_label.py` (+112 −11: `QUOTES`, `stored`, seven tests, and three
+existing fixtures moved off placeholder evidence), `docs/backlog/bugs.md`, `docs/spec.md`.
+No engine file, no UI file, no migration, no dependency, nothing in `brain/baml_src/`.
+
+**Breaks:**
+
+| break | red | proves |
+|---|---|---|
+| 1 · the check goes entirely | 2 | an invented quote is stored verbatim |
+| 2 · exact substring, no flattening | 1 | a genuine quote survives its own spacing and case |
+| 3 · the `NO_QUOTE` escape goes | 1 | the prompt's own sentence is not called an invention |
+| 4 · replace becomes `continue` | 6 | a bad quote does not take its label down with it |
+| 5 · the pinned sentence drifts | 1 | a reworded prompt cannot silently break the escape |
+
+Break 4 reddens six rather than one, and the five extra are the finding: dropping the label
+also breaks `test_every_call_asked_about_is_in_exactly_one_list`, the invariant that every
+call asked about lands in exactly one of the four output lists. A dropped label is a call in
+none of them, so the cheap-looking repair was never available.
+
+**Verified:** `uv run pytest -q` 262 passed, up from 255 — seven new, three fixtures moved.
+`cargo test -q` 361 passed and `cargo clippy --all-targets -- -D warnings` clean, both
+untouched. `pnpm test` 59 passed and `pnpm build` clean, both untouched. CI 4/4.
+
+**Learned:**
+
+**(a) A prompt is not a guard, and this one said so out loud.** `label.baml` has carried
+*"Never quote a line that is not in the transcript you were given"* since S-23, and the
+sentence reads like a rule the system holds. It was a request. The gap is worth naming
+because the same file carries four more instructions in the same voice — the dash is not a
+zero, a maybe is `match: false`, quote the closest line, never invent an `n` — and exactly
+one of those, the invented `n`, has code behind it (`_attach`'s `pop`). An instruction with
+no enforcement beside one with enforcement, in the same paragraph, is how this hid.
+
+**(b) The seam was the place that already held both halves.** `_attach` exists to put a
+model's `n` back on the call it was about, so it is the one function in the module holding a
+`Call` and the `Label` that answered for it at the same time. Nothing had to be plumbed: the
+transcript was already there. When a check needs two things that live apart, the place to
+look first is whatever function already joined them for some other reason.
+
+**(c) Replacing beat dropping, and the test suite said why.** Dropping an unverifiable
+quote looks tidier and is one line shorter. It reddened six tests, five of them about
+something else — the four output lists are an invariant S-23 built the result shape around,
+and a label that vanishes is a call in none of them. Keeping the judgement and throwing away
+only the sentence is also the honest reading: the money bought a verdict on a transcript
+that was really read.
+
+**(d) An escape hatch needs a pin or it becomes the hole.** `NO_QUOTE` has to pass, because
+the prompt asks for exactly it. That makes the check's correctness depend on two files
+agreeing on a sentence. Unpinned, a later prompt edit would have turned every non-match's
+evidence into a replacement notice and nothing would have failed. The pin is four lines and
+copies what `FIXED_PROMPT_CHARS` already does to the same prompt for the same reason.
+
+**(e) Placeholder fixtures hid the behaviour they stood in for.** Three tests used
+`"the second one"`, `"first answer"` and `f"line {i}"` as evidence — strings chosen to be
+distinguishable, never to be realistic. They passed for two years against a transcript none
+of them appeared in. Moving them onto real lines cost six edits and means those tests now
+fail if attachment breaks rather than if this check does.
+
+**Not done:**
+
+- **`synth.py` still only checks that `evidence` is a `str`.** Labels handed to `synthesize`
+  come from `label`, so the source is fixed; a request hand-fed to the brain is not, and
+  nothing stops one.
+- **The no-quote sentence with `match: true` gets through.** The escape is on the sentence
+  and not on the verdict. It is a different model error and a smaller one — the label says
+  match and offers nothing to read, which the drawer shows plainly.
+- **Empty evidence passes**, because an empty string is a substring of every transcript. It
+  is useless rather than invented, and nothing downstream reads it as a quote.
+- **The count is lost when a batch raises.** The line prints after the waves; a run that
+  re-raises never reaches it. The traceback is the story on that path.
+- **Nothing counts inventions across runs.** A model that starts inventing quotes shows up
+  one job log at a time, and no screen adds them up.
+- **Whitespace and case are the only normalisation.** A model that paraphrases, trims a
+  word, or fixes the transcript's own typo is called an inventor. That is the intended
+  direction — the prompt asks for a quote — but it is a judgement, not a measurement, and
+  nothing has measured how often an honest model trips it.
+- Unchanged: every residue listed under S-67.
 
 **The register is complete through S-68.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.

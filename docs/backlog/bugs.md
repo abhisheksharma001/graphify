@@ -121,4 +121,6 @@ nobody said can therefore shape a rule that runs unattended on every call foreve
 Reproduce: answer a batch with a `Label` whose `evidence` appears nowhere in that call's
 transcript. It is stored, served and synthesised from. No test covered it. · Found while
 reading the labelling path to assess Jev (`docs/prd-jev.md`, §10), and independent of it. ·
-Queued as S-68.
+Fixed by S-68 (PR #69, 11595fb): the check goes in `_attach`, the one place holding both
+a quote and the transcript it claims to come from, and what is not there is replaced
+rather than dropped — the judgement was paid for and is not what was in doubt.
