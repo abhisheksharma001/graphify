@@ -7321,11 +7321,11 @@ into the repo.
 
 ---
 
-### S-71 — A decision has a seam before it has a provider [Rust] ☐
+### S-71 — A decision has a seam before it has a provider [Rust] ☑ (PR #71, 99bc686)
 
 **PR:** one. **Depends on:** nothing. **Research:** none.
 
-**Files:** engine/src/decide.rs (new), `engine/src/lib.rs`, engine/tests/decide.rs (new).
+**Files:** `engine/src/decide.rs` (new), `engine/src/lib.rs`, `engine/tests/decide.rs` (new).
 
 **Today:** the engine has exactly one way to get a judgement about text — spawn the Python
 brain and let BAML call Anthropic (`engine/src/jobs.rs`). There is no type in the engine for
@@ -7410,5 +7410,85 @@ vocabulary outside `vapi.rs`, `extract.rs` and `ended_reason.rs`.
 
 ---
 
-**The register has rows through S-71; the last one ticked is S-69.** Anything after that is a new step appended
+
+**Files (as built):** `engine/src/decide.rs` (new, 378 lines), `engine/src/lib.rs` (one
+`pub mod` line), `engine/tests/decide.rs` (new, 20 tests). Nothing else. `engine/Cargo.toml`
+and `engine/tests/outbound.rs` are both unedited, which is the step's own claim about itself.
+
+**Breaks:**
+
+| # | break | red | proves |
+|---|---|---|---|
+| 1 | the empty-set refusal removed | 1 | §8's named refusal is real |
+| 2 | the unanswered-question sweep removed | 1 | a partial answer is not a result |
+| 3 | the probability range check removed | 1 | 1.01 and NaN are not probabilities |
+| 4 | a kind mismatch accepted | 2 | a score is not an answer to a true/false question |
+| 5 | the fake returns 0.0 for anything it has no answer for | 1 (after tightening) | missing is not zero |
+| 6 | the duplicate-name refusal removed | 1 | one name, one question |
+| 7 | a caller added to `engine/src/sync.rs` | 1 | the seam is dark, and the guard reads the tree |
+
+**Verified:** `cargo test -q` 381 passed over 21 suites, from 361 over 20.
+`cargo clippy --all-targets -- -D warnings` clean. `uv run pytest -q` 278 and `pnpm test` 59,
+both untouched. No line over 100 characters. CI 4/4 on PR #71.
+
+**Learned:**
+
+**(a) A vendor's word walked into the seam on the first draft.** The true/false kind was
+called `Noul`, which is not English — it is one provider's invented name for "boolean with a
+probability", and it arrived because the question files in `docs/jev/` use it and it was the
+word in hand. D-13 says exactly this must not happen, the step's own Must-not repeated it,
+and it happened anyway, in the file whose entire purpose is to be provider-free. What caught
+it was the self-review pass reading the diff as a stranger, not any test — which is the
+argument for that pass. `Binary` now, and the translation is the adapter's job.
+
+**(b) Two fallible constructors do the work an adapter would otherwise have to remember.**
+`Questions::new` and `Decisions::checked` are the only ways to build either type, so an
+invalid question set cannot be asked and an answer that does not match cannot be returned —
+by a real provider, by the fake, or by anything written later. The alternative is a `validate`
+each adapter calls, which is a rule each adapter can forget. Making the invalid state
+unconstructible costs about thirty lines here and nothing afterwards.
+
+**(c) A break can go red for the wrong reason, and that is indistinguishable from working.**
+Break 5 removed the fake's refusal and returned `0.0` for anything it had no answer for; a
+test failed, and the break looked proved. It was not: the unanswered question in that test
+was a `Choice`, so the substitute died on the kind check. A probe with a single true/false
+question showed `Some(Binary(0.0))` coming back clean through `Decisions::checked`, because
+0.0 *is* a valid probability. **Watching a test go red is not enough; the reason has to be
+the one the break was about.** That is one level deeper than S-69's lesson, which was only
+that a test can be weaker than its name.
+
+**(d) A dark seam is better held by a test than by a flag.** "Flag off" could have been a
+boolean nobody reads. Instead `the_seam_has_no_caller_yet` walks `engine/src` and fails if
+any file outside `decide.rs` names the trait. Wiring the first caller therefore means
+deleting a test that says in its own doc comment why it exists — a deliberate act with a
+paper trail, rather than flipping a default.
+
+**(e) `async fn` in a trait is still not `dyn`-compatible, and that is worth compiling
+rather than remembering.** rustc 1.98.0, E0038, *"because method `decide` is `async`"*,
+checked here in four lines. Spelling the return type as a pinned boxed future buys run-time
+provider selection with no new dependency. A guess either way would have cost either a
+dependency nobody needed or a trait that cannot do the one thing it exists for.
+
+**Not done:**
+
+- **No caller, by design.** The seam is dark; S-73 and after wire it, and delete
+  `the_seam_has_no_caller_yet` when they do.
+- **No provider and no amendment.** `decide.rs` names no HTTP client, so
+  `engine/tests/outbound.rs` passes unedited. A-1 is S-72's argument and is still
+  unapproved (memo O-08).
+- **No retry, timeout, size cap, circuit breaker, ledger or cap.** Every one of those is a
+  property of a provider that makes a request; there is no request here to give them to.
+  `docs/prd-jev.md` §8 puts them in S-73, and none of them can be tested before then.
+- **The seam carries no cost.** A real decision provider charges per call, and nothing in
+  `Decisions` says what one cost. That belongs with the adapter that knows the price, beside
+  the `spend` ledger — S-73 — and putting a field here now would be a guess at its shape.
+- **`state` is a plain `&str`.** The caller assembles it, and nothing checks its size; a
+  size cap is a provider's limit, not the seam's.
+- **Nothing reads `docs/jev/wants_human.question.json` into a `Questions`.** The loader is
+  still the first thing S-73 will want, and writing it now would be a guess about its caller
+  — the same reason S-69 left it out.
+
+---
+
+**The register is complete through S-71**, with S-70 open and blocked. Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
