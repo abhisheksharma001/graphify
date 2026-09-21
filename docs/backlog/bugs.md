@@ -109,20 +109,16 @@ that ended without ever quoting is started again rather than reported. Measured 
 first: `Command::spawn` returns in under a millisecond and the child's first word arrives at
 a median of 2.2-4.0s, p90 up to 6.0s, worst seen 6.8s, against the 6s budget.
 
-## 2026-09-21 · label evidence is never checked against its transcript
-
-`brain/baml_src/label.baml` instructs the model: "Never quote a line that is not in the transcript
-you were given." Nothing enforces it. `brain/src/graphify_brain/synth.py:476` checks that `evidence`
-is a `str` and stops there; `label.py` writes it straight to `pattern_labels`.
-
-**What it costs.** A quote the model invented reaches three places that each treat it as what a
-person said: the row in `pattern_labels`, the call drawer (`engine/src/queries.rs:342` selects
-`l.evidence` into `CallRow`), and — the expensive one — `SynthesizeRule`, whose prompt tells it to
-"work from the evidence, not from the criterion" and that the quotes are "what people actually
-said". An invented quote can therefore shape a rule that then runs unattended on every call forever.
-
-**Reproduce.** Hand `synthesize` a label whose `evidence` is a string appearing nowhere in that
-call's transcript. It is stored, served and used. No test covers it.
-
-**Found by** reading the labelling path while assessing Jev (see `docs/prd-jev.md`, §10). Queued as
-S-68, and it ships whatever happens to that PRD.
+2026-09-21 · `brain/src/graphify_brain/label.py:362` · `brain/baml_src/label.baml` instructs
+the model *"Never quote a line that is not in the transcript you were given"* and nothing
+holds it to it. `synth.py:476` checks that `evidence` is a `str` and stops there; `_attach`
+writes whatever came back straight into `pattern_labels`. An invented quote then reaches
+three readers that each treat it as what a person said: the row in `pattern_labels`, the
+call drawer (`engine/src/queries.rs:342` selects `l.evidence` into `CallRow`), and — the
+expensive one — `SynthesizeRule`, whose prompt tells it to *"work from the evidence, not
+from the criterion"* and that the quotes are *"what people actually said"*. A sentence
+nobody said can therefore shape a rule that runs unattended on every call forever. ·
+Reproduce: answer a batch with a `Label` whose `evidence` appears nowhere in that call's
+transcript. It is stored, served and synthesised from. No test covered it. · Found while
+reading the labelling path to assess Jev (`docs/prd-jev.md`, §10), and independent of it. ·
+Queued as S-68.
