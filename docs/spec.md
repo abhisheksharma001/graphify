@@ -7500,7 +7500,7 @@ dependency nobody needed or a trait that cannot do the one thing it exists for.
 
 ---
 
-### S-72 — Outbound splits into data connectors and decision connectors `[Rust]` ☐
+### S-72 — Outbound splits into data connectors and decision connectors `[Rust]` ☑ (PR #72, e49f121)
 
 **PR:** one. **Depends on:** S-71. **Research:** none.
 **Amendment:** **A-1**, approved by Abhishek on 2026-09-21 (`docs/prd-jev.md` §8, §12 Q2).
@@ -7578,6 +7578,75 @@ anything that applies to `vapi.rs`: a data connector is GET-only forever. Remove
 the runtime half (`every_request_that_leaves_is_a_get`) — the wire guard still asserts that
 every request which actually left was a GET, and that stays true while `DECISION_CONNECTORS`
 is empty.
+
+**Files (as built):** `engine/tests/outbound.rs` (163 → 296 lines, 4 tests → 11),
+`docs/spec.md` (Must-never #1 rewritten to A-1's wording; a note on S-49's row that
+`CONNECTORS` is now `DATA_CONNECTORS` and every word of that row still describes it). **No
+`engine/src` change**, no brain, no UI, no new dependency. 381 → 388 engine tests over 21
+suites.
+
+**Breaks:** committed first, then seven, each restored with `git checkout --`.
+
+| # | break | red | what the message actually said |
+|---|---|---|---|
+| 1 | `DECISION_MAY` subtracted for every role | `a_data_connector_may_not_post` (+1) | `[]` — a data connector POSTing produced zero faults |
+| 2 | decision role skips all of `NOT_A_GET` | `a_decision_connector_may_post_and_nothing_else` | `.delete(: []` |
+| 3 | the ordinary-file client check disabled | `an_ordinary_file_may_not_reach_out_at_all` | `[]` |
+| 4 | "makes no requests any more" check disabled | `a_connector_that_no_longer_reaches_out_…` | `Data: []` |
+| 5 | `out.truncate(1)` | `a_file_that_breaks_two_rules_reports_both` | only the `.post(` fault; the `.delete(` one hidden |
+| 6 | `vapi.rs` added to both lists | `a_file_cannot_be_both_a_data_and_a_decision_connector` | the overlap assert |
+| 7 | `Method::` added to `DECISION_MAY` | `a_decision_connector_may_post_and_nothing_else` | `Method::POST: []` |
+
+**Verified:** `cargo test -q` 388 passed over 21 suites, `cargo clippy --all-targets -D
+warnings` clean, `git diff --stat main -- engine/src` empty, brain (278) and ui (59)
+untouched, CI 4/4 on PR #72, no line over 100 chars.
+
+**Learned:**
+
+a. **A guard read only against a complying tree has never been seen to fail.** Break 3
+   disabled the ordinary-file rule completely and `only_a_named_connector_reaches_out` —
+   the tree test that has held this since S-49 — **stayed green**. Only the new synthetic
+   test went red. The rule had been correct for 23 steps by luck of never being wrong; it
+   was not *covered*. This is S-71's lesson pointed at a different target: there, a break
+   went red for the wrong reason; here, a break produced no red at all from the test whose
+   name claims the behaviour.
+
+b. **The same was true of the lists.** Break 6 put `vapi.rs` on both lists and
+   `a_connector_sends_only_what_its_role_allows` passed, because `role()` answers `Data`
+   first and never looks further. A data connector that may POST would have been one line
+   of a diff and no test failure. Splitting a rule in two creates a hole exactly where the
+   two halves meet, and only a test about the *lists* can stand there.
+
+c. **Where to put a rule so it can be tested: in data, not in the assertion.** Moving the
+   rules into `faults(role, text) -> Vec<String>` cost about forty lines and made seven
+   branches reachable from a test. While a rule lives inside `assert!` in a loop over the
+   real tree, the only input it will ever see is the input that passes.
+
+d. **One spelling, on purpose.** `Method::` stays refused even for a decision connector, so
+   a POST built through a variable is not expressible. A text guard can only see what the
+   text spells; narrowing the grammar is what keeps it honest.
+
+e. **An amendment is smaller than it sounds when the axis was already there.** A-1 reads
+   like a relaxation of the program's strictest rule. In the diff it is a rename, a second
+   empty list, a one-verb subtraction, and two tests about the lists — and the rule that
+   protects a customer's account is literally unchanged. The split made the guard *more*
+   precise, which is the test of whether an amendment is the right one.
+
+**Not done:**
+
+- **No decision connector exists.** `DECISION_CONNECTORS` is empty; S-73 writes the Jev
+  adapter and is the first file that will be named on it.
+- **No wire proof for a POST.** The mock guard can only watch requests something actually
+  makes, and nothing makes one yet. `every_request_that_leaves_is_a_get` is untouched and
+  still asserts every request that left was a GET — true while the list is empty, and the
+  thing S-73 has to extend rather than delete.
+- **A-2's Must-never wording is not in this file yet.** Approved 2026-09-21 with the
+  $0.50/org/day cap confirmed; it lands with S-79, which is the step that uses it.
+- **`brain/` is still out of scope.** It reaches LLM providers over `httpx` and must POST
+  to call a model at all — a different rule, still unwritten, as S-49 already said.
+- **Nothing checks that a decision provider is really data-free.** "Holds none of our data
+  and owns nothing we could damage" is a claim about a vendor, not a property a test can
+  read. It is carried by the review that adds a name to the list, and by nothing else.
 
 ---
 
