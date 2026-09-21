@@ -7119,5 +7119,107 @@ fail if attachment breaks rather than if this check does.
   nothing has measured how often an honest model trips it.
 - Unchanged: every residue listed under S-67.
 
-**The register is complete through S-68.** Anything after that is a new step appended
+### S-69 — The question and the numbers it earned cannot drift apart
+
+**PR:** one. **Depends on:** nothing. No Rust, no key, no amendment — `docs/prd-jev.md` §9
+lists S-69 among the three steps worth doing whatever happens to A-1. **Research:** none.
+The measurement this step fixes in place was run on 2026-09-21 and is written up in
+`docs/prd-jev.md` §4.
+
+**Files:** docs/jev/wants_human.question.json, docs/jev/wants_human.question.first-draft.json,
+docs/jev/wants_human.thresholds.json, brain/tests/test_jev_artifacts.py, `docs/jev/cases.jsonl`,
+`docs/prd-jev.md`, `docs/spec.md`. Deleted: `docs/jev/q1.json`, `docs/jev/q2.json`,
+`docs/jev/thresholds2.json`, `docs/jev/costs.json`. No engine file, no UI file, no migration,
+no dependency, and nothing in this step makes a network call.
+
+**Today:** `docs/jev/` holds the working papers of one afternoon's calibration, committed so
+they would survive: `q1.json` and `q2.json` (a first-draft question and the rewrite that
+replaced it), `thresholds2.json` (what `calibrate.py` fitted), `costs.json` (two numbers
+already repeated inside `thresholds2.json`), `cases.jsonl` and the `build_cases.py` that
+writes it. Nothing reads any of them and no test opens any of them. The names say which
+attempt they were, not what they are. Three things follow from that.
+
+First, **the numbers and the wording that earned them are only joined by a sentence in a
+PRD.** `docs/prd-jev.md` §4 reports eval TPR 0.89 / TNR 1.00 for "the rewritten question".
+Change one word of `q2.json` and that table is silently wrong; nothing anywhere would say so.
+The whole method the numbers came from rests on the question text being the thing under test,
+so a threshold that has come unstuck from its question is worse than no threshold.
+
+Second, **the file disagrees with the PRD about what the threshold is.** `thresholds2.json`
+carries `"threshold": 0.5` and a band whose `low` and `high` are both `0.52`; §7's table
+prints "threshold 0.52". Those are two different fitted numbers — `calibrate.py` fits a cut
+and, separately, a confident-band edge — and the table quotes the wrong one.
+
+Third, **the bar lives only in prose.** §4 says the bar was written before any case was
+scored (eval TPR ≥ 0.90 at TNR ≥ 0.85) and says plainly that eval TPR 0.89 misses it. That
+admission is the most perishable sentence in the PRD: it sits three paragraphs from the
+table and nothing recomputes it.
+
+**Change:** the artifacts become a named, self-checking set, and the numbers are pinned to
+the exact wording that produced them.
+
+1. **Names that say what a file is.** `q2.json` → wants_human.question.json — the question
+   in force. `q1.json` → wants_human.question.first-draft.json — kept, because §4's rewrite
+   table reports a per-case delta between the two and nobody can reproduce that without
+   both. `thresholds2.json` → wants_human.thresholds.json. `costs.json` is deleted: its
+   `{"fn": 2, "fp": 1}` is already inside the thresholds file and a second copy is a second
+   thing to get wrong.
+
+2. **The thresholds file records what a person decided, not only what the fitter emitted.**
+   Four additions, all of them facts already written down in `docs/prd-jev.md` and none of
+   them new measurements:
+   - `question_sha256` — the SHA-256 of the question file, canonicalised (parsed, keys
+     sorted, no insignificant whitespace) so reformatting is free and rewording is not.
+   - `bar` — the two numbers written before the run, and `met: false`, its verdict.
+   - `cases` — the file, its 44, its 20 positive and 24 negative, and `synthetic: true`.
+   - `split` — how the split is taken (SHA-256 of the case id), the fraction, and the
+     resulting 25 / 19.
+
+3. **A test opens all of it.** brain/tests/test_jev_artifacts.py, in the brain's suite
+   because pytest is already there, `test_label.py` already reads a file outside its own
+   directory for the same kind of pin, and the brain is where Jev lands if A-1 is rejected.
+   It needs no network and no key: every assertion is arithmetic over files in the repo.
+
+4. **The pin is the point.** The test canonicalises the question file, hashes it, and
+   compares it with `question_sha256`. Edit the wording and every number in the thresholds
+   file is flagged as belonging to a question that no longer exists. The remedy is to
+   re-measure and write the new hash, which is the correct amount of work.
+
+5. **The bar is recomputed, not trusted.** The test derives TPR and TNR from the stored
+   `tp`/`fp`/`fn`/`tn`, checks them against the stored rates, then derives `met` from the
+   bar and checks it against the stored `met`. Editing eval counts to flatter the result,
+   or flipping `met` to true on its own, turns the suite red. The recorded answer today is
+   that the bar was missed, and it stays missed.
+
+6. **The hard negatives are named and held.** §7 requires that a shipped set keep the
+   shapes that break a naive question: agent-offered, caller-accepted, past tense, third
+   party, callback, transferred-but-never-asked, and injections. The test finds each by its
+   `note` and fails if one is dropped. It holds the two injection cases that exist; §7's
+   eventual requirement of four shapes belongs to the 200-case build, not to this set.
+
+7. **The PRD is corrected where it is wrong**: §7's threshold reads 0.5 with the 0.52 band
+   named as the band it is, §6 stops calling the wording a scratchpad file it no longer is,
+   and the paths are the new ones.
+
+**Acceptance:** WHEN the wording in `docs/jev/wants_human.question.json` is changed, or any
+count in `docs/jev/wants_human.thresholds.json` is edited away from what its rates and its
+bar imply, THEN `uv run pytest -q` SHALL fail and name the file.
+
+**Verify:** `cd brain && uv run pytest -q` — was 262 passing, and the new tests are added to
+that. Nothing else in the repo is touched, so `cargo test -q`, `cargo clippy --all-targets
+-- -D warnings`, `pnpm test` and `pnpm build` are run once to show 361 / clean / 59 / clean,
+unchanged.
+
+**Must not:** re-measure anything, call a provider, or need a key — this step runs entirely
+on files in the repo. Change a case, a label, a question's wording, or any fitted number:
+the step's whole claim is that those are now pinned, and a step that edits what it pins
+proves nothing. Delete `build_cases.py` or `cases.jsonl`. Touch the engine, the UI, or
+`brain/src/`. Add a dependency. Quote any number from this set outside the repo: eval n is
+19, the cases are synthetic and self-authored, and §4 already says so. Plus every
+Must-never in this spec's header: GET only to a data provider; no model call without a shown
+cost and an explicit go; no audio; no key to the browser, a log, or the DB in clear; a
+missing value is "—" and never 0; no provider vocabulary outside `vapi.rs`, `extract.rs` and
+`ended_reason.rs`.
+
+**The register is complete through S-69.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
