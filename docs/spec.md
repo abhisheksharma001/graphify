@@ -7119,7 +7119,7 @@ fail if attachment breaks rather than if this check does.
   nothing has measured how often an honest model trips it.
 - Unchanged: every residue listed under S-67.
 
-### S-69 — The question and the numbers it earned cannot drift apart
+### S-69 — The question and the numbers it earned cannot drift apart ☑ (PR #70, bbc10e6)
 
 **PR:** one. **Depends on:** nothing. No Rust, no key, no amendment — `docs/prd-jev.md` §9
 lists S-69 among the three steps worth doing whatever happens to A-1. **Research:** none.
@@ -7220,6 +7220,80 @@ Must-never in this spec's header: GET only to a data provider; no model call wit
 cost and an explicit go; no audio; no key to the browser, a log, or the DB in clear; a
 missing value is "—" and never 0; no provider vocabulary outside `vapi.rs`, `extract.rs` and
 `ended_reason.rs`.
+
+**Files (as built):** `docs/jev/wants_human.question.json` and
+`docs/jev/wants_human.question.first-draft.json` (renamed from q2.json and q1.json, content
+untouched), `docs/jev/wants_human.thresholds.json` (renamed from thresholds2.json, four
+fields added), `brain/tests/test_jev_artifacts.py` (new, 16 tests), `docs/prd-jev.md` (§6
+and §7), `docs/spec.md`. Deleted: docs/jev/costs.json. `docs/jev/cases.jsonl` and
+`docs/jev/build_cases.py` are read but not edited.
+
+**Breaks:**
+
+| # | break | red | proves |
+|---|---|---|---|
+| 1 | one word of the question reworded | 1 | the numbers are pinned to the wording |
+| 2 | `met` flipped to `true` | 1 | the bar is recomputed, not believed |
+| 3 | eval `tp` 8 → 9 | 2 | a flattering count has to be wrong twice over |
+| 4 | the fake-delimiter injection case deleted | 3 | the set cannot shrink under its own numbers |
+| 5 | `tools_run` written as `0` instead of `"—"` | 1 | a missing value is not zero |
+| 6 | the callback hard negative deleted | 3 | a named shape cannot be dropped |
+
+**Verified:** `uv run pytest -q` 278 passed, from 262. `cargo test -q` 361 passed over 20
+suites and `cargo clippy --all-targets -- -D warnings` clean, both untouched. `pnpm test` 59
+passed, untouched. `uv run ruff check` clean on the new file. CI 4/4 on PR #70.
+
+**Learned:**
+
+**(a) A number and the text that produced it are one object.** Splitting them across two
+files joined only by a sentence in a PRD is how a measurement quietly becomes a claim: the
+sentence survives an edit to either side. Forty characters of SHA-256 do the job the prose
+was failing at, and the failure mode it leaves — the hash is stale and everything reads as
+broken — is the loud one.
+
+**(b) A test can be weaker than its own name, and only a break says so.** Break 5 wrote
+`0` into a field whose absent value is `"—"`, and
+`test_a_case_never_says_a_missing_value_is_zero` passed, because it refused `null` and
+nothing else. The name had been written first and the assertion never caught up. Six breaks
+found one test doing less than it said; that ratio is the argument for the practice.
+
+**(c) A named-shape check is a floor, not a census.** Break 4 deleted an injection case and
+the test that exists to hold injections stayed green, because the *other* injection case
+still carried the word it greps for. The counts caught it instead. A test that looks for a
+word finds a word.
+
+**(d) Correcting one number in a write-up surfaced two fits sharing one name.**
+`calibrate.py` fits a cut (`fit_threshold`, 0.50 here) and, separately, the edges of a
+confident band (`fit_band`, 0.52/0.52). §7 printed the band edge under the heading
+"threshold". Both numbers are right; the label was wrong, and nothing but a person reading
+the script could have told.
+
+**(e) A generated file that a person also edits needs the test to defend the edits.**
+`bar`, `cases`, `split` and `question_sha256` are not in `calibrate.py`'s output, so
+re-running it drops them. That is not an argument against putting them there — it is an
+argument for the test failing when they vanish, because a regenerated threshold needs its
+bar re-judged anyway. The guard turns a silent loss into the right amount of work.
+
+**Not done:**
+
+- **Nothing reads these files at run time.** No loader, no schema type, no caller. That
+  arrives with the `DecisionModel` seam (S-71); a reader written now would be a guess about
+  its caller.
+- **The pin covers the question, not the cases.** Reword a transcript inside `cases.jsonl`
+  and no hash moves — the counts and the split catch a deleted or renamed case, not an
+  edited one. A second hash over the case file would close it, at the cost of two files
+  (`build_cases.py` and its output) that must then agree.
+- **The first draft is held only by its shape.** `wants_human.question.first-draft.json`
+  parses and is checked for one-judgement structure, and that is all. §4's per-case deltas
+  against it remain prose.
+- **Two injection shapes, not four.** `docs/prd-jev.md` §7 requires four before a threshold
+  ships. That belongs to the 200-case build read back out of `pattern_labels` (S-76).
+- **The band is empty.** `low` and `high` are both 0.52, so there is no unsure middle to
+  route to a fallback — on 25 train cases as likely to mean a small clean set as a real
+  separation. Recorded, not acted on.
+- **The bar is recomputed but nothing acts on it.** `met: false` sits in a file; no build
+  step refuses to ship a question that missed its bar, because nothing ships one yet.
+- Unchanged: every residue listed under S-68.
 
 **The register is complete through S-69.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
