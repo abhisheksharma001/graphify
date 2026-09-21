@@ -34,9 +34,11 @@ const DATA_CONNECTORS: [&str; 1] = ["vapi.rs"];
 /// The files allowed to ask an outside model for a judgement. A decision provider holds
 /// none of our data and owns nothing we could damage, so it may POST — and nothing else.
 ///
-/// Empty. S-73 writes the first one, and `only_one_file_may_ever_post` keeps it at one:
-/// A-1 grants POST to a named file, not to a category that grows by a line.
-const DECISION_CONNECTORS: [&str; 0] = [];
+/// One file: `jev.rs`, added by S-73. `only_one_file_may_ever_post` keeps it at one, because
+/// A-1 grants POST to a named file, not to a category that grows by a line. Nothing here
+/// checks that the provider behind a name really is data-free; that is carried by the review
+/// which adds the name, and by nothing else.
+const DECISION_CONNECTORS: [&str; 1] = ["jev.rs"];
 
 /// How an HTTP client gets named. `reqwest` is the one in `Cargo.toml`; the rest are here
 /// so that reaching for a different crate is the same failure rather than a way around it.
@@ -291,11 +293,12 @@ fn only_one_file_may_ever_post() {
 /// than refused, and the assertion below is the only thing that fails — which is the point:
 /// a guard that reds because a mock did not match tells you the mock did not match.
 ///
-/// This drives the data connector, and every request it makes is a GET. It stays exactly
-/// this strict while `DECISION_CONNECTORS` is empty; the wire proof for a decision
-/// connector arrives with the adapter that makes one (S-73).
+/// This drives the data connector, and every request it makes is a GET. The name says
+/// *data connector* and not *everything* on purpose: S-73 made a POST expressible, and a
+/// test whose name claims more than its body drives is the exact fault S-72 was written
+/// about. The decision connector's own wire proof lives in `engine/tests/jev.rs`.
 #[tokio::test]
-async fn every_request_that_leaves_is_a_get() {
+async fn every_request_the_data_connector_makes_is_a_get() {
     let server = MockServer::start().await;
     Mock::given(any())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
