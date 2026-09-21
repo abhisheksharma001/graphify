@@ -310,11 +310,14 @@ async fn a_state_over_the_cap_never_leaves_the_process() {
         .unwrap_err()
         .to_string();
 
-    assert!(err.contains("24000"), "{err}");
+    // The order matters: the claim this test exists for is that nothing left, so it is
+    // asserted first. With it second, removing the cap reds on the message instead and the
+    // failure says nothing about a request having left.
     assert!(
         server.received_requests().await.unwrap().is_empty(),
-        "a request that the cap refused still left the process"
+        "the state was over the cap and a request left anyway"
     );
+    assert!(err.contains("24000"), "{err}");
 }
 
 #[tokio::test]
@@ -336,11 +339,11 @@ async fn a_request_over_the_cap_never_leaves_the_process() {
         .unwrap_err()
         .to_string();
 
-    assert!(err.contains("48000"), "{err}");
     assert!(
         server.received_requests().await.unwrap().is_empty(),
-        "a request the cap refused still left the process"
+        "the request was over the cap and left anyway"
     );
+    assert!(err.contains("48000"), "{err}");
 }
 
 #[tokio::test]
