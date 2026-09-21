@@ -232,13 +232,13 @@ where it can shape a rule that then runs unattended forever. S-68.
 
 ## 12. Open questions
 
-| # | Question | Owner | Needed by |
-|---|---|---|---|
-| Q1 | A named person reads TypeSafe's **current** terms before any real transcript leaves. ZDR is enterprise-only; US hosting; no retention period published; an indexed pre-launch Terms copy granted access "solely for evaluating" | Abhishek | S-75 |
-| Q2 | Approve or reject amendment **A-1**. Rejection is survivable: Jev stays in the brain | Abhishek | S-72 |
-| Q3 | Approve amendment **A-2**'s wording in the Must-never block | Abhishek | S-79 |
-| Q4 | Default daily USD cap for a semantic pattern. **Default written in: $0.50/org/day**, ~26,000 calls. Confirm | Abhishek | S-79 |
-| Q5 | Rotate the pasted TypeSafe key, and the Vapi key from O-06 (now 65 steps stale) | Abhishek | immediately |
+| # | Question | Owner | Needed by | Answer |
+|---|---|---|---|---|
+| Q1 | A named person reads TypeSafe's **current** terms before any real transcript leaves. ZDR is enterprise-only; US hosting; no retention period published; an indexed pre-launch Terms copy granted access "solely for evaluating" | Abhishek | S-75 | open |
+| Q2 | Approve or reject amendment **A-1** | Abhishek | S-72 | **Approved 2026-09-21.** Built by S-72. |
+| Q3 | Approve amendment **A-2**'s wording in the Must-never block | Abhishek | S-79 | **Approved 2026-09-21.** The wording goes into Must-never #2 with S-79, not before. |
+| Q4 | Default daily USD cap for a semantic pattern | Abhishek | S-79 | **Confirmed 2026-09-21: $0.50/org/day**, ~26,000 calls. |
+| Q5 | Rotate the pasted TypeSafe key, and the Vapi key from O-06 (now 65 steps stale) | Abhishek | immediately | open |
 
 ## 13. Facts used
 

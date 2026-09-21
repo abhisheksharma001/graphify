@@ -7490,5 +7490,86 @@ dependency nobody needed or a trait that cannot do the one thing it exists for.
 
 ---
 
-**The register is complete through S-71**, with S-70 open and blocked. Anything after that is a new step appended
+### S-72 — Outbound splits into data connectors and decision connectors `[Rust]` ☐
+
+**PR:** one. **Depends on:** S-71. **Research:** none.
+**Amendment:** **A-1**, approved by Abhishek on 2026-09-21 (`docs/prd-jev.md` §8, §12 Q2).
+
+**Files:** `engine/tests/outbound.rs`, and the first **Must never** in this file.
+
+**Today:** the first Must-never is one rule over one kind of provider.
+`engine/tests/outbound.rs` holds `CONNECTORS = ["vapi.rs"]`, and a file on that list may
+name no request verb but `get`. That is exactly right for a provider that reads a client's
+live Vapi org, and wrong for a provider that holds none of our data and owns nothing we
+could damage: a decision call is a POST, so an engine-side decision client cannot exist
+without this guard going red — correctly, because today the guard cannot tell the two
+kinds apart. S-71 shipped the seam (`engine/src/decide.rs`) and deliberately stopped here.
+
+The guard has a second, quieter problem that this step is the right moment to fix. Its
+rules are written inline inside two `#[test]` functions that read the real tree, so
+**nothing tests the rules themselves**. If `NOT_A_GET` were missing a verb, or the "is this
+a connector" branch were inverted, every test in the file would still be green, because the
+real tree happens to comply. Splitting the rule in two doubles that exposure: the branch
+that says "a decision connector may POST" would, on an empty decision list, be a branch no
+test has ever taken.
+
+**Change:**
+
+1. Rename `CONNECTORS` to `DATA_CONNECTORS`, contents unchanged (`["vapi.rs"]`). Its doc
+   says what being on it costs: **GET only, forever, no exceptions** — this is what stops
+   graphify ever mutating a customer's Vapi org, and it does not move.
+2. Add `DECISION_CONNECTORS: [&str; 0] = []`. A decision provider holds no graphify data
+   and owns nothing we could damage; it may POST, and it may still name no other verb.
+   Empty until S-73 writes the adapter.
+3. Add `DECISION_MAY: [&str; 1] = [".post("]` — the *only* subtraction from `NOT_A_GET` a
+   decision connector gets. `Method::` stays refused, so there is one spelling of a POST in
+   the tree and the text guard can always see it.
+4. Lift the rules out of the two tree tests into data: `enum Role { Data, Decision,
+   Ordinary }`, `fn role(file: &str) -> Role` (the list lookup), and
+   `fn faults(role: Role, text: &str) -> Vec<String>` returning one sentence per rule
+   broken, empty when the file is allowed. The rules are unchanged in meaning:
+   - `Ordinary` naming any of `CLIENTS` → fault.
+   - `Data` containing any of `NOT_A_GET` → fault.
+   - `Decision` containing any of `NOT_A_GET` that is not in `DECISION_MAY` → fault.
+   - `Data` or `Decision` naming none of `CLIENTS` → fault (a name on a list guarding
+     nothing; take it off rather than leave it passing).
+5. The two tree tests keep their jobs and call `faults(role(&file), &text)`.
+6. **Synthetic tests**, each handing `faults` a made-up file body rather than the real
+   tree, so every branch is taken by a test that can fail: a data connector that POSTs; a
+   decision connector that POSTs (allowed) and the same body with a `.delete(` and with a
+   `Method::POST` (both refused); an ordinary file naming `reqwest`; a connector of either
+   role that names no client at all; and a body that breaks two rules returning two faults,
+   not one.
+7. Two tests on the lists themselves, because a mistake there is silent: the two lists
+   **may not overlap** (a file on both would be a data connector that may POST), and
+   `DECISION_CONNECTORS.len() <= 1` — A-1 grants POST to *one named file*, not to a
+   category that can grow by one line.
+8. Rewrite the first **Must never** in this file to A-1's wording, naming both lists, and
+   saying that the split is machine-checked by that same file.
+
+**Acceptance:**
+WHEN `cargo test -q --test outbound` runs THEN the suite SHALL pass, and it SHALL contain a
+test that fails if a data connector gains a `.post(`, a test that fails if a decision
+connector gains any verb but `.post(`, and a test that fails if one file is named on both
+lists.
+
+**Verify:**
+
+```
+cd engine && cargo test -q --test outbound              # all green
+cd engine && cargo test -q                              # 381+ passed, no suite red
+cd engine && cargo clippy --all-targets -- -D warnings  # clean
+git diff --stat main -- engine/src                      # empty: no engine source changed
+```
+
+**Must not:** touch `engine/src` at all — this step changes a guard and a spec line, not the
+program. Add a decision connector (S-73 does that, and it does not exist yet). Relax
+anything that applies to `vapi.rs`: a data connector is GET-only forever. Remove or weaken
+the runtime half (`every_request_that_leaves_is_a_get`) — the wire guard still asserts that
+every request which actually left was a GET, and that stays true while `DECISION_CONNECTORS`
+is empty.
+
+---
+
+**The register is complete through S-72**, with S-70 open and blocked. Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
