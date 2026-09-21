@@ -5,6 +5,7 @@ pub mod ask;
 pub mod assistants;
 pub mod auth;
 pub mod db;
+pub mod decide;
 pub mod ended_reason;
 pub mod extract;
 pub mod jobs;
