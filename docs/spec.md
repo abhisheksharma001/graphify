@@ -7295,5 +7295,120 @@ bar re-judged anyway. The guard turns a silent loss into the right amount of wor
   step refuses to ship a question that missed its bar, because nothing ships one yet.
 - Unchanged: every residue listed under S-68.
 
-**The register is complete through S-69.** Anything after that is a new step appended
+---
+
+### S-70 — The incumbent answers the same 44 cases ☐ (blocked)
+
+**PR:** one. **Depends on:** S-69. **Research:** none.
+
+**Blocked on Abhishek.** The step is one script run and one table, and it cannot start: it
+needs an Anthropic key out of the encrypted store to call the model graphify already uses,
+and a shown cost with an explicit go before the call (Must-never #2). Roughly 44 calls over
+the synthetic transcripts in `docs/jev/cases.jsonl`, so cents, not dollars — the number goes
+in the PR before the run, not after it.
+
+**Today:** `docs/prd-jev.md` §4 reports what Jev scored on 19 held-out cases and compares it
+with nothing. "Cheaper than an LLM" is a price claim with no accuracy claim beside it, so
+the trade it implies cannot be judged.
+
+**Change:** run the current labelling model on the same cases, same split, same labels;
+write the side-by-side into §4 with n, the split, and which cases each got wrong. No
+threshold moves, no question is rewritten, nothing ships behind it.
+
+**Must not:** send a real transcript anywhere (§12 Q1 is open — the cases are synthetic and
+stay synthetic), call anything without the cost shown and an explicit go, or write a key
+into the repo.
+
+---
+
+### S-71 — A decision has a seam before it has a provider [Rust] ☐
+
+**PR:** one. **Depends on:** nothing. **Research:** none.
+
+**Files:** engine/src/decide.rs (new), `engine/src/lib.rs`, engine/tests/decide.rs (new).
+
+**Today:** the engine has exactly one way to get a judgement about text — spawn the Python
+brain and let BAML call Anthropic (`engine/src/jobs.rs`). There is no type in the engine for
+"a question with a closed answer set", no type for "an answer with a probability attached",
+and nothing a second decision provider could be plugged into. `docs/prd-jev.md` §8 describes
+that seam; it does not exist. Adding a provider today would therefore mean inventing the
+vocabulary and the HTTP call in the same PR, in whichever file happened to need it, with
+`engine/tests/outbound.rs` going red for the POST in the middle of it — three arguments at
+once, and no way to review any of them alone.
+
+**Change:**
+
+1. **One new module, `engine/src/decide.rs`,** owning the whole vocabulary: `Question`,
+   `Questions`, `Answer`, `Decisions`, `DecisionModel`, `Fake`. Registered in
+   `engine/src/lib.rs`. Nothing else in the tree changes.
+
+2. **Three question kinds, all closed.** `Noul` (true/false, answered with a probability),
+   `Choice` (one of a named set), `Score` (one of an ordered set of levels). No free text:
+   a seam that can return prose is not a decision seam, and writing stays with the brain.
+
+3. **An invalid question set cannot be asked, because it cannot be built.**
+   `Questions::new` is the only constructor and returns an error for: an empty set (§8's
+   "refuses an empty question set"), a blank name or blank instructions, a duplicate name,
+   a `Choice` with fewer than two or more than 255 options, a `Score` with fewer than two
+   or more than ten levels. An adapter written later inherits every one of those refusals
+   without repeating them.
+
+4. **An answer that does not match the question cannot be returned, for the same reason.**
+   `Decisions::checked(model, answers, &questions)` is the only constructor and returns an
+   error for: a missing answer, an answer to a question nobody asked, an answer of the wrong
+   kind, a probability outside 0.0..=1.0, a choice that is not one of that question's
+   options, a score outside that question's levels, and a blank model string. A provider
+   that starts returning something new becomes a visible failure rather than a silent one.
+
+5. **A missing answer is an error, never a value.** Not 0.0, not false, not the first
+   option. This is Must-never #5 at the seam, where the temptation is strongest, because a
+   provider that answers four questions out of five is otherwise so easy to paper over.
+
+6. **The model that answered is carried with the answers.** `Decisions.model` is required
+   and non-blank, so drift in a pinned version is visible at the boundary rather than at the
+   next recalibration.
+
+7. **The trait is made `dyn`-compatible by hand**, returning
+   `Pin<Box<dyn Future<Output = Result<Decisions>> + Send + '_>>`, because `async fn` in a
+   trait is still not `dyn`-compatible on this toolchain (rustc 1.98.0; checked here, error
+   E0038 "because method `decide` is `async`"). This buys runtime selection between
+   providers without adding `async-trait` or any other dependency.
+
+8. **`Fake` is the only implementation this step ships.** Answers come from a table the test
+   programmes, every state it is asked about is recorded so a test can assert what was sent,
+   and a question it has no answer for is an error rather than a guess. No network, no key,
+   no clock, no file.
+
+9. **The seam ships dark, and that is machine-checked.** Nothing under `engine/src` outside
+   `decide.rs` names `DecisionModel`; a test walks the tree and holds it. The step that
+   wires the first caller deletes that test on purpose, which is the point of it.
+
+10. **No amendment is needed or pre-empted.** `decide.rs` names no HTTP client, so
+    `engine/tests/outbound.rs` passes unchanged and is not edited. A-1 belongs to S-72.
+
+**Acceptance:** WHEN a caller builds a question set and asks a `DecisionModel` for answers,
+THEN the engine SHALL refuse to build an empty question set, SHALL refuse any set of answers
+that does not match the questions that were asked, and SHALL never substitute 0, false, or a
+first option for an answer that is absent; AND `cargo test -q` SHALL pass with
+`engine/tests/outbound.rs` unedited.
+
+**Verify:** `cd engine && cargo test -q` — was 361 passing over 20 suites; the new suite adds
+to that. `cargo clippy --all-targets -- -D warnings` clean. Nothing outside the engine is
+touched, so `cd brain && uv run pytest -q` (278) and `cd ui && pnpm test` (59) are run once
+to show them unchanged.
+
+**Must not:** make a request, name an HTTP client, add a dependency, read or accept a key, or
+open a file. Edit `engine/tests/outbound.rs`, `engine/src/vapi.rs`, `brain/` or `ui/`. Wire
+the seam into `sync`, `jobs`, `rules`, the server or the CLI — a seam with a caller is S-73
+and after, and a caller written now would be a guess about a provider that does not exist
+yet. Name a provider: no vendor's name, vocabulary or JSON shape in `decide.rs` (D-13 — the
+file describes decisions, and a vendor's shape belongs in that vendor's own file). Write a
+default for an absent answer. Plus every Must-never in this spec's header: GET only to a data
+provider; no model call without a shown cost and an explicit go; no audio; no key to the
+browser, a log, or the DB in clear; a missing value is "—" and never 0; no provider
+vocabulary outside `vapi.rs`, `extract.rs` and `ended_reason.rs`.
+
+---
+
+**The register has rows through S-71; the last one ticked is S-69.** Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
