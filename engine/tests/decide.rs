@@ -381,11 +381,14 @@ async fn a_provider_can_be_chosen_at_run_time() {
 
 /// The flag, in the only form that cannot be left on by accident: the seam has no caller.
 ///
-/// **Delete this test in the step that wires the first one** (S-73 and after). It is here so
-/// that wiring is a deliberate edit to a test that says what it is guarding, rather than a
-/// line nobody notices.
+/// S-71 said the step that writes the first adapter deletes this. S-73 narrowed it instead,
+/// because `jev.rs` is an *implementation* of the seam and not a caller of it: nothing in
+/// `sync`, `jobs`, `rules`, the server or the CLI can make a decision, which is the thing
+/// this test is actually guarding. **Delete it in the step that wires a real caller.** It is
+/// here so that wiring is a deliberate edit to a test that says what it guards, rather than
+/// a line nobody notices.
 #[test]
-fn the_seam_has_no_caller_yet() {
+fn the_seam_still_has_no_caller() {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("engine/src is readable") {
             let path = entry.expect("a readable directory entry").path();
@@ -405,14 +408,15 @@ fn the_seam_has_no_caller_yet() {
     let mut checked = 0;
     for path in files {
         let name = path.strip_prefix(&src).unwrap().to_string_lossy().into_owned();
-        if name == "decide.rs" || name == "lib.rs" {
+        if name == "decide.rs" || name == "jev.rs" || name == "lib.rs" {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             !text.contains("DecisionModel") && !text.contains("decide::"),
-            "{name} uses the decision seam. S-71 ships it dark; the step that wires the \
-             first caller deletes this test on purpose."
+            "{name} uses the decision seam. The seam is still dark: an adapter that could \
+             answer a question is not a caller, and the step that wires the first real one \
+             deletes this test on purpose."
         );
         checked += 1;
     }
