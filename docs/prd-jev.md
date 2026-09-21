@@ -118,7 +118,8 @@ A value nobody recorded is `"—"`, never `0` and never `false` — the spec's r
 here than anywhere: a model told a call lasted 0 seconds reasons about a call that never connected.
 
 **Questions:** one battery per call, every question about that call in one call (state is billed once).
-The wording that produced §4 is in scratchpad `q2.json` and moves into the repo at step S-69. The
+The wording that produced §4 is `docs/jev/wants_human.question.json`, hashed into
+`docs/jev/wants_human.thresholds.json` so the numbers cannot outlive the question (S-69). The
 `criteria.false` paragraph that defeated both injections is lifted almost verbatim from the prose
 already in `brain/baml_src/label.baml` — the repo had the right words, they were just in a place Jev
 could not read.
@@ -130,7 +131,7 @@ combine with `min`/`max`, never inside a question.
 
 | Question | fn:fp | Fitted | Source |
 |---|---|---|---|
-| wants_human (worked example) | 2:1 | threshold 0.52 | thresholds2.json, eval n=19, 2026-09-21, **direction only** |
+| wants_human (worked example) | 2:1 | threshold 0.50, confident band edge 0.52 | `docs/jev/wants_human.thresholds.json`, eval n=19, 2026-09-21, **direction only** |
 
 fn:fp = 2:1: an undercount hides what the analyst is hunting; an overcount is visible and checkable
 against the evidence quote in the call drawer. **Before any threshold ships:**

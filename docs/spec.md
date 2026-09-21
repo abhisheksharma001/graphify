@@ -7126,26 +7126,26 @@ lists S-69 among the three steps worth doing whatever happens to A-1. **Research
 The measurement this step fixes in place was run on 2026-09-21 and is written up in
 `docs/prd-jev.md` §4.
 
-**Files:** docs/jev/wants_human.question.json, docs/jev/wants_human.question.first-draft.json,
-docs/jev/wants_human.thresholds.json, brain/tests/test_jev_artifacts.py, `docs/jev/cases.jsonl`,
-`docs/prd-jev.md`, `docs/spec.md`. Deleted: `docs/jev/q1.json`, `docs/jev/q2.json`,
-`docs/jev/thresholds2.json`, `docs/jev/costs.json`. No engine file, no UI file, no migration,
+**Files:** `docs/jev/wants_human.question.json`, `docs/jev/wants_human.question.first-draft.json`,
+`docs/jev/wants_human.thresholds.json`, `brain/tests/test_jev_artifacts.py`, `docs/jev/cases.jsonl`,
+`docs/prd-jev.md`, `docs/spec.md`. Deleted: docs/jev/q1.json, docs/jev/q2.json,
+docs/jev/thresholds2.json, docs/jev/costs.json. No engine file, no UI file, no migration,
 no dependency, and nothing in this step makes a network call.
 
 **Today:** `docs/jev/` holds the working papers of one afternoon's calibration, committed so
-they would survive: `q1.json` and `q2.json` (a first-draft question and the rewrite that
-replaced it), `thresholds2.json` (what `calibrate.py` fitted), `costs.json` (two numbers
-already repeated inside `thresholds2.json`), `cases.jsonl` and the `build_cases.py` that
+they would survive: q1.json and q2.json (a first-draft question and the rewrite that
+replaced it), thresholds2.json (what `calibrate.py` fitted), costs.json (two numbers
+already repeated inside thresholds2.json), `cases.jsonl` and the `build_cases.py` that
 writes it. Nothing reads any of them and no test opens any of them. The names say which
 attempt they were, not what they are. Three things follow from that.
 
 First, **the numbers and the wording that earned them are only joined by a sentence in a
 PRD.** `docs/prd-jev.md` §4 reports eval TPR 0.89 / TNR 1.00 for "the rewritten question".
-Change one word of `q2.json` and that table is silently wrong; nothing anywhere would say so.
+Change one word of q2.json and that table is silently wrong; nothing anywhere would say so.
 The whole method the numbers came from rests on the question text being the thing under test,
 so a threshold that has come unstuck from its question is worse than no threshold.
 
-Second, **the file disagrees with the PRD about what the threshold is.** `thresholds2.json`
+Second, **the file disagrees with the PRD about what the threshold is.** thresholds2.json
 carries `"threshold": 0.5` and a band whose `low` and `high` are both `0.52`; §7's table
 prints "threshold 0.52". Those are two different fitted numbers — `calibrate.py` fits a cut
 and, separately, a confident-band edge — and the table quotes the wrong one.
@@ -7158,10 +7158,10 @@ table and nothing recomputes it.
 **Change:** the artifacts become a named, self-checking set, and the numbers are pinned to
 the exact wording that produced them.
 
-1. **Names that say what a file is.** `q2.json` → wants_human.question.json — the question
-   in force. `q1.json` → wants_human.question.first-draft.json — kept, because §4's rewrite
+1. **Names that say what a file is.** q2.json → `wants_human.question.json` — the question
+   in force. q1.json → `wants_human.question.first-draft.json` — kept, because §4's rewrite
    table reports a per-case delta between the two and nobody can reproduce that without
-   both. `thresholds2.json` → wants_human.thresholds.json. `costs.json` is deleted: its
+   both. thresholds2.json → `wants_human.thresholds.json`. costs.json is deleted: its
    `{"fn": 2, "fp": 1}` is already inside the thresholds file and a second copy is a second
    thing to get wrong.
 
@@ -7175,7 +7175,7 @@ the exact wording that produced them.
    - `split` — how the split is taken (SHA-256 of the case id), the fraction, and the
      resulting 25 / 19.
 
-3. **A test opens all of it.** brain/tests/test_jev_artifacts.py, in the brain's suite
+3. **A test opens all of it.** `brain/tests/test_jev_artifacts.py`, in the brain's suite
    because pytest is already there, `test_label.py` already reads a file outside its own
    directory for the same kind of pin, and the brain is where Jev lands if A-1 is rejected.
    It needs no network and no key: every assertion is arithmetic over files in the repo.
