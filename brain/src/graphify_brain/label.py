@@ -75,6 +75,19 @@ SQL_VARS = 500
 #: reason about a call that never connected.
 DASH = "—"
 
+#: The one thing `label.baml` asks for in place of a quote: what the model writes for a call
+#: that does not match and had nothing that came close. It is not a quote and must not be
+#: reported as an invented one. `test_label.py` reads the prompt and fails if the two ever
+#: drift apart, the same pin `FIXED_PROMPT_CHARS` has.
+NO_QUOTE = "nothing in this call is about it"
+
+#: What is stored in place of a quote the transcript does not contain. The label's `match`
+#: survives — the transcript was read and the judgement was paid for — and the sentence that
+#: was never said does not. Everything downstream is handed this instead: the `pattern_labels`
+#: row, the call drawer, and `SynthesizeRule`, whose prompt tells it the quotes are what
+#: people actually said. None of them has to know this check exists to be safe from it.
+NOT_IN_TRANSCRIPT = "the model quoted a line this call does not contain"
+
 
 @dataclass(frozen=True)
 class Call:
@@ -323,6 +336,18 @@ def _label(job: Job, conn: Any, stderr: TextIO) -> dict[str, Any]:
             flush=True,
         )
 
+    invented = sum(1 for x in labels if x["evidence"] == NOT_IN_TRANSCRIPT)
+    if invented:
+        # Said out loud rather than repaired quietly. A model inventing quotes is something
+        # the analyst paying for the run should be able to read in its log — a silent repair
+        # is how this went unnoticed in the first place. Nothing parses this line.
+        print(
+            f"{invented} of {len(labels)} quotes were not in the transcript they were "
+            f"about, and have been replaced",
+            file=stderr,
+            flush=True,
+        )
+
     return _result(job, labels, no_label, unreached, spent, done, stopped)
 
 
@@ -345,6 +370,22 @@ def _affordable(job: Job, wave: Sequence[Sequence[Call]], spent: float) -> list[
     return fit
 
 
+def _flat(text: str) -> str:
+    """One string, comparable to another: runs of whitespace down to one space, case gone."""
+    return " ".join(text.split()).casefold()
+
+
+def _quoted(evidence: str, transcript: str) -> bool:
+    """Is this evidence a line of that transcript?
+
+    Flattened on both sides first, because a model that normalised a double space or a
+    capital letter in an otherwise honest quote has invented nothing, and a check that cried
+    wolf at that would soon be turned off. Past those two it is a plain substring: a line the
+    transcript does not contain cannot pass it.
+    """
+    return _flat(evidence) in _flat(transcript)
+
+
 def _attach(batch: Sequence[Call], got: Sequence[Any]) -> tuple[list[dict[str, Any]], list[str]]:
     """Model's `n` back to the call it was about, plus the calls it did not answer for.
 
@@ -352,6 +393,13 @@ def _attach(batch: Sequence[Call], got: Sequence[Any]) -> tuple[list[dict[str, A
     for a call finds nothing left and is dropped, and the call is not counted as unlabelled
     either. A number that was not in the batch is dropped for the same reason — it is about
     a call this batch did not contain.
+
+    This is also the one place that holds both a quote and the transcript it claims to come
+    from, so it is where the prompt's "Never quote a line that is not in the transcript you
+    were given" stops being advice. Every path runs through here — the wizard's run, the
+    daily run, and the insert into `pattern_labels` — so a quote checked here is checked
+    everywhere. What is not in the transcript is replaced, not dropped: the judgement was
+    paid for and is not what is in doubt.
     """
     by_n = {i + 1: call for i, call in enumerate(batch)}
     labelled = []
@@ -359,7 +407,10 @@ def _attach(batch: Sequence[Call], got: Sequence[Any]) -> tuple[list[dict[str, A
         call = by_n.pop(label.n, None)
         if call is None:
             continue
-        labelled.append({"call_id": call.id, "match": label.match, "evidence": label.evidence})
+        evidence = label.evidence
+        if evidence != NO_QUOTE and not _quoted(evidence, call.transcript):
+            evidence = NOT_IN_TRANSCRIPT
+        labelled.append({"call_id": call.id, "match": label.match, "evidence": evidence})
     return labelled, [c.id for c in by_n.values()]
 
 

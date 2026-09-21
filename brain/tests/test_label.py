@@ -34,6 +34,15 @@ LINES = "\n".join(
     ]
 )
 
+#: Three real lines out of `LINES`. Tests that need to tell one label from another use these
+#: rather than a made-up string, because S-68 replaces evidence a transcript does not
+#: contain — a placeholder quote would be testing that replacement instead of attachment.
+QUOTES = [
+    "user: hi, is anyone actually there",
+    "user: I want to talk to a person please",
+    "bot: Let me put you through.",
+]
+
 
 class Never:
     """Reaching for anything on this is reaching for a model. That is the failure."""
@@ -371,12 +380,12 @@ def test_at_most_three_batches_are_in_flight(store, batches):
 
 def test_a_label_is_attached_to_the_call_its_number_meant(store, batches):
     ids = seed(store, 3)
-    batches(answer=lambda b: [types.Label(n=2, match=True, evidence="the second one")])
+    batches(answer=lambda b: [types.Label(n=2, match=True, evidence=QUOTES[1])])
 
     result = run(store, request(ids) + "\nGO\n")
 
     out = json.loads(result.stdout.splitlines()[-1])
-    assert out["labels"] == [{"call_id": "c2", "match": True, "evidence": "the second one"}]
+    assert out["labels"] == [{"call_id": "c2", "match": True, "evidence": QUOTES[1]}]
     assert sorted(out["no_label"]) == ["c1", "c3"]
 
 
@@ -397,16 +406,116 @@ def test_the_same_number_twice_labels_the_call_once(store, batches):
     ids = seed(store, 2)
     batches(
         answer=lambda b: [
-            types.Label(n=1, match=True, evidence="first answer"),
-            types.Label(n=1, match=False, evidence="second answer"),
+            types.Label(n=1, match=True, evidence=QUOTES[0]),
+            types.Label(n=1, match=False, evidence=QUOTES[2]),
         ]
     )
 
     result = run(store, request(ids) + "\nGO\n")
 
     out = json.loads(result.stdout.splitlines()[-1])
-    assert out["labels"] == [{"call_id": "c1", "match": True, "evidence": "first answer"}]
+    assert out["labels"] == [{"call_id": "c1", "match": True, "evidence": QUOTES[0]}]
     assert out["no_label"] == ["c2"]
+
+
+# --- a quote that is not in the transcript (S-68) ---------------------------------------
+
+
+def stored(store):
+    """Every `pattern_labels` row, in call order."""
+    return (
+        sqlite3.connect(store)
+        .execute("SELECT call_id, llm_match, evidence FROM pattern_labels ORDER BY call_id")
+        .fetchall()
+    )
+
+
+def test_a_quote_the_transcript_does_not_contain_is_not_stored_as_evidence(store, batches):
+    """The defect. `label.baml` says "Never quote a line that is not in the transcript you
+    were given" and until S-68 nothing held the model to it, so an invented sentence reached
+    `pattern_labels`, the call drawer, and `SynthesizeRule` — which is told the quotes are
+    what people actually said and writes a rule that then runs unattended forever."""
+    ids = seed(store, 1)
+    batches(answer=lambda b: [types.Label(n=1, match=True, evidence="user: cancel my policy")])
+
+    run(store, request(ids, pattern_id=7) + "\nGO\n")
+
+    assert stored(store) == [("c1", 1, labelling.NOT_IN_TRANSCRIPT)]
+
+
+def test_the_judgement_survives_the_quote_that_did_not(store, batches):
+    """What is thrown away is the sentence, not the label. The transcript was read and the
+    batch was paid for; dropping the label would spend the money and buy nothing."""
+    ids = seed(store, 2)
+    batches(
+        answer=lambda b: [
+            types.Label(n=1, match=True, evidence="user: cancel my policy"),
+            types.Label(n=2, match=False, evidence="user: cancel my policy"),
+        ]
+    )
+
+    result = run(store, request(ids, pattern_id=7) + "\nGO\n")
+
+    assert [(i, m) for i, m, _ in stored(store)] == [("c1", 1), ("c2", 0)]
+    assert json.loads(result.stdout.splitlines()[-1])["no_label"] == []
+
+
+def test_a_quote_that_differs_only_in_spacing_or_case_is_kept(store, batches):
+    """A model that normalised a double space or a capital letter in an otherwise honest
+    quote has invented nothing. A check that cried wolf at that would be turned off."""
+    ids = seed(store, 1)
+    batches(answer=lambda b: [types.Label(n=1, match=True, evidence="I want to  TALK to a Person")])
+
+    run(store, request(ids, pattern_id=7) + "\nGO\n")
+
+    assert stored(store) == [("c1", 1, "I want to  TALK to a Person")]
+
+
+def test_the_prompts_own_no_quote_sentence_is_not_an_invention(store, batches):
+    """`label.baml` asks for this sentence in place of a quote when a call does not match
+    and nothing in it came close. It is not a quote, so it must not be reported as a bad
+    one — the analyst reading the drawer is owed the difference between "nothing was said
+    about this" and "the model made something up"."""
+    ids = seed(store, 1)
+    batches(answer=lambda b: [types.Label(n=1, match=False, evidence=labelling.NO_QUOTE)])
+
+    run(store, request(ids, pattern_id=7) + "\nGO\n")
+
+    assert stored(store) == [("c1", 0, labelling.NO_QUOTE)]
+
+
+def test_the_no_quote_sentence_is_the_one_the_prompt_asks_for():
+    """The pin. `NO_QUOTE` is only safe to let through because the prompt asks for exactly
+    it; a reworded prompt would quietly turn every non-match's evidence into a replacement
+    notice. Same guard `FIXED_PROMPT_CHARS` has, for the same reason."""
+    prompt = (Path(__file__).resolve().parents[1] / "baml_src" / "label.baml").read_text()
+
+    assert f'"{labelling.NO_QUOTE}"' in prompt
+
+
+def test_the_log_says_how_many_quotes_were_replaced(store, batches):
+    """A silent repair is how this lived this long. The analyst paying for the run can read
+    in its log that the model invented two of three quotes."""
+    ids = seed(store, 3)
+    batches(
+        answer=lambda b: [
+            types.Label(n=1, match=True, evidence=QUOTES[0]),
+            types.Label(n=2, match=True, evidence="user: cancel my policy"),
+            types.Label(n=3, match=True, evidence="user: I have not called before"),
+        ]
+    )
+
+    result = run(store, request(ids, pattern_id=7) + "\nGO\n")
+
+    assert "2 of 3 quotes were not in the transcript they were about" in result.stderr
+
+
+def test_a_run_whose_quotes_were_all_real_says_nothing_about_it(store, batches):
+    ids = seed(store, 2)
+
+    result = run(store, request(ids, pattern_id=7) + "\nGO\n")
+
+    assert "quotes were not in the transcript" not in result.stderr
 
 
 def test_every_call_asked_about_is_in_exactly_one_list(store, batches):
@@ -589,14 +698,14 @@ def test_a_db_that_is_not_there_fails_before_anything(tmp_path, batches):
 
 def test_labels_are_stored_against_the_pattern_they_belong_to(store, batches):
     ids = seed(store, 3)
-    batches(answer=lambda b: [types.Label(n=i + 1, match=i == 0, evidence=f"line {i}") for i in range(len(b))])
+    batches(answer=lambda b: [types.Label(n=i + 1, match=i == 0, evidence=QUOTES[i]) for i in range(len(b))])
 
     run(store, request(ids, pattern_id=7) + "\nGO\n")
 
     rows = sqlite3.connect(store).execute(
         "SELECT pattern_id, call_id, llm_match, rule_match, evidence FROM pattern_labels ORDER BY call_id"
     ).fetchall()
-    assert rows == [(7, "c1", 1, None, "line 0"), (7, "c2", 0, None, "line 1"), (7, "c3", 0, None, "line 2")]
+    assert rows == [(7, "c1", 1, None, QUOTES[0]), (7, "c2", 0, None, QUOTES[1]), (7, "c3", 0, None, QUOTES[2])]
 
 
 def test_with_no_pattern_yet_the_labels_are_returned_and_nothing_is_stored(store, batches):
