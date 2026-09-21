@@ -89,11 +89,16 @@ next sync without a model call.
   second provider to shape it against; one implementation shapes an abstraction wrong.
 
 ## Must never (every step inherits these)
-- Send anything but GET to a provider. `engine/tests/outbound.rs` keeps this over the whole
-  source tree (S-49): `CONNECTORS` names the files allowed to reach out at all — `vapi.rs`
-  today — those files may name no request verb but `get`, and a mock that accepts every
-  method asserts that everything which actually left was a GET. A connector inherits the
-  rule by being on that list; until it is on it, it cannot make a request at all.
+- Send anything but GET to a **data** provider, ever. `engine/tests/outbound.rs` keeps this
+  over the whole source tree (S-49, split along the axis it was always about by S-72 /
+  amendment A-1): `DATA_CONNECTORS` names the files allowed to read a client's live account
+  — `vapi.rs` today — and those files may name no request verb but `get`, forever, no
+  exceptions. `DECISION_CONNECTORS` names the one file allowed to ask an outside model a
+  question; a decision provider holds none of our data and owns nothing we could damage, so
+  it may POST, spelled `.post(`, and may still name no other verb. It is empty until S-73.
+  A mock that accepts every method asserts that everything which actually left was a GET. A
+  connector inherits its rule by being on one of those lists; until it is on one, it cannot
+  make a request at all, and being on both is itself a test failure.
 - Call a model without a shown cost and an explicit go (`--yes` / click). Daily modes
   have a hard USD cap and stop when reached.
 - Download or store audio. Recording URL only.
@@ -3513,6 +3518,11 @@ call a model at all — a different rule, unwritten, for a later step. Reach out
 (the old guard retired, a two-line comment left where it stood), `docs/spec.md` (the
 Must-never line now names what keeps it). No `engine/src` change, no brain, no UI, no new
 dependency — `wiremock` was already a dev-dependency. 282 → 285 engine tests.
+
+**Superseded in name only (S-72, amendment A-1):** `CONNECTORS` is now `DATA_CONNECTORS`,
+and a second list, `DECISION_CONNECTORS`, holds the one file allowed to POST to a provider
+that owns none of our data. Every word of this row still describes `DATA_CONNECTORS`, which
+did not move a millimetre.
 
 **Learned:** (a) *A rule about a program, enforced over the text of one file, is enforced
 over the text of one file.* Both halves of the gap were provable in minutes: `src/retell.rs`
