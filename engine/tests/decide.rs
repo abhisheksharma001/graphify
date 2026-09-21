@@ -344,6 +344,14 @@ async fn the_fake_fails_rather_than_guesses_when_it_has_no_answer() {
     let wrong_kind = Fake::new("fake-1.0.0").answering("wants_human", Answer::Score(1.0));
     let err = wrong_kind.decide("anything", &one()).await.unwrap_err().to_string();
     assert!(err.contains("answered with a score"), "{err}");
+
+    // The case the two above do not cover, and the one that matters: a substitute of the
+    // *right kind* for a missing answer. `Decisions::checked` cannot see it — a probability
+    // of 0.0 is a valid probability — so this is the only thing standing between a provider
+    // that answered nothing and a confident "no" downstream.
+    let empty = Fake::new("fake-1.0.0");
+    let err = empty.decide("anything", &one()).await.unwrap_err().to_string();
+    assert!(err.contains("asked wants_human, which it has no answer for"), "{err}");
 }
 
 /// Why the trait is spelled out with a boxed future instead of `async fn`: so a caller can
