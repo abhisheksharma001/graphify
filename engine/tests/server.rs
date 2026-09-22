@@ -26,7 +26,13 @@ async fn env_lock() -> MutexGuard<'static, ()> {
 }
 
 fn clear_env() {
-    for var in ["VAPI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GRAPHIFY_SECRET"] {
+    for var in [
+        "VAPI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "TYPESAFE_API_KEY",
+        "GRAPHIFY_SECRET",
+    ] {
         std::env::remove_var(var);
     }
 }

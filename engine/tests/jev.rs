@@ -10,8 +10,10 @@
 //!
 //! No test in this file reaches the network, and the key below is not a key.
 
+use graphify::db::Db;
 use graphify::decide::{Answer, DecisionModel, Question, Questions};
 use graphify::jev::{Jev, Usage};
+use graphify::secrets::Secrets;
 use serde_json::{json, Value};
 use std::time::Duration;
 use wiremock::matchers::any;
@@ -44,7 +46,7 @@ async fn answering(reply: Value) -> MockServer {
 }
 
 fn jev(server: &MockServer) -> Jev {
-    Jev::at(&server.uri(), KEY, Duration::from_secs(5))
+    Jev::at(&server.uri(), KEY, Duration::from_secs(5)).expect("a keyed adapter builds")
 }
 
 /// The one request that left, parsed.
@@ -425,4 +427,80 @@ async fn nothing_but_a_post_to_one_path_ever_leaves_for_the_decision_provider() 
         );
         assert_eq!(req.url.path(), "/v1/systemone");
     }
+}
+
+// --- where the key comes from, and what happens without one ---------------------------
+
+/// `Secrets::get` reads `TYPESAFE_API_KEY` before it reads the store, and every test in
+/// this process shares one environment. Anything touching the override takes this first.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// A store with nothing in it, and the database it writes to.
+fn store() -> (tempfile::TempDir, Db, Secrets) {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let db = Db::open(dir.path().join("graphify.db")).expect("a database");
+    let secrets = Secrets::open(dir.path().join(".secret")).expect("a store");
+    (dir, db, secrets)
+}
+
+/// Why not `expect_err`: `Jev` has no `Debug` on purpose, so a refusal has to be unwrapped
+/// by hand. That is the type doing its job, not an inconvenience to work around.
+fn refused(built: anyhow::Result<Jev>) -> String {
+    match built {
+        Ok(_) => panic!("an adapter was built without a key"),
+        Err(e) => e.to_string(),
+    }
+}
+
+#[test]
+fn a_blank_key_builds_nothing_so_no_request_can_be_keyless() {
+    for blank in ["", "   ", "\n\t "] {
+        let err = refused(Jev::new(blank));
+        assert!(err.contains("key is required"), "{err}");
+        let err = refused(Jev::at("http://127.0.0.1:1", blank, Duration::from_secs(1)));
+        assert!(err.contains("key is required"), "{err}");
+    }
+}
+
+#[test]
+fn with_no_typesafe_key_anywhere_there_is_no_adapter_to_ask_with() {
+    let _guard = env_lock();
+    std::env::remove_var("TYPESAFE_API_KEY");
+    let (_dir, db, secrets) = store();
+
+    // A key under another name is not this one: the store holds three install keys and
+    // only the one this file names can build the thing that reaches TypeSafe.
+    secrets.set(&db, None, "anthropic", "sk-ant-not-the-one").unwrap();
+
+    let err = refused(Jev::stored(&db, &secrets));
+    assert!(err.contains("no TypeSafe key is set"), "{err}");
+    assert!(err.contains("Settings"), "the error does not say where to put one: {err}");
+}
+
+#[test]
+fn the_key_settings_writes_is_the_key_this_adapter_reads() {
+    let _guard = env_lock();
+    std::env::remove_var("TYPESAFE_API_KEY");
+    let (_dir, db, secrets) = store();
+
+    // Written the way the settings route writes it: install-wide, under the name on
+    // `GLOBAL_NAMES`, through the same store the engine reads back.
+    secrets.set(&db, None, graphify::jev::SECRET, KEY).unwrap();
+
+    Jev::stored(&db, &secrets).expect("a stored key builds the adapter");
+}
+
+#[test]
+fn the_environment_overrides_the_store_for_this_key_like_every_other() {
+    let _guard = env_lock();
+    let (_dir, db, secrets) = store();
+    std::env::set_var("TYPESAFE_API_KEY", KEY);
+    let built = Jev::stored(&db, &secrets);
+    std::env::remove_var("TYPESAFE_API_KEY");
+    built.expect("the environment supplies the key with an empty store");
 }
