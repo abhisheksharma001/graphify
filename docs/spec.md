@@ -7815,5 +7815,93 @@ Every test runs against a mock — nothing has been sent to TypeSafe.
 
 ---
 
-**The register is complete through S-73**, with S-70 open and blocked. Anything after that is a new step appended
+### S-74 — TypeSafe as a fourth key in Settings; egress refused without one `[Rust]`
+
+**PR:** one. **Depends on:** S-73 (the adapter). **Research:** none.
+
+**Files:** `engine/src/secrets.rs`, `engine/src/jobs.rs`, `engine/src/jev.rs`,
+`engine/tests/secrets.rs`, `engine/tests/jev.rs`, `engine/tests/jobs.rs`,
+`engine/tests/server.rs`, `ui/src/Settings.tsx`.
+
+**Today:** `engine/src/secrets.rs` holds two lists of names — `ORG_NAMES = ["vapi"]`, a
+client's own key, and `GLOBAL_NAMES = ["anthropic", "openai"]`, the install's, stored with
+`org_id NULL`. A name on a list gets the settings route, the status row and the
+environment override for free; a name on neither cannot be stored at all
+(`named()` in `engine/src/server.rs` refuses it). `engine/src/jev.rs` takes its key as a
+constructor argument and will build a client from any string at all, including an empty
+one, so a keyless POST is expressible today and would fail at the provider rather than
+here. `engine/src/jobs.rs:417` walks `GLOBAL_NAMES` and puts every one of those keys into
+the environment of every brain it spawns.
+
+**Change:**
+
+1. **`typesafe` becomes the third name on `GLOBAL_NAMES`**, with
+   `env_var("typesafe") = "TYPESAFE_API_KEY"` — the same variable the `jev` skill and
+   `docs/jev/` scripts read, because two spellings of one key is a key that is set and a
+   process that cannot see it. Install-wide and not per-org for the same reason the model
+   keys are: one account is billed and every org's questions spend it.
+2. **The settings screen follows the list.** `PUT /api/secrets/typesafe` and
+   `GET /api/secrets` need no new code — they validate against `GLOBAL_NAMES` and answer
+   with a status, never a value. `ui/src/Settings.tsx` gains one line,
+   `typesafe: 'TypeSafe'`, in `LABELS`; the Model keys section already renders whatever
+   the engine lists.
+3. **A new `BRAIN_NAMES = ["anthropic", "openai"]`, and `jobs.rs` hands the brain that
+   instead of `GLOBAL_NAMES`.** This is the reason this step is not a one-line change: a
+   fourth name on `GLOBAL_NAMES` would otherwise put the TypeSafe key into the environment
+   of every brain process, and the brain has no Jev caller and is not getting one in this
+   step. A key a process does not need does not go into its environment. The two lists are
+   now different questions — *which keys does this install hold* and *which keys does the
+   brain get* — and both are named.
+4. **`Jev::new` and `Jev::at` return `Result<Jev>` and refuse a blank or whitespace-only
+   key.** This is what "egress refused without one" means structurally rather than by
+   convention: `engine/src/jev.rs` is the only file in the tree that may POST (A-1), and a
+   `Jev` cannot be constructed without a key, so a keyless request to the decision provider
+   is not expressible anywhere.
+5. **`Jev::stored(db, secrets)`** — the join between the settings screen and the adapter,
+   and the "key from Settings" S-73 deferred. It reads the install's `typesafe` secret
+   through `Secrets::get`, so the environment override wins the same way it does for every
+   other key, and with nothing stored it fails saying so: *no TypeSafe key is set; add one
+   in Settings*. A `Secret` is exposed once, into the constructor, and is never returned.
+6. **Nothing calls `Jev::stored` yet.** S-75 is the first caller.
+   `the_seam_still_has_no_caller` in `engine/tests/decide.rs` stays green and untouched:
+   this step gives the adapter a key to use, not somebody to answer.
+7. **No request is made by this step, and no test reaches the network.** The provider is
+   not contacted to check a key — there is no cheap GET on TypeSafe to check one with, and
+   the only POST there is costs money and would be a call without a shown cost
+   (**Must never** #2). "Test connection" stays a Vapi-only button.
+
+**Acceptance:**
+
+WHEN a value is PUT to `/api/secrets/typesafe` THEN the engine SHALL store it encrypted and
+SHALL answer with a status list carrying `typesafe`, `set: true` and the last four
+characters, and SHALL never return the value.
+
+WHEN a brain is spawned while a TypeSafe key is stored THEN the child's environment SHALL
+carry `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` and SHALL NOT carry `TYPESAFE_API_KEY`.
+
+WHEN `Jev::stored` is called and no TypeSafe key is set in the store or the environment
+THEN it SHALL fail saying a key must be added in Settings, and no request SHALL leave the
+process.
+
+WHEN `Jev::new` or `Jev::at` is handed a blank or whitespace-only key THEN it SHALL fail
+rather than return a client.
+
+**Verify:**
+
+```
+cd engine && cargo test -q && cargo clippy --all-targets -- -D warnings
+cd ui && npm test -- --run
+```
+
+Pass: every suite green, clippy silent, and `engine/tests/secrets.rs` green with
+`GLOBAL_NAMES.len() == 3`.
+
+**Must not:** store the TypeSafe key per-org; return it to the browser, print it to a log,
+or put it in an error; hand it to the brain or to any other child process; call TypeSafe
+from the engine or from a test; write a real key into the repo; add a caller for the
+decision seam; touch `DATA_CONNECTORS` or `DECISION_CONNECTORS`.
+
+---
+
+**The register is complete through S-74**, with S-70 open and blocked. Anything after that is a new step appended
 here, or a bug in `docs/backlog/bugs.md` promoted to one.
