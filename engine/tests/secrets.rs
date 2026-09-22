@@ -228,8 +228,16 @@ fn typesafe_is_an_installs_key_and_not_an_orgs() {
     clear_env();
     let f = fixture();
 
-    assert!(GLOBAL_NAMES.contains(&"typesafe"), "{GLOBAL_NAMES:?}");
-    assert!(!ORG_NAMES.contains(&"typesafe"), "{ORG_NAMES:?}");
+    assert!(
+        GLOBAL_NAMES.contains(&"typesafe"),
+        "typesafe is not a key this install stores, so Settings has no field for it: \
+         {GLOBAL_NAMES:?}"
+    );
+    assert!(
+        !ORG_NAMES.contains(&"typesafe"),
+        "typesafe is on an org, which is one key per client for an account we bill once: \
+         {ORG_NAMES:?}"
+    );
     assert_eq!(graphify::secrets::env_var("typesafe"), Some("TYPESAFE_API_KEY"));
 
     // Unset, it still has a row on the install's status: the settings screen can only

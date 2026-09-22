@@ -450,9 +450,12 @@ fn store() -> (tempfile::TempDir, Db, Secrets) {
 
 /// Why not `expect_err`: `Jev` has no `Debug` on purpose, so a refusal has to be unwrapped
 /// by hand. That is the type doing its job, not an inconvenience to work around.
-fn refused(built: anyhow::Result<Jev>) -> String {
+fn refused(built: anyhow::Result<Jev>, how: &str) -> String {
     match built {
-        Ok(_) => panic!("an adapter was built without a key"),
+        // `how` is the caller's, not a constant: the two callers are refusing different
+        // things, and a message that does not say which leaves a break red for a reason
+        // nobody can read off it.
+        Ok(_) => panic!("an adapter was built {how}"),
         Err(e) => e.to_string(),
     }
 }
@@ -460,9 +463,10 @@ fn refused(built: anyhow::Result<Jev>) -> String {
 #[test]
 fn a_blank_key_builds_nothing_so_no_request_can_be_keyless() {
     for blank in ["", "   ", "\n\t "] {
-        let err = refused(Jev::new(blank));
+        let err = refused(Jev::new(blank), "from a blank key");
         assert!(err.contains("key is required"), "{err}");
-        let err = refused(Jev::at("http://127.0.0.1:1", blank, Duration::from_secs(1)));
+        let built = Jev::at("http://127.0.0.1:1", blank, Duration::from_secs(1));
+        let err = refused(built, "from a blank key");
         assert!(err.contains("key is required"), "{err}");
     }
 }
@@ -477,7 +481,7 @@ fn with_no_typesafe_key_anywhere_there_is_no_adapter_to_ask_with() {
     // only the one this file names can build the thing that reaches TypeSafe.
     secrets.set(&db, None, "anthropic", "sk-ant-not-the-one").unwrap();
 
-    let err = refused(Jev::stored(&db, &secrets));
+    let err = refused(Jev::stored(&db, &secrets), "with no TypeSafe key set anywhere");
     assert!(err.contains("no TypeSafe key is set"), "{err}");
     assert!(err.contains("Settings"), "the error does not say where to put one: {err}");
 }
