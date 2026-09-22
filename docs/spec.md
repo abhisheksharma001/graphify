@@ -7815,7 +7815,7 @@ Every test runs against a mock — nothing has been sent to TypeSafe.
 
 ---
 
-### S-74 — TypeSafe as a fourth key in Settings; egress refused without one `[Rust]`
+### S-74 — TypeSafe as a fourth key in Settings; egress refused without one `[Rust]` ☑ (PR #74, 9745900)
 
 **PR:** one. **Depends on:** S-73 (the adapter). **Research:** none.
 
@@ -7900,6 +7900,70 @@ Pass: every suite green, clippy silent, and `engine/tests/secrets.rs` green with
 or put it in an error; hand it to the brain or to any other child process; call TypeSafe
 from the engine or from a test; write a real key into the repo; add a caller for the
 decision seam; touch `DATA_CONNECTORS` or `DECISION_CONNECTORS`.
+
+**Files (as built):** `engine/src/secrets.rs` (+14/-4), `engine/src/jobs.rs` (+3/-1),
+`engine/src/jev.rs` (+34/-4), `ui/src/Settings.tsx` (+7/-5), `engine/tests/secrets.rs`,
+`engine/tests/jev.rs`, `engine/tests/jobs.rs`, `engine/tests/server.rs`.
+
+**Breaks:** six, each on the committed file, each restored with `git checkout --`.
+
+| # | break | went red | the message said |
+|---|---|---|---|
+| 1 | `typesafe` off `GLOBAL_NAMES` | `typesafe_is_an_installs_key_and_not_an_orgs` | *typesafe is not a key this install stores, so Settings has no field for it* — **after the fix below**; first time round it printed the list and nothing else |
+| 2 | `jobs.rs` walks `GLOBAL_NAMES` again | `only_the_brains_own_keys_travel_in_the_environment…` | *the TypeSafe key reached a process with no caller for it* |
+| 3 | the blank-key refusal removed | `a_blank_key_builds_nothing_so_no_request_can_be_keyless` | *an adapter was built from a blank key* |
+| 4 | `Jev::stored` reads the wrong name | `with_no_typesafe_key_anywhere_there_is_no_adapter_to_ask_with` | *an adapter was built with no TypeSafe key set anywhere* — **after the fix**; first time it said "built without a key", which is not what happened |
+| 5 | `env_var("typesafe")` removed | `typesafe_is_an_installs_key_and_not_an_orgs` | left `None`, right `Some("TYPESAFE_API_KEY")` |
+| 6 | `BRAIN_NAMES` gains `typesafe` | `the_brain_is_not_handed_the_typesafe_key` | *the brain would be handed a key it has no caller for* |
+
+**Verified:** `cargo test -q` **410 passed over 22 suites** (404 before), `cargo clippy
+--all-targets -- -D warnings` silent, `npm test -- --run` 59 passed, `tsc --noEmit` clean,
+brain untouched, CI 4/4 on PR #74, no line this step added over 100 characters, and the
+only key-shaped strings in the tree are the two fake test constants.
+
+**Learned:**
+
+- **One list was answering two questions, and nobody noticed while the answers agreed.**
+  `GLOBAL_NAMES` meant both *what keys does this install hold* and *what keys does a
+  spawned brain get*. Those were the same two names by luck, not by rule, and the third
+  name is where the luck ran out: a one-line addition to a settings list would have put a
+  key into the environment of every child process. The test that catches it is about the
+  lists rather than about a run, which is the weaker kind — but `only_the_brains_own_keys…`
+  reads a real child's environment, and that one is not.
+- **A refusal the type enforces is worth more than a refusal a rule enforces.** "Egress is
+  refused without a key" could have been a check inside `ask`, or a note in the spec's
+  Must-not. Making the constructor fallible instead means the sentence is a fact about the
+  program: `jev.rs` is the only file that may POST, `Jev::at` is the only way to build the
+  thing that does it, and it will not build one without a key. Nothing downstream has to
+  remember.
+- **The break tests the message, not only the assertion — third step running.** Two of the
+  six went red saying nothing useful: one printed a list with no word about what was
+  missing from it, and one said *an adapter was built without a key* for a break that built
+  an adapter with **somebody else's** key. Both are the same fault as S-73's assertion
+  order: the test was right and unreadable. A shared panic string across two callers is a
+  new shape of it — the message now comes from the caller.
+- **A caption is part of the diff.** The keys section said "Model keys … used by the brain".
+  Adding a key that is neither a model nor the brain's would have shipped a false sentence
+  on the one screen where a person types a secret. Renaming it was not scope creep; leaving
+  it would have been the change.
+- **Some paths can only be proved in halves.** `Jev::at` is proved to put its key in the
+  bearer header; `Jev::stored` is proved to read the right name; nothing joins them,
+  because `stored` points at the real base and no test here reaches the network. A later
+  step that wants the join has to make the base reachable from `stored` — worth knowing
+  before somebody assumes the path is covered.
+
+**Not done:**
+
+- **No key is checked against the provider.** Vapi has a cheap `GET /assistant` to test a
+  key with; TypeSafe has one POST and it costs money, which is a call without a shown cost
+  (**Must never** #2). A bad TypeSafe key is found out by the first real question, in S-75.
+- **The store-to-header path is not proved end to end**, as above.
+- **Nothing calls `Jev::stored`.** S-75 is the first caller, and
+  `the_seam_still_has_no_caller` is untouched and still green.
+- **The UI change has no test.** `ui/src/Settings.tsx` has never had one; the label and the
+  renamed heading are carried by `tsc` and by review, not by CI.
+- **No retry, circuit breaker, kill switch, ledger row or cap** — unchanged from S-73, all
+  still S-79's.
 
 ---
 

@@ -197,7 +197,7 @@ Must-not) go into `docs/spec.md` on approval — they are omitted here to keep t
 | S-71 | The `DecisionModel` seam + fake adapter, no network, flag off | **[Rust]** | nothing |
 | S-72 | outbound.rs learns data vs decision connectors (**A-1**) | **[Rust]** | S-71 |
 | S-73 | The Jev adapter: pinned, timed out, size-capped (key from Settings moved to S-74) | **[Rust]** | S-72 · **done, PR #73** |
-| S-74 | TypeSafe as a fourth key in Settings; egress refused without one | **[Rust]** | S-73 |
+| S-74 | TypeSafe as a fourth key in Settings; egress refused without one | **[Rust]** | S-73 · **done, PR #74** |
 | S-75 | Shadow mode: Jev beside the labeller, both logged, act on neither | **[Rust]** | S-74 |
 | S-76 | Read `pattern_labels` back as a calibration set; report agreement | — | S-75 |
 | S-77 | Cascade: rule → Jev confident band → LLM on the middle | **[Rust]** | S-76 |
