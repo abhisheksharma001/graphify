@@ -1,5 +1,5 @@
 use graphify::db::Db;
-use graphify::secrets::{Secrets, Status, GLOBAL_NAMES, ORG_NAMES};
+use graphify::secrets::{Secrets, Status, BRAIN_NAMES, GLOBAL_NAMES, ORG_NAMES};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
@@ -21,6 +21,7 @@ fn clear_env() {
         "VAPI_API_KEY",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "TYPESAFE_API_KEY",
         "GRAPHIFY_SECRET",
     ] {
         std::env::remove_var(var);
@@ -216,6 +217,69 @@ fn a_global_secret_round_trips_and_is_not_an_orgs() {
     // And the org's own status is about the org's own names, so it never mentions it.
     let org = f.secrets.status(&f.db, Some(1)).unwrap();
     assert!(org.iter().all(|s| s.name != "anthropic"));
+}
+
+/// TypeSafe is the install's key too: one account is billed and every org's questions
+/// spend it, so it lives where the model keys live and never on an org (S-74). The brain
+/// is a separate question — `BRAIN_NAMES` answers that one, and this list does not.
+#[test]
+fn typesafe_is_an_installs_key_and_not_an_orgs() {
+    let _guard = env_lock();
+    clear_env();
+    let f = fixture();
+
+    assert!(
+        GLOBAL_NAMES.contains(&"typesafe"),
+        "typesafe is not a key this install stores, so Settings has no field for it: \
+         {GLOBAL_NAMES:?}"
+    );
+    assert!(
+        !ORG_NAMES.contains(&"typesafe"),
+        "typesafe is on an org, which is one key per client for an account we bill once: \
+         {ORG_NAMES:?}"
+    );
+    assert_eq!(graphify::secrets::env_var("typesafe"), Some("TYPESAFE_API_KEY"));
+
+    // Unset, it still has a row on the install's status: the settings screen can only
+    // offer a field for a name the engine lists.
+    let before = f.secrets.status(&f.db, None).unwrap();
+    assert_eq!(
+        before.iter().find(|s| s.name == "typesafe"),
+        Some(&Status {
+            name: "typesafe".into(),
+            set: false,
+            last4: None,
+        })
+    );
+
+    f.secrets.set(&f.db, None, "typesafe", PLAIN).unwrap();
+    assert_eq!(
+        f.secrets.get(&f.db, None, "typesafe").unwrap().unwrap().expose(),
+        PLAIN
+    );
+    assert!(f.secrets.get(&f.db, Some(1), "typesafe").unwrap().is_none());
+
+    // And the plaintext is not in the file, the same as every other key.
+    assert!(
+        !String::from_utf8_lossy(&f.db_bytes()).contains(PLAIN),
+        "a plaintext TypeSafe key reached the database"
+    );
+}
+
+/// The brain labels calls with a model. It has no Jev caller, so it is handed the model
+/// keys and not the install's whole keyring — the list that says so is its own.
+#[test]
+fn the_brain_is_not_handed_the_typesafe_key() {
+    assert!(
+        !BRAIN_NAMES.contains(&"typesafe"),
+        "the brain would be handed a key it has no caller for: {BRAIN_NAMES:?}"
+    );
+    for name in BRAIN_NAMES {
+        assert!(
+            GLOBAL_NAMES.contains(&name),
+            "{name} is handed to the brain but is not a key this install stores"
+        );
+    }
 }
 
 /// `PRIMARY KEY (org_id, name)` does not constrain rows whose `org_id` is NULL — SQLite

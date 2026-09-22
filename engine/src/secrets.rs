@@ -24,10 +24,19 @@ use std::path::{Path, PathBuf};
 /// A Vapi key is a client's, so each org has its own.
 pub const ORG_NAMES: [&str; 1] = ["vapi"];
 
-/// The model keys belong to the whole install and are stored with `org_id NULL`: one
-/// account is billed for them and every org's calls spend them, so a copy per org would
-/// be three places to rotate the same key.
-pub const GLOBAL_NAMES: [&str; 2] = ["anthropic", "openai"];
+/// The install's own keys, stored with `org_id NULL`: one account is billed for them and
+/// every org's work spends them, so a copy per org would be three places to rotate the
+/// same key. Two model providers, and TypeSafe, which is not a model provider but is
+/// billed the same way (S-74).
+pub const GLOBAL_NAMES: [&str; 3] = ["anthropic", "openai", "typesafe"];
+
+/// Which of the install's keys a spawned brain is handed.
+///
+/// A subset of `GLOBAL_NAMES`, and deliberately not the same list. The brain labels calls
+/// with a model; nothing in it asks TypeSafe anything, and a key a process does not need
+/// does not go into its environment. Growing `GLOBAL_NAMES` must not silently grow what
+/// every child process can read.
+pub const BRAIN_NAMES: [&str; 2] = ["anthropic", "openai"];
 
 const KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
@@ -189,6 +198,7 @@ pub fn env_var(name: &str) -> Option<&'static str> {
         "vapi" => Some("VAPI_API_KEY"),
         "anthropic" => Some("ANTHROPIC_API_KEY"),
         "openai" => Some("OPENAI_API_KEY"),
+        "typesafe" => Some("TYPESAFE_API_KEY"),
         _ => None,
     }
 }

@@ -28,21 +28,28 @@ async fn env_lock() -> MutexGuard<'static, ()> {
 }
 
 fn clear_env() {
-    for var in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GRAPHIFY_SECRET"] {
+    for var in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "TYPESAFE_API_KEY",
+        "GRAPHIFY_SECRET",
+    ] {
         std::env::remove_var(var);
     }
 }
 
 // --- the fake brain -------------------------------------------------------------------
 
-/// The preamble every fake brain starts with: write down the arguments and what the two
-/// model-key variables looked like, so a test can ask afterwards.
+/// The preamble every fake brain starts with: write down the arguments and what the key
+/// variables looked like, so a test can ask afterwards. `TYPESAFE_API_KEY` is written down
+/// for the same reason the other two are, and the test about it wants to read `unset`.
 const RECORD: &str = r#"#!/bin/sh
 here=$(dirname "$0")
 {
   echo "argv: $*"
   echo "anthropic: ${ANTHROPIC_API_KEY:-unset}"
   echo "openai: ${OPENAI_API_KEY:-unset}"
+  echo "typesafe: ${TYPESAFE_API_KEY:-unset}"
 } >> "$here/seen.txt"
 "#;
 
@@ -370,7 +377,7 @@ async fn the_go_is_what_starts_the_reading() {
 // --- what reaches the child -----------------------------------------------------------
 
 #[tokio::test]
-async fn the_model_keys_travel_in_the_environment_and_never_in_the_argv() {
+async fn only_the_brains_own_keys_travel_in_the_environment_and_never_in_the_argv() {
     let _guard = env_lock().await;
     clear_env();
 
@@ -382,6 +389,9 @@ async fn the_model_keys_travel_in_the_environment_and_never_in_the_argv() {
         let db = server.db();
         store.set(&db, None, "anthropic", "sk-ant-fake-0001").unwrap();
         store.set(&db, None, "openai", "sk-openai-fake-0002").unwrap();
+        // Set, and still not the brain's to read: the install holds it for the engine's
+        // own decision connector, and this child has no caller for it (S-74).
+        store.set(&db, None, "typesafe", "ts-fake-0003").unwrap();
     }
 
     let (status, body) = post(&server.url("/api/patterns/plan?org=1"), json!({"criterion": "x"})).await;
@@ -391,9 +401,14 @@ async fn the_model_keys_travel_in_the_environment_and_never_in_the_argv() {
     let seen = seen(&server.path());
     assert!(seen.contains("anthropic: sk-ant-fake-0001"), "{seen}");
     assert!(seen.contains("openai: sk-openai-fake-0002"), "{seen}");
+    assert!(
+        seen.contains("typesafe: unset"),
+        "the TypeSafe key reached a process with no caller for it: {seen}"
+    );
     let argv = seen.lines().find(|l| l.starts_with("argv:")).unwrap();
     assert!(!argv.contains("sk-ant"), "a key reached the command line: {argv}");
     assert!(!argv.contains("sk-openai"), "a key reached the command line: {argv}");
+    assert!(!seen.contains("ts-fake-0003"), "the TypeSafe key reached the child: {seen}");
 }
 
 #[tokio::test]

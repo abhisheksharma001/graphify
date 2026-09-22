@@ -24,6 +24,7 @@ const LABELS: Record<string, string> = {
   vapi: 'Vapi',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  typesafe: 'TypeSafe',
 }
 
 const label = (name: string) => LABELS[name] ?? name
@@ -346,9 +347,10 @@ function AddOrg({ onAdded, onError }: { onAdded: () => void; onError: (e: unknow
   )
 }
 
-/** The model keys. One account pays for them and every org's calls spend them, so they
- * belong to the install and are stored once, under no org. */
-function ModelKeys({ onError }: { onError: (e: unknown) => void }) {
+/** The install's own keys. One account pays for them and every org's work spends them, so
+ * they are stored once, under no org. Two of them are model providers and one is not, which
+ * is why this section is not called "model keys" any more. */
+function InstallKeys({ onError }: { onError: (e: unknown) => void }) {
   const [keys, setKeys] = useState<SecretStatus[] | null>(null)
 
   useEffect(() => {
@@ -364,10 +366,10 @@ function ModelKeys({ onError }: { onError: (e: unknown) => void }) {
 
   return (
     <section className="card org">
-      <h3>Model keys</h3>
+      <h3>Install keys</h3>
       <p className="sub">
-        Used by the brain, not by any org. Nothing here calls a model on its own: every
-        run shows its cost and waits to be told to go.
+        Held once for the whole install, not by any org. Nothing here is called on its own:
+        every run shows its cost and waits to be told to go.
       </p>
       {keys === null ? (
         <p className="notice">Loading…</p>
@@ -417,7 +419,7 @@ export default function Settings({
       ))}
 
       <AddOrg onAdded={onOrgs} onError={onError} />
-      <ModelKeys onError={onError} />
+      <InstallKeys onError={onError} />
     </div>
   )
 }

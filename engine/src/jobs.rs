@@ -414,7 +414,9 @@ fn begin(
 
     let db = lock(db);
     let mut keys = Vec::new();
-    for name in secrets::GLOBAL_NAMES {
+    // `BRAIN_NAMES`, not `GLOBAL_NAMES`: the install holds a TypeSafe key too and the
+    // brain has no use for it, so it does not reach this environment (S-74).
+    for name in secrets::BRAIN_NAMES {
         let var = secrets::env_var(name)
             .ok_or_else(|| anyhow!("no environment variable is defined for {name}"))?;
         if let Some(key) = secrets.get(&db, None, name)? {

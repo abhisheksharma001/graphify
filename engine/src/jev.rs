@@ -11,14 +11,24 @@
 //! 2026-09-21). A decision provider is allowed to POST because it holds none of our data
 //! and owns nothing we could damage — not because a POST is safe.
 //!
+//! The key is the install's, stored under `typesafe` beside the model keys and read back
+//! through `Secrets::get` (S-74). A `Jev` cannot be built without one, so there is no path
+//! from here to the network that does not carry a key.
+//!
 //! Source: `docs/prd-jev.md` §13, checked 2026-09-21.
 
+use crate::db::Db;
 use crate::decide::{Answer, Answered, DecisionModel, Decisions, Question, Questions};
+use crate::secrets::Secrets;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
 pub const DEFAULT_BASE: &str = "https://api.typesafe.ai";
+
+/// The name the key is stored under, install-wide. `engine/src/secrets.rs` owns the list
+/// that name is on; this is the one place that asks for it.
+pub const SECRET: &str = "typesafe";
 
 /// Pinned, never `jev-latest`, which moves. A set of thresholds belongs to the exact model
 /// that earned it, so the version is part of the request and is read back off the reply.
@@ -60,19 +70,39 @@ pub struct Jev {
 }
 
 impl Jev {
+    /// The real provider, with the install's key.
+    ///
+    /// Read through `Secrets::get`, so `TYPESAFE_API_KEY` overrides the store exactly the
+    /// way it does for every other key. With neither, this fails and says where to put one.
+    pub fn stored(db: &Db, secrets: &Secrets) -> Result<Self> {
+        let Some(key) = secrets.get(db, None, SECRET)? else {
+            bail!("no TypeSafe key is set: add one in Settings, or set TYPESAFE_API_KEY");
+        };
+        Jev::new(key.expose())
+    }
+
     /// The real provider.
-    pub fn new(key: &str) -> Self {
+    pub fn new(key: &str) -> Result<Self> {
         Jev::at(DEFAULT_BASE, key, TIMEOUT)
     }
 
     /// The same provider against an explicit base and clock, so a test can point at a mock
     /// and not wait thirty seconds to watch a timeout work.
-    pub fn at(base: &str, key: &str, timeout: Duration) -> Self {
-        Jev {
+    ///
+    /// Refuses a blank key rather than building a client that would send an empty bearer
+    /// token. This file is the only one allowed to POST (A-1) and this is the only way to
+    /// build the thing that does it, so a request to the decision provider without a key
+    /// is not expressible anywhere in the tree — not a rule somebody has to remember.
+    pub fn at(base: &str, key: &str, timeout: Duration) -> Result<Self> {
+        let key = key.trim();
+        if key.is_empty() {
+            bail!("a TypeSafe key is required: nothing can be asked without one");
+        }
+        Ok(Jev {
             base: base.trim_end_matches('/').to_string(),
             key: key.to_string(),
             timeout,
-        }
+        })
     }
 
     /// Ask every question in `asked` about `state`, and say what it cost.
